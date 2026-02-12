@@ -20,7 +20,7 @@
         </div>
         <div class="flex-none">
             <ul class="menu menu-horizontal px-1">
-                <li><a href="/" class="{% if request.url.path == '/' or request.url.path.startswith('/projects') %}active{% endif %}">Projects</a></li>
+                <li><a href="/projects/" class="{% if request.url.path == '/' or request.url.path.startswith('/projects') %}active{% endif %}">Projects</a></li>
                 <li><a href="/settings/" class="{% if request.url.path.startswith('/settings') %}active{% endif %}">Settings</a></li>
             </ul>
         </div>

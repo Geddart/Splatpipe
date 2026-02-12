@@ -140,3 +140,56 @@ async def detect_tools():
 async def check_deps():
     """Check Python package availability."""
     return check_dependencies()
+
+
+@router.get("/browse", response_class=JSONResponse)
+async def browse_filesystem(path: str = "", mode: str = "dir"):
+    """List directory contents for the file browser modal.
+
+    Args:
+        path: Directory to list. Empty = filesystem roots (drive letters on Windows).
+        mode: 'dir' to pick directories, 'file' to pick files.
+    """
+    import os
+    import string
+
+    entries: list[dict] = []
+
+    # No path = list drive roots on Windows, or / on Unix
+    if not path:
+        if os.name == "nt":
+            for letter in string.ascii_uppercase:
+                drive = f"{letter}:\\"
+                if Path(drive).exists():
+                    entries.append({"name": f"{letter}:\\", "path": drive, "is_dir": True})
+            return {"current": "", "parent": "", "entries": entries}
+        else:
+            path = "/"
+
+    p = Path(path)
+    if not p.exists() or not p.is_dir():
+        return {"current": str(p), "parent": str(p.parent), "entries": [], "error": "Directory not found"}
+
+    parent = str(p.parent) if p.parent != p else ""
+
+    try:
+        for item in sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
+            # Skip hidden files/dirs
+            if item.name.startswith("."):
+                continue
+            try:
+                is_dir = item.is_dir()
+            except PermissionError:
+                continue
+            # In file mode show everything, in dir mode only show dirs
+            if mode == "dir" and not is_dir:
+                continue
+            entries.append({
+                "name": item.name,
+                "path": str(item),
+                "is_dir": is_dir,
+            })
+    except PermissionError:
+        return {"current": str(p), "parent": parent, "entries": [], "error": "Permission denied"}
+
+    return {"current": str(p), "parent": parent, "entries": entries}
