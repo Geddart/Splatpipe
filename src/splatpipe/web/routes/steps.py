@@ -14,7 +14,6 @@ from sse_starlette.sse import EventSourceResponse
 
 from ...core.config import load_project_config
 from ...core.constants import (
-    FOLDER_COLMAP_SOURCE,
     FOLDER_COLMAP_CLEAN,
     FOLDER_OUTPUT,
     STEP_CLEAN,
