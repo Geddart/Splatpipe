@@ -2,72 +2,60 @@
 {% block title %}Settings — Splatpipe{% endblock %}
 
 {% block content %}
-<h1 class="text-3xl font-bold mb-6">Settings</h1>
 
-<div class="grid gap-6">
-    <!-- Tool Paths -->
-    <div class="card bg-base-100 shadow-xl">
-        <div class="card-body">
-            <h2 class="card-title">Tool Paths</h2>
-            <div class="overflow-x-auto">
-                <table class="table table-sm">
-                    <thead>
-                        <tr>
-                            <th>Tool</th>
-                            <th>Path</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for name, path in config.get('tools', {}).items() %}
-                        <tr>
-                            <td class="font-mono text-sm">{{ name }}</td>
-                            <td class="font-mono text-xs opacity-80">{{ path or '(not configured)' }}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-            <p class="text-sm opacity-60 mt-2">Edit <code>config/defaults.toml</code> to change tool paths.</p>
-        </div>
+{% if setup %}
+<div class="alert alert-info mb-6 shadow-lg">
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="stroke-current shrink-0 w-6 h-6"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+    <div>
+        <h3 class="font-bold">Welcome to Splatpipe!</h3>
+        <p>Set your projects folder and tool paths to get started. Click "Auto-detect tools" to find installed tools automatically.</p>
     </div>
+</div>
+{% endif %}
 
-    <!-- COLMAP Clean Settings -->
-    <div class="card bg-base-100 shadow-xl">
-        <div class="card-body">
-            <h2 class="card-title">COLMAP Clean</h2>
-            <div class="overflow-x-auto">
-                <table class="table table-sm">
-                    <tbody>
-                        {% for key, val in config.get('colmap_clean', {}).items() %}
-                        <tr>
-                            <td class="font-mono text-sm">{{ key }}</td>
-                            <td class="font-mono text-xs">{{ val }}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
+{% if saved is defined and saved %}
+<div class="alert alert-success mb-6 shadow-lg" id="save-alert">
+    <span>Settings saved successfully.</span>
+</div>
+<script>setTimeout(function(){ document.getElementById('save-alert').style.display='none'; }, 3000);</script>
+{% endif %}
+
+<div class="flex justify-between items-center mb-6">
+    <h1 class="text-3xl font-bold">Settings</h1>
+    <div class="flex gap-2">
+        <button class="btn btn-outline btn-sm" id="btn-detect"
+                onclick="detectTools()">
+            Auto-detect tools
+        </button>
+        <button class="btn btn-outline btn-sm" id="btn-check-deps"
+                onclick="checkDeps()">
+            System Check
+        </button>
     </div>
+</div>
 
-    <!-- Trainer Settings -->
+<!-- System Check Panel (hidden until clicked) -->
+<div id="deps-panel" class="hidden mb-6">
     <div class="card bg-base-100 shadow-xl">
         <div class="card-body">
-            <h2 class="card-title">Trainers</h2>
+            <h2 class="card-title">System Check</h2>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                    <h3 class="font-bold text-sm mb-2">Postshot</h3>
-                    <div class="text-xs font-mono opacity-80">
-                        {% for key, val in config.get('postshot', {}).items() %}
-                        <div>{{ key }}: {{ val if val else '(empty)' }}</div>
-                        {% endfor %}
-                    </div>
+                    <h3 class="font-bold text-sm mb-2">Python Packages</h3>
+                    <div id="deps-list" class="space-y-1 text-sm font-mono"></div>
                 </div>
                 <div>
-                    <h3 class="font-bold text-sm mb-2">LichtFeld Studio</h3>
-                    <div class="text-xs font-mono opacity-80">
-                        {% for key, val in config.get('lichtfeld', {}).items() %}
-                        <div>{{ key }}: {{ val }}</div>
+                    <h3 class="font-bold text-sm mb-2">External Tools</h3>
+                    <div id="tools-status" class="space-y-1 text-sm font-mono">
+                        {% for name, exists in tool_status.items() %}
+                        <div class="flex items-center gap-2">
+                            {% if exists %}
+                            <span class="text-success">&#10003;</span>
+                            {% else %}
+                            <span class="text-error">&#10007;</span>
+                            {% endif %}
+                            <span>{{ name }}</span>
+                        </div>
                         {% endfor %}
                     </div>
                 </div>
@@ -75,4 +63,171 @@
         </div>
     </div>
 </div>
+
+<form method="post" action="/settings/">
+    {% if setup %}<input type="hidden" name="_setup" value="true">{% endif %}
+
+    <div class="grid gap-6">
+
+        <!-- Paths -->
+        <div class="card bg-base-100 shadow-xl">
+            <div class="card-body">
+                <h2 class="card-title">Paths</h2>
+                <div class="form-control w-full">
+                    <label class="label"><span class="label-text font-mono text-sm">projects_root</span></label>
+                    <input type="text" name="paths__projects_root"
+                           value="{{ config.get('paths', {}).get('projects_root', '') }}"
+                           placeholder="e.g. H:\001_ProjectCache\660 Drone\_Photogrammetry\splatpipe_projects"
+                           class="input input-bordered w-full font-mono text-sm">
+                    <label class="label"><span class="label-text-alt">Root folder where projects are stored</span></label>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tool Paths -->
+        <div class="card bg-base-100 shadow-xl">
+            <div class="card-body">
+                <h2 class="card-title">Tool Paths</h2>
+                <div class="space-y-3">
+                    {% for name in ['postshot_cli', 'lichtfeld_studio', 'colmap', 'splat_transform', 'supersplat_url'] %}
+                    <div class="form-control w-full">
+                        <label class="label">
+                            <span class="label-text font-mono text-sm">{{ name }}</span>
+                            <span class="label-text-alt">
+                                {% if tool_status.get(name) %}
+                                <span class="text-success">&#10003; found</span>
+                                {% else %}
+                                <span class="text-error">&#10007; not found</span>
+                                {% endif %}
+                            </span>
+                        </label>
+                        <input type="text" name="tools__{{ name }}" id="tool-{{ name }}"
+                               value="{{ config.get('tools', {}).get(name, '') }}"
+                               class="input input-bordered w-full font-mono text-sm">
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+
+        <!-- COLMAP Clean -->
+        <div class="card bg-base-100 shadow-xl">
+            <div class="card-body">
+                <h2 class="card-title">COLMAP Clean</h2>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div class="form-control">
+                        <label class="label cursor-pointer justify-start gap-3">
+                            <input type="checkbox" name="colmap_clean__outlier_threshold_auto"
+                                   {% if config.get('colmap_clean', {}).get('outlier_threshold_auto', true) %}checked{% endif %}
+                                   class="toggle toggle-primary">
+                            <span class="label-text font-mono text-sm">outlier_threshold_auto</span>
+                        </label>
+                    </div>
+                    {% for key in ['outlier_threshold_fixed', 'outlier_percentile', 'outlier_multiplier', 'kdtree_threshold'] %}
+                    <div class="form-control">
+                        <label class="label"><span class="label-text font-mono text-sm">{{ key }}</span></label>
+                        <input type="number" step="any" name="colmap_clean__{{ key }}"
+                               value="{{ config.get('colmap_clean', {}).get(key, '') }}"
+                               class="input input-bordered input-sm font-mono text-sm">
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Postshot -->
+        <div class="card bg-base-100 shadow-xl">
+            <div class="card-body">
+                <h2 class="card-title">Postshot</h2>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div class="form-control">
+                        <label class="label"><span class="label-text font-mono text-sm">profile</span></label>
+                        <input type="text" name="postshot__profile"
+                               value="{{ config.get('postshot', {}).get('profile', 'Splat3') }}"
+                               class="input input-bordered input-sm font-mono text-sm">
+                    </div>
+                    <div class="form-control">
+                        <label class="label"><span class="label-text font-mono text-sm">login</span></label>
+                        <input type="text" name="postshot__login"
+                               value="{{ config.get('postshot', {}).get('login', '') }}"
+                               class="input input-bordered input-sm font-mono text-sm">
+                    </div>
+                    <div class="form-control">
+                        <label class="label"><span class="label-text font-mono text-sm">password</span></label>
+                        <input type="password" name="postshot__password"
+                               value="{{ config.get('postshot', {}).get('password', '') }}"
+                               class="input input-bordered input-sm font-mono text-sm">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- LichtFeld -->
+        <div class="card bg-base-100 shadow-xl">
+            <div class="card-body">
+                <h2 class="card-title">LichtFeld Studio</h2>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div class="form-control">
+                        <label class="label"><span class="label-text font-mono text-sm">strategy</span></label>
+                        <input type="text" name="lichtfeld__strategy"
+                               value="{{ config.get('lichtfeld', {}).get('strategy', 'mcmc') }}"
+                               class="input input-bordered input-sm font-mono text-sm">
+                    </div>
+                    <div class="form-control">
+                        <label class="label"><span class="label-text font-mono text-sm">iterations</span></label>
+                        <input type="number" name="lichtfeld__iterations"
+                               value="{{ config.get('lichtfeld', {}).get('iterations', 30000) }}"
+                               class="input input-bordered input-sm font-mono text-sm">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Save Button -->
+        <div class="flex justify-end">
+            <button type="submit" class="btn btn-primary btn-wide">Save Settings</button>
+        </div>
+    </div>
+</form>
+
+<script>
+function detectTools() {
+    var btn = document.getElementById('btn-detect');
+    btn.classList.add('loading');
+    fetch('/settings/detect-tools')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            for (var name in data) {
+                var input = document.getElementById('tool-' + name);
+                if (input && data[name]) {
+                    input.value = data[name];
+                    input.classList.add('input-success');
+                    setTimeout(function(el) { el.classList.remove('input-success'); }.bind(null, input), 2000);
+                }
+            }
+            btn.classList.remove('loading');
+        })
+        .catch(function() { btn.classList.remove('loading'); });
+}
+
+function checkDeps() {
+    var panel = document.getElementById('deps-panel');
+    panel.classList.remove('hidden');
+    var list = document.getElementById('deps-list');
+    list.innerHTML = '<span class="loading loading-spinner loading-xs"></span> Checking...';
+    fetch('/settings/check-deps')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var html = '';
+            for (var pkg in data) {
+                var ok = data[pkg];
+                html += '<div class="flex items-center gap-2">';
+                html += ok ? '<span class="text-success">&#10003;</span>' : '<span class="text-error">&#10007;</span>';
+                html += '<span>' + pkg + '</span></div>';
+            }
+            list.innerHTML = html;
+        });
+}
+</script>
+
 {% endblock %}

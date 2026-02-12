@@ -15,7 +15,7 @@
             <div class="space-y-2 text-sm">
                 <div><span class="opacity-60">Path:</span> <span class="font-mono text-xs">{{ project.path }}</span></div>
                 <div><span class="opacity-60">Trainer:</span> {{ project.trainer }}</div>
-                <div><span class="opacity-60">Created:</span> {{ project.created_at[:10] }}</div>
+                <div><span class="opacity-60">Created:</span> {{ project.created_at[:10] if project.created_at else 'N/A' }}</div>
             </div>
         </div>
     </div>
@@ -35,16 +35,11 @@
         </div>
     </div>
 
-    <!-- Actions -->
+    <!-- Quick Actions -->
     <div class="card bg-base-100 shadow-xl">
         <div class="card-body">
-            <h2 class="card-title">Actions</h2>
+            <h2 class="card-title">Quick Actions</h2>
             <div class="space-y-2">
-                <button class="btn btn-primary btn-sm btn-block"
-                        hx-post="/training/{{ project.path }}/start?trainer={{ project.trainer }}"
-                        hx-target="#training-status">
-                    Start Training
-                </button>
                 <a href="https://superspl.at/editor" target="_blank"
                    class="btn btn-outline btn-sm btn-block">
                     Open SuperSplat
@@ -57,28 +52,101 @@
 <!-- Pipeline Steps -->
 <div class="mt-8">
     <h2 class="text-2xl font-bold mb-4">Pipeline Steps</h2>
-    <ul class="steps steps-vertical lg:steps-horizontal w-full">
+
+    <div class="grid gap-4">
         {% for step in steps %}
-        <li class="step {% if step.status == 'completed' %}step-success{% elif step.status == 'failed' %}step-error{% elif step.status == 'running' %}step-warning{% endif %}">
-            <div>
-                <span class="font-bold">{{ step.name }}</span>
-                {% if step.summary %}
-                <div class="text-xs opacity-60 mt-1">
-                    {% if step.name == 'clean' and step.summary %}
-                        {{ step.summary.get('cameras_kept', '?') }} cameras
-                    {% elif step.name == 'train' and step.summary %}
-                        {{ step.summary.get('lod_count', '?') }} LODs
-                    {% elif step.name == 'assemble' and step.summary %}
-                        {{ step.summary.get('chunk_count', '?') }} chunks
+        <div class="card bg-base-100 shadow-xl {% if not step.enabled %}opacity-50{% endif %}">
+            <div class="card-body flex-row items-center justify-between py-4">
+                <!-- Step info -->
+                <div class="flex items-center gap-4">
+                    <!-- Toggle -->
+                    <form method="post" action="/projects/{{ project.path }}/toggle-step">
+                        <input type="hidden" name="step_name" value="{{ step.name }}">
+                        <input type="hidden" name="enabled" value="{{ 'false' if step.enabled else 'true' }}">
+                        <button type="submit" class="tooltip" data-tip="{{ 'Disable' if step.enabled else 'Enable' }}">
+                            <input type="checkbox" class="toggle toggle-primary toggle-sm"
+                                   {% if step.enabled %}checked{% endif %}
+                                   onclick="this.form.submit()" tabindex="-1">
+                        </button>
+                    </form>
+
+                    <!-- Name + status -->
+                    <div>
+                        <span class="font-bold text-lg">
+                            {% if step.name == 'clean' %}Clean COLMAP
+                            {% elif step.name == 'train' %}Train Splats
+                            {% elif step.name == 'assemble' %}Assemble LODs
+                            {% elif step.name == 'deploy' %}Deploy to CDN
+                            {% else %}{{ step.name }}
+                            {% endif %}
+                        </span>
+                        {% if not step.enabled %}
+                            <span class="badge badge-ghost badge-sm ml-2">Skipped</span>
+                        {% elif step.status == 'completed' %}
+                            <span class="badge badge-success badge-sm ml-2">Completed</span>
+                        {% elif step.status == 'failed' %}
+                            <span class="badge badge-error badge-sm ml-2">Failed</span>
+                        {% elif step.status == 'running' %}
+                            <span class="badge badge-warning badge-sm ml-2">Running</span>
+                        {% else %}
+                            <span class="badge badge-ghost badge-sm ml-2">Pending</span>
+                        {% endif %}
+                    </div>
+
+                    <!-- Summary -->
+                    {% if step.summary %}
+                    <div class="text-xs opacity-60">
+                        {% if step.name == 'clean' and step.summary %}
+                            {{ step.summary.get('cameras_kept', '?') }} cameras kept
+                        {% elif step.name == 'train' and step.summary %}
+                            {{ step.summary.get('lod_count', '?') }} LODs trained
+                        {% elif step.name == 'assemble' and step.summary %}
+                            {{ step.summary.get('chunk_count', '?') }} chunks
+                        {% elif step.name == 'deploy' and step.summary %}
+                            {{ step.summary.get('uploaded', '?') }} files uploaded
+                        {% endif %}
+                    </div>
                     {% endif %}
                 </div>
-                {% endif %}
-            </div>
-        </li>
-        {% endfor %}
-    </ul>
-</div>
 
-<!-- Training Status (updated via SSE) -->
-<div id="training-status" class="mt-8"></div>
+                <!-- Run button -->
+                <div>
+                    {% if step.enabled and step.status != 'running' %}
+                        {% set can_run = true %}
+
+                        {# Prerequisites: train needs clean done (or disabled), assemble needs train done, deploy needs assemble done #}
+                        {% if step.name == 'train' %}
+                            {% set clean_step = steps|selectattr('name', 'eq', 'clean')|first %}
+                            {% if clean_step.enabled and clean_step.status != 'completed' %}
+                                {% set can_run = false %}
+                            {% endif %}
+                        {% elif step.name == 'assemble' %}
+                            {% set train_step = steps|selectattr('name', 'eq', 'train')|first %}
+                            {% if train_step.enabled and train_step.status != 'completed' %}
+                                {% set can_run = false %}
+                            {% endif %}
+                        {% elif step.name == 'deploy' %}
+                            {% set assemble_step = steps|selectattr('name', 'eq', 'assemble')|first %}
+                            {% if assemble_step.enabled and assemble_step.status != 'completed' %}
+                                {% set can_run = false %}
+                            {% endif %}
+                        {% endif %}
+
+                        <button class="btn btn-primary btn-sm"
+                                {% if not can_run %}disabled{% endif %}
+                                hx-post="/steps/{{ project.path }}/run/{{ step.name }}"
+                                hx-target="#progress-{{ step.name }}"
+                                hx-swap="innerHTML">
+                            {% if step.status == 'completed' %}Re-run{% elif step.status == 'failed' %}Retry{% else %}Run{% endif %}
+                        </button>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Progress panel (filled by HTMX) -->
+            <div id="progress-{{ step.name }}" class="px-6 pb-4"></div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
 {% endblock %}

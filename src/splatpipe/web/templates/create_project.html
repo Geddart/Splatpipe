@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}New Project — Splatpipe{% endblock %}
+
+{% block content %}
+<div class="flex items-center gap-4 mb-6">
+    <a href="/" class="btn btn-ghost btn-sm">&larr; Back</a>
+    <h1 class="text-3xl font-bold">New Project</h1>
+</div>
+
+{% if error %}
+<div class="alert alert-error mb-6 shadow-lg">
+    <span>{{ error }}</span>
+</div>
+{% endif %}
+
+<form method="post" action="/projects/new">
+    <div class="grid gap-6">
+
+        <!-- Basic Info -->
+        <div class="card bg-base-100 shadow-xl">
+            <div class="card-body">
+                <h2 class="card-title">Project Info</h2>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div class="form-control w-full">
+                        <label class="label"><span class="label-text">Project Name</span></label>
+                        <input type="text" name="name" value="{{ values.get('name', '') }}"
+                               placeholder="My Scan"
+                               class="input input-bordered w-full" required>
+                    </div>
+                    <div class="form-control w-full">
+                        <label class="label"><span class="label-text">COLMAP Data Directory</span></label>
+                        <input type="text" name="colmap_dir" value="{{ values.get('colmap_dir', '') }}"
+                               placeholder="H:\path\to\colmap\export"
+                               class="input input-bordered w-full font-mono text-sm" required>
+                        <label class="label"><span class="label-text-alt">Must contain cameras.txt, images.txt, points3D.txt</span></label>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Training -->
+        <div class="card bg-base-100 shadow-xl">
+            <div class="card-body">
+                <h2 class="card-title">Training</h2>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div class="form-control w-full">
+                        <label class="label"><span class="label-text">Trainer</span></label>
+                        <select name="trainer" class="select select-bordered w-full">
+                            <option value="postshot" {% if values.get('trainer', 'postshot') == 'postshot' %}selected{% endif %}>Postshot</option>
+                            <option value="lichtfeld" {% if values.get('trainer') == 'lichtfeld' %}selected{% endif %}>LichtFeld Studio</option>
+                        </select>
+                    </div>
+                    <div class="form-control w-full">
+                        <label class="label"><span class="label-text">LOD Levels</span></label>
+                        <input type="text" name="lods" value="{{ values.get('lods', '20M,10M,5M,3M,1.5M') }}"
+                               class="input input-bordered w-full font-mono text-sm">
+                        <label class="label"><span class="label-text-alt">Comma-separated: 20M,10M,5M,3M,1.5M (M=million, K=thousand)</span></label>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Step Toggles -->
+        <div class="card bg-base-100 shadow-xl">
+            <div class="card-body">
+                <h2 class="card-title">Pipeline Steps</h2>
+                <p class="text-sm opacity-60 mb-3">Enable or disable steps for this project.</p>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    {% for step_name, label in [('clean', 'Clean COLMAP'), ('train', 'Train Splats'), ('assemble', 'Assemble LODs'), ('deploy', 'Deploy to CDN')] %}
+                    <div class="form-control">
+                        <label class="label cursor-pointer justify-start gap-3">
+                            <input type="checkbox" name="step_{{ step_name }}"
+                                   {% if values.get('step_' + step_name, 'on') %}checked{% endif %}
+                                   class="toggle toggle-primary">
+                            <span class="label-text">{{ label }}</span>
+                        </label>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Submit -->
+        <div class="flex justify-end">
+            <button type="submit" class="btn btn-primary btn-wide">Create Project</button>
+        </div>
+    </div>
+</form>
+{% endblock %}

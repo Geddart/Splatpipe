@@ -12,7 +12,13 @@ from .constants import (
     DEFAULT_LOD_LEVELS,
     PROJECT_FOLDERS,
     FOLDER_COLMAP_SOURCE,
+    STEP_CLEAN,
+    STEP_TRAIN,
+    STEP_ASSEMBLE,
+    STEP_DEPLOY,
 )
+
+ALL_STEPS = [STEP_CLEAN, STEP_TRAIN, STEP_ASSEMBLE, STEP_DEPLOY]
 
 
 class Project:
@@ -33,6 +39,7 @@ class Project:
         trainer: str = "postshot",
         lod_levels: list[dict] | None = None,
         colmap_source: str | None = None,
+        enabled_steps: dict[str, bool] | None = None,
     ) -> "Project":
         """Create a new project with folder scaffolding and initial state."""
         root = Path(root)
@@ -46,12 +53,16 @@ class Project:
                 {"name": n, "max_splats": s} for n, s in DEFAULT_LOD_LEVELS
             ]
 
+        if enabled_steps is None:
+            enabled_steps = {s: True for s in ALL_STEPS}
+
         state = {
             "name": name,
             "trainer": trainer,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "lod_levels": lod_levels,
             "colmap_source": colmap_source,
+            "enabled_steps": enabled_steps,
             "steps": {},
         }
 
@@ -77,6 +88,21 @@ class Project:
     @property
     def lod_levels(self) -> list[dict]:
         return self.state["lod_levels"]
+
+    @property
+    def enabled_steps(self) -> dict[str, bool]:
+        return self.state.get("enabled_steps", {s: True for s in ALL_STEPS})
+
+    def is_step_enabled(self, step_name: str) -> bool:
+        """Check if a step is enabled (defaults to True for unknown steps)."""
+        return self.enabled_steps.get(step_name, True)
+
+    def set_step_enabled(self, step_name: str, enabled: bool) -> None:
+        """Enable or disable a step and save state."""
+        if "enabled_steps" not in self.state:
+            self.state["enabled_steps"] = {s: True for s in ALL_STEPS}
+        self.state["enabled_steps"][step_name] = enabled
+        self._save_state()
 
     def get_folder(self, folder_name: str) -> Path:
         """Get the path to a project subfolder."""

@@ -1,5 +1,7 @@
 """TOML config loader: defaults + per-project merge."""
 
+import shutil
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -7,11 +9,34 @@ import tomli_w
 
 DEFAULTS_PATH = Path(__file__).parent.parent.parent.parent / "config" / "defaults.toml"
 
+# Standard install locations for auto-detection
+TOOL_SEARCH_PATHS: dict[str, list[str]] = {
+    "postshot_cli": [
+        r"C:\Program Files\Jawset Postshot\bin\postshot-cli.exe",
+        r"C:\Program Files (x86)\Jawset Postshot\bin\postshot-cli.exe",
+    ],
+    "lichtfeld_studio": [
+        r"C:\Program Files\LichtFeld-Studio\LichtFeld-Studio.exe",
+        r"C:\Program Files\LichtFeld Studio\LichtFeld-Studio.exe",
+    ],
+    "colmap": [
+        r"C:\Program Files\Colmap\bin\colmap.exe",
+        r"C:\Program Files (x86)\Colmap\bin\colmap.exe",
+        r"C:\Program Files\COLMAP\bin\colmap.exe",
+    ],
+}
+
 
 def load_defaults() -> dict:
     """Load the global defaults.toml."""
     with open(DEFAULTS_PATH, "rb") as f:
         return tomllib.load(f)
+
+
+def save_defaults(config: dict) -> None:
+    """Write the global defaults.toml."""
+    with open(DEFAULTS_PATH, "wb") as f:
+        tomli_w.dump(config, f)
 
 
 def load_project_config(project_toml: Path) -> dict:
@@ -39,6 +64,63 @@ def get_tool_path(config: dict, tool_name: str) -> Path:
     if not path.exists():
         raise FileNotFoundError(f"Tool not found at configured path: {path}")
     return path
+
+
+def auto_detect_tools() -> dict[str, str | None]:
+    """Scan standard install locations for pipeline tools.
+
+    Returns dict of {tool_name: found_path_or_None}.
+    """
+    found: dict[str, str | None] = {}
+
+    for tool_name, search_paths in TOOL_SEARCH_PATHS.items():
+        found[tool_name] = None
+        # Check known paths first
+        for path_str in search_paths:
+            if Path(path_str).exists():
+                found[tool_name] = path_str
+                break
+        # Fall back to PATH lookup
+        if found[tool_name] is None:
+            exe_name = Path(search_paths[0]).name if search_paths else tool_name
+            which_result = shutil.which(exe_name)
+            if which_result:
+                found[tool_name] = which_result
+
+    # splat-transform: check via npx
+    found["splat_transform"] = None
+    which_npx = shutil.which("npx")
+    if which_npx:
+        try:
+            proc = subprocess.run(
+                ["npx", "@playcanvas/splat-transform", "--version"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if proc.returncode == 0:
+                found["splat_transform"] = "splat-transform"
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+    # Also check if splat-transform is on PATH directly
+    if found["splat_transform"] is None:
+        which_st = shutil.which("splat-transform")
+        if which_st:
+            found["splat_transform"] = which_st
+
+    return found
+
+
+def check_dependencies() -> dict[str, bool]:
+    """Check which Python packages are available."""
+    packages = ["numpy", "scipy", "fastapi", "uvicorn", "jinja2",
+                "sse_starlette", "typer", "rich", "tomli_w"]
+    result = {}
+    for pkg in packages:
+        try:
+            __import__(pkg)
+            result[pkg] = True
+        except ImportError:
+            result[pkg] = False
+    return result
 
 
 def _deep_merge(base: dict, override: dict) -> None:
