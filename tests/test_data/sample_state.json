@@ -1,0 +1,111 @@
+{
+  "name": "test_project",
+  "import_mode": "full",
+  "created_at": "2026-01-15T10:00:00+00:00",
+  "current_stage": "review_clean",
+  "stages": {
+    "created": {
+      "status": "completed",
+      "started_at": null,
+      "completed_at": "2026-01-15T10:00:00+00:00",
+      "error": null,
+      "debug_summary": null
+    },
+    "rc_align": {
+      "status": "completed",
+      "started_at": "2026-01-15T10:00:05+00:00",
+      "completed_at": "2026-01-15T10:01:30+00:00",
+      "error": null,
+      "debug_summary": null
+    },
+    "review_alignment": {
+      "status": "completed",
+      "started_at": "2026-01-15T10:01:30+00:00",
+      "completed_at": "2026-01-15T10:02:00+00:00",
+      "error": null,
+      "debug_summary": null
+    },
+    "colmap_export": {
+      "status": "completed",
+      "started_at": "2026-01-15T10:02:00+00:00",
+      "completed_at": "2026-01-15T10:03:45+00:00",
+      "error": null,
+      "debug_summary": null
+    },
+    "colmap_clean": {
+      "status": "completed",
+      "started_at": "2026-01-15T10:03:45+00:00",
+      "completed_at": "2026-01-15T10:05:00+00:00",
+      "error": null,
+      "debug_summary": {
+        "cameras_kept": 3,
+        "points_kept": 20
+      }
+    },
+    "review_clean": {
+      "status": "awaiting_human",
+      "started_at": "2026-01-15T10:05:00+00:00",
+      "completed_at": null,
+      "error": null,
+      "debug_summary": null
+    },
+    "postshot_train": {
+      "status": "pending",
+      "started_at": null,
+      "completed_at": null,
+      "error": null,
+      "debug_summary": null
+    },
+    "review_splats": {
+      "status": "pending",
+      "started_at": null,
+      "completed_at": null,
+      "error": null,
+      "debug_summary": null
+    },
+    "lod_assembly": {
+      "status": "pending",
+      "started_at": null,
+      "completed_at": null,
+      "error": null,
+      "debug_summary": null
+    },
+    "complete": {
+      "status": "pending",
+      "started_at": null,
+      "completed_at": null,
+      "error": null,
+      "debug_summary": null
+    }
+  },
+  "stage_order": [
+    "created",
+    "rc_align",
+    "review_alignment",
+    "colmap_export",
+    "colmap_clean",
+    "review_clean",
+    "postshot_train",
+    "review_splats",
+    "lod_assembly",
+    "complete"
+  ],
+  "lod_levels": [
+    {
+      "name": "lod0_3000k",
+      "max_splats": 3000000
+    },
+    {
+      "name": "lod1_1000k",
+      "max_splats": 1000000
+    },
+    {
+      "name": "lod2_300k",
+      "max_splats": 300000
+    },
+    {
+      "name": "lod3_100k",
+      "max_splats": 100000
+    }
+  ]
+}

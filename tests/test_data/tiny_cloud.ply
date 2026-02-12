@@ -1,0 +1,15 @@
+ply
+format binary_little_endian 1.0
+element vertex 20
+property float x
+property float y
+property float z
+property uchar red
+property uchar green
+property uchar blue
+end_header
+¶уќї…лс?й&їЂЂЂХxй>зыI?mзы=ЂЂЂґИЦ?й&їІќoѕЂЂЂ
+ЧcїХxй>¶уќїЂЂЂmзы=¶уќ?5^є?ЂЂЂ…лс?¶уќїh‘-їЂЂЂu“Иїmзы=
+Чc?ЂЂЂІќo>
+ЧcїґИЦїЂЂЂй&їґИЦ?ХxйѕЂЂЂ¶уќ?ХxйѕзыI?ЂЂЂХxйѕІќo>…лсїЂЂЂзыI?u“И?Іќo>ЂЂЂu“И?…лсїmзыЅЂЂЂ¶уќїh‘-?u“И?ЂЂЂh‘-?¶уќї
+ЧcїЂЂЂІќoѕ…лс?Хxй>ЂЂЂ…лс?й&?¶уќїЂЂЂґИЦїmзыЅзыIїЂЂЂХxй>h‘-ї…лс?ЂЂЂmзыЅ¶уќ?ІќoѕЂЂЂ

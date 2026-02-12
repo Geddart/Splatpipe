@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}{{ project.name }} — Splatpipe{% endblock %}
+
+{% block content %}
+<div class="flex items-center gap-4 mb-6">
+    <a href="/" class="btn btn-ghost btn-sm">&larr; Back</a>
+    <h1 class="text-3xl font-bold">{{ project.name }}</h1>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <!-- Project Info -->
+    <div class="card bg-base-100 shadow-xl">
+        <div class="card-body">
+            <h2 class="card-title">Info</h2>
+            <div class="space-y-2 text-sm">
+                <div><span class="opacity-60">Path:</span> <span class="font-mono text-xs">{{ project.path }}</span></div>
+                <div><span class="opacity-60">Trainer:</span> {{ project.trainer }}</div>
+                <div><span class="opacity-60">Created:</span> {{ project.created_at[:10] }}</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- LOD Levels -->
+    <div class="card bg-base-100 shadow-xl">
+        <div class="card-body">
+            <h2 class="card-title">LOD Levels</h2>
+            <div class="space-y-1">
+                {% for lod in project.lod_levels %}
+                <div class="flex justify-between text-sm">
+                    <span class="font-mono">{{ lod.name }}</span>
+                    <span class="opacity-60">{{ (lod.max_splats / 1000000)|round(1) }}M</span>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="card bg-base-100 shadow-xl">
+        <div class="card-body">
+            <h2 class="card-title">Actions</h2>
+            <div class="space-y-2">
+                <button class="btn btn-primary btn-sm btn-block"
+                        hx-post="/training/{{ project.path }}/start?trainer={{ project.trainer }}"
+                        hx-target="#training-status">
+                    Start Training
+                </button>
+                <a href="https://superspl.at/editor" target="_blank"
+                   class="btn btn-outline btn-sm btn-block">
+                    Open SuperSplat
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Pipeline Steps -->
+<div class="mt-8">
+    <h2 class="text-2xl font-bold mb-4">Pipeline Steps</h2>
+    <ul class="steps steps-vertical lg:steps-horizontal w-full">
+        {% for step in steps %}
+        <li class="step {% if step.status == 'completed' %}step-success{% elif step.status == 'failed' %}step-error{% elif step.status == 'running' %}step-warning{% endif %}">
+            <div>
+                <span class="font-bold">{{ step.name }}</span>
+                {% if step.summary %}
+                <div class="text-xs opacity-60 mt-1">
+                    {% if step.name == 'clean' and step.summary %}
+                        {{ step.summary.get('cameras_kept', '?') }} cameras
+                    {% elif step.name == 'train' and step.summary %}
+                        {{ step.summary.get('lod_count', '?') }} LODs
+                    {% elif step.name == 'assemble' and step.summary %}
+                        {{ step.summary.get('chunk_count', '?') }} chunks
+                    {% endif %}
+                </div>
+                {% endif %}
+            </div>
+        </li>
+        {% endfor %}
+    </ul>
+</div>
+
+<!-- Training Status (updated via SSE) -->
+<div id="training-status" class="mt-8"></div>
+{% endblock %}

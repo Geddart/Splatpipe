@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Settings — Splatpipe{% endblock %}
+
+{% block content %}
+<h1 class="text-3xl font-bold mb-6">Settings</h1>
+
+<div class="grid gap-6">
+    <!-- Tool Paths -->
+    <div class="card bg-base-100 shadow-xl">
+        <div class="card-body">
+            <h2 class="card-title">Tool Paths</h2>
+            <div class="overflow-x-auto">
+                <table class="table table-sm">
+                    <thead>
+                        <tr>
+                            <th>Tool</th>
+                            <th>Path</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for name, path in config.get('tools', {}).items() %}
+                        <tr>
+                            <td class="font-mono text-sm">{{ name }}</td>
+                            <td class="font-mono text-xs opacity-80">{{ path or '(not configured)' }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <p class="text-sm opacity-60 mt-2">Edit <code>config/defaults.toml</code> to change tool paths.</p>
+        </div>
+    </div>
+
+    <!-- COLMAP Clean Settings -->
+    <div class="card bg-base-100 shadow-xl">
+        <div class="card-body">
+            <h2 class="card-title">COLMAP Clean</h2>
+            <div class="overflow-x-auto">
+                <table class="table table-sm">
+                    <tbody>
+                        {% for key, val in config.get('colmap_clean', {}).items() %}
+                        <tr>
+                            <td class="font-mono text-sm">{{ key }}</td>
+                            <td class="font-mono text-xs">{{ val }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Trainer Settings -->
+    <div class="card bg-base-100 shadow-xl">
+        <div class="card-body">
+            <h2 class="card-title">Trainers</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <h3 class="font-bold text-sm mb-2">Postshot</h3>
+                    <div class="text-xs font-mono opacity-80">
+                        {% for key, val in config.get('postshot', {}).items() %}
+                        <div>{{ key }}: {{ val if val else '(empty)' }}</div>
+                        {% endfor %}
+                    </div>
+                </div>
+                <div>
+                    <h3 class="font-bold text-sm mb-2">LichtFeld Studio</h3>
+                    <div class="text-xs font-mono opacity-80">
+                        {% for key, val in config.get('lichtfeld', {}).items() %}
+                        <div>{{ key }}: {{ val }}</div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

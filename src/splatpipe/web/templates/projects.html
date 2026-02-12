@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Projects — Splatpipe{% endblock %}
+
+{% block content %}
+<h1 class="text-3xl font-bold mb-6">Projects</h1>
+
+{% if projects %}
+<div class="grid gap-4">
+    {% for project in projects %}
+    <div class="card bg-base-100 shadow-xl"
+         hx-get="/projects/{{ project.path }}/detail"
+         hx-target="#detail-panel"
+         hx-swap="innerHTML"
+         class="cursor-pointer hover:bg-base-300 transition-colors">
+        <div class="card-body">
+            <div class="flex justify-between items-center">
+                <div>
+                    <h2 class="card-title">{{ project.name }}</h2>
+                    <p class="text-sm opacity-60">{{ project.trainer }} &middot; {{ project.lod_count }} LODs</p>
+                </div>
+                <div class="flex gap-2">
+                    {% for step_name in ['clean', 'train', 'assemble', 'deploy'] %}
+                        {% set step = project.steps.get(step_name) %}
+                        {% if step and step.status == 'completed' %}
+                            <div class="badge badge-success">{{ step_name }}</div>
+                        {% elif step and step.status == 'failed' %}
+                            <div class="badge badge-error">{{ step_name }}</div>
+                        {% else %}
+                            <div class="badge badge-ghost">{{ step_name }}</div>
+                        {% endif %}
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="alert alert-info">
+    <span>No projects found. Create one with: <code>splatpipe init &lt;colmap_dir&gt;</code></span>
+</div>
+{% endif %}
+
+<div id="detail-panel" class="mt-8"></div>
+{% endblock %}

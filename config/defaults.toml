@@ -1,0 +1,26 @@
+[tools]
+postshot_cli = 'C:\Program Files\Jawset Postshot\bin\postshot-cli.exe'
+lichtfeld_studio = ""
+colmap = 'C:\Program Files\Colmap\bin\colmap.exe'
+splat_transform = "splat-transform"
+supersplat_url = "https://superspl.at/editor"
+
+[colmap_clean]
+outlier_threshold_auto = true
+outlier_threshold_fixed = 100.0
+outlier_percentile = 0.99
+outlier_multiplier = 2.5
+kdtree_threshold = 0.001
+coordinate_transform = [1, 0, 0, 0, 0, -1, 0, 1, 0]  # PLY Z-up -> COLMAP: X, -Z, Y
+
+[postshot]
+profile = "Splat3"
+login = ""
+password = ""
+
+[lichtfeld]
+strategy = "mcmc"
+iterations = 30000
+
+[paths]
+projects_root = ""
