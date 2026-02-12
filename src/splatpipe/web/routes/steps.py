@@ -72,16 +72,18 @@ async def step_progress(request: Request, project_path: str, step_name: str):
 
         try:
             if step_name == STEP_CLEAN:
-                yield from _wrap_sync_events(
+                for event in _wrap_sync_events(
                     await _run_clean(proj, config), step_name
-                )
+                ):
+                    yield event
             elif step_name == STEP_TRAIN:
                 async for event in _run_train(proj, config):
                     yield event
             elif step_name == STEP_ASSEMBLE:
-                yield from _wrap_sync_events(
+                for event in _wrap_sync_events(
                     await _run_assemble(proj, config), step_name
-                )
+                ):
+                    yield event
             elif step_name == STEP_DEPLOY:
                 async for event in _run_deploy(proj, config):
                     yield event
