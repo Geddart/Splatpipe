@@ -451,11 +451,14 @@ class LodAssemblyStep(PipelineStep):
         splat_transform_mjs = (
             Path("node_modules/@playcanvas/splat-transform/bin/cli.mjs").resolve()
         )
+        assemble_settings = self.project.step_settings.get("assemble", {})
+        sh_bands = int(assemble_settings.get("sh_bands", 0))
         cmd = [
             "node", "--max-old-space-size=32000",
             str(splat_transform_mjs),
         ] + input_args + [
             "--filter-nan",
+            "--filter-harmonics", str(sh_bands),
             str(lod_meta_path),
         ]
 
@@ -584,11 +587,14 @@ class LodAssemblyStep(PipelineStep):
         splat_transform_mjs = (
             Path("node_modules/@playcanvas/splat-transform/bin/cli.mjs").resolve()
         )
+        assemble_settings = self.project.step_settings.get("assemble", {})
+        sh_bands = int(assemble_settings.get("sh_bands", 0))
         cmd = [
             "node", "--max-old-space-size=32000",
             str(splat_transform_mjs),
         ] + input_args + [
             "--filter-nan",
+            "--filter-harmonics", str(sh_bands),
             str(lod_meta_path),
         ]
 

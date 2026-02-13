@@ -49,7 +49,7 @@ class RunnerSnapshot:
     current_step: str  # e.g. "train"
     step_label: str    # e.g. "Running: Train Splats (2/3)"
     progress: float    # 0.0–1.0
-    message: str       # e.g. "LOD lod2_5000k (1/3): Training — Step 234/500 kSteps"
+    message: str       # e.g. "LOD lod2 (1/3): Training — Step 234/500 kSteps"
     error: str | None
     updated_at: float  # time.monotonic()
 

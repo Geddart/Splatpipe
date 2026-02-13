@@ -35,16 +35,16 @@ class TestParseLods:
         """Parse '20M,10M,5M' into LOD dicts."""
         lods = _parse_lods("20M,10M,5M")
         assert len(lods) == 3
-        assert lods[0]["name"] == "lod0_20000k"
+        assert lods[0]["name"] == "lod0"
         assert lods[0]["max_splats"] == 20_000_000
-        assert lods[1]["name"] == "lod1_10000k"
+        assert lods[1]["name"] == "lod1"
         assert lods[2]["max_splats"] == 5_000_000
 
     def test_k_suffix(self):
         """Parse '500K' into 500,000 splats."""
         lods = _parse_lods("500K")
         assert lods[0]["max_splats"] == 500_000
-        assert lods[0]["name"] == "lod0_500k"
+        assert lods[0]["name"] == "lod0"
 
     def test_raw_integer(self):
         """Parse raw integer string."""
@@ -63,12 +63,12 @@ class TestParseLods:
 class TestParseSingleLod:
     def test_millions(self):
         lod = _parse_single_lod("5M", 2)
-        assert lod["name"] == "lod2_5000k"
+        assert lod["name"] == "lod2"
         assert lod["max_splats"] == 5_000_000
 
     def test_thousands(self):
         lod = _parse_single_lod("500K", 0)
-        assert lod["name"] == "lod0_500k"
+        assert lod["name"] == "lod0"
         assert lod["max_splats"] == 500_000
 
 
@@ -76,18 +76,30 @@ class TestRenumberLods:
     def test_renumbers_after_removal(self):
         """After removing middle LOD, names are renumbered."""
         lods = [
-            {"name": "lod0_20000k", "max_splats": 20_000_000},
-            {"name": "lod2_5000k", "max_splats": 5_000_000},  # was index 2
+            {"name": "lod0", "max_splats": 20_000_000},
+            {"name": "lod2", "max_splats": 5_000_000},  # was index 2
         ]
         result = _renumber_lods(lods)
-        assert result[0]["name"] == "lod0_20000k"
-        assert result[1]["name"] == "lod1_5000k"  # renumbered to 1
+        assert result[0]["name"] == "lod0"
+        assert result[1]["name"] == "lod1"  # renumbered to 1
 
     def test_preserves_splat_counts(self):
         """Renumbering doesn't change max_splats."""
         lods = [{"name": "old", "max_splats": 3_000_000}]
         result = _renumber_lods(lods)
         assert result[0]["max_splats"] == 3_000_000
+
+    def test_preserves_extra_fields(self):
+        """Renumbering preserves enabled, train_steps, and other fields."""
+        lods = [
+            {"name": "lod0", "max_splats": 20_000_000, "enabled": False, "train_steps": 50},
+            {"name": "lod1", "max_splats": 5_000_000, "enabled": True},
+        ]
+        result = _renumber_lods(lods)
+        assert result[0]["enabled"] is False
+        assert result[0]["train_steps"] == 50
+        assert result[1]["enabled"] is True
+        assert result[1]["name"] == "lod1"
 
 
 class TestFolderStats:

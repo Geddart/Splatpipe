@@ -50,7 +50,7 @@ class Trainer(ABC):
         Args:
             source_dir: COLMAP directory or other input
             output_dir: Where to write training outputs
-            lod_name: e.g. "lod0_3000k"
+            lod_name: e.g. "lod0"
             max_splats: Maximum number of Gaussians
             num_images: Number of input images (for auto-step computation)
 

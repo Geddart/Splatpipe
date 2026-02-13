@@ -107,6 +107,64 @@ class TestLodAssembly:
         assert "playcanvas" in html
         assert "unified: true" in html
 
+    def test_assembly_includes_filter_harmonics(self, tmp_path):
+        """Assembly passes --filter-harmonics from step_settings."""
+        from splatpipe.core.project import Project
+
+        project = Project.create(tmp_path / "proj", "Test")
+        config = {"tools": {"splat_transform": "@playcanvas/splat-transform"}}
+
+        review_dir = project.get_folder("04_review")
+        review_dir.mkdir(parents=True, exist_ok=True)
+        _create_fake_ply(review_dir / "lod0_reviewed.ply")
+
+        # Set SH bands to 2 via step_settings
+        project.set_step_settings("assemble", {"sh_bands": 2})
+
+        step = LodAssemblyStep(project, config)
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "Done"
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            output_dir = project.get_folder("05_output")
+            output_dir.mkdir(parents=True, exist_ok=True)
+            step.run(output_dir)
+
+        call_cmd = mock_run.call_args[0][0]
+        # --filter-harmonics 2 should appear in the command
+        idx = call_cmd.index("--filter-harmonics")
+        assert call_cmd[idx + 1] == "2"
+
+    def test_assembly_filter_harmonics_default(self, tmp_path):
+        """Assembly defaults to --filter-harmonics 0 when no step_settings."""
+        from splatpipe.core.project import Project
+
+        project = Project.create(tmp_path / "proj", "Test")
+        config = {"tools": {"splat_transform": "@playcanvas/splat-transform"}}
+
+        review_dir = project.get_folder("04_review")
+        review_dir.mkdir(parents=True, exist_ok=True)
+        _create_fake_ply(review_dir / "lod0_reviewed.ply")
+
+        step = LodAssemblyStep(project, config)
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "Done"
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            output_dir = project.get_folder("05_output")
+            output_dir.mkdir(parents=True, exist_ok=True)
+            step.run(output_dir)
+
+        call_cmd = mock_run.call_args[0][0]
+        idx = call_cmd.index("--filter-harmonics")
+        assert call_cmd[idx + 1] == "0"
+
     def test_assembly_no_viewer_on_failure(self, tmp_path):
         """Assembly does NOT generate viewer when splat-transform fails."""
         from splatpipe.core.project import Project

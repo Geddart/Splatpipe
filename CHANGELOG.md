@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-02-14
+
+### Added
+- SH bands setting: configurable spherical harmonics filter (0–3) on Assemble step, defaults to 0 (no SH, smallest files)
+- Inline LOD splat count editing in Train step settings (accepts M/K format)
+
+### Changed
+- LOD folder names simplified from `lod0_20000k` to `lod0` (decoupled from splat count)
+- Default LOD0 bumped from 20M to 25M for new projects
+
+### Fixed
+- LOD renumbering now preserves per-LOD settings (enabled, train steps)
+
 ## [0.2.0] - 2026-02-13
 
 ### Added
@@ -77,7 +90,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Windows path normalization for runner lookup (URL forward-slash vs `Path()` backslash)
 - Postshot progress parser matched real v1.0.185 output format
 
-[Unreleased]: https://github.com/Geddart/Splatpipe/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Geddart/Splatpipe/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Geddart/Splatpipe/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Geddart/Splatpipe/compare/v0.1.5...v0.2.0
 [0.1.5]: https://github.com/Geddart/Splatpipe/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/Geddart/Splatpipe/compare/v0.1.3...v0.1.4

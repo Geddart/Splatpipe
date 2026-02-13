@@ -37,9 +37,9 @@ strategy = "mcmc"
 iterations = 30000
 
 [bunny]
-storage_zone = ""
-storage_password = ""
-cdn_url = ""
+storage_zone = "splatpipe"
+storage_password = "9684d80c-c7ee-43d7-b4480cd12b7e-3ea6-40de"
+cdn_url = "https://splatpipe-cdn.b-cdn.net"
 
 [paths]
 projects_root = "H:\\001_ProjectCache\\660 Drone\\_Photogrammetry"

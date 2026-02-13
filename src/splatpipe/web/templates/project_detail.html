@@ -481,6 +481,22 @@
                         <!-- Collapsible settings: Assemble LODs -->
                         {% if step.name == 'assemble' %}
                         <div id="settings-assemble" class="hidden mt-4 pt-4 border-t border-base-300">
+                            <!-- SH Bands -->
+                            <div class="form-control mb-4">
+                                <label class="label py-0"><span class="label-text text-xs">SH Bands</span></label>
+                                <form hx-post="/projects/{{ project.path }}/update-step-settings"
+                                      hx-vals='{"step_name": "assemble"}' hx-swap="none">
+                                    <select name="sh_bands" class="select select-bordered select-xs w-48"
+                                            onchange="this.form.requestSubmit()">
+                                        <option value="0" {% if step_defaults.assemble.sh_bands == 0 %}selected{% endif %}>0 — No SH (smallest)</option>
+                                        <option value="1" {% if step_defaults.assemble.sh_bands == 1 %}selected{% endif %}>1 — Basic</option>
+                                        <option value="2" {% if step_defaults.assemble.sh_bands == 2 %}selected{% endif %}>2 — Medium</option>
+                                        <option value="3" {% if step_defaults.assemble.sh_bands == 3 %}selected{% endif %}>3 — Full (largest)</option>
+                                    </select>
+                                </form>
+                                <p class="text-xs opacity-40 mt-1">Spherical harmonics bands to include. Lower = smaller files, less view-dependent color.</p>
+                            </div>
+
                             <div class="mb-2">
                                 <span class="text-xs font-bold opacity-60 uppercase tracking-wider">LOD Viewer Distances (meters)</span>
                             </div>

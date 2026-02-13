@@ -11,8 +11,19 @@
                    hx-target="#lod-list"
                    hx-swap="outerHTML">
             {% endif %}
-            <span class="font-mono {% if not lod.get('enabled', true) %}opacity-40 line-through{% endif %}">{{ lod.name }}</span>
+            <span class="font-mono w-12 {% if not lod.get('enabled', true) %}opacity-40 line-through{% endif %}">{{ lod.name }}</span>
+            {% if project_path is defined %}
+            <input type="text"
+                   value="{{ "%.1f"|format(lod.max_splats / 1000000) }}M"
+                   class="input input-bordered input-xs w-16 font-mono text-right"
+                   hx-post="/projects/{{ project_path }}/update-lod-splats"
+                   hx-vals='{"index": "{{ loop.index0 }}"}'
+                   hx-target="#lod-list" hx-swap="outerHTML"
+                   hx-trigger="change" name="splats"
+                   title="Splat count (e.g. 25M, 500K)">
+            {% else %}
             <span class="opacity-60">{{ "%.1f"|format(lod.max_splats / 1000000) }}M</span>
+            {% endif %}
         </div>
         <div class="flex items-center gap-1">
             {% if project_path is defined %}

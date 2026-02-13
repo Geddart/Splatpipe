@@ -506,6 +506,31 @@ class TestCdnName:
         assert "my_cdn_folder" in r.text
 
 
+class TestUpdateLodSplats:
+    def test_update_splats(self, web_env):
+        """POST update-lod-splats changes the LOD's max_splats."""
+        path = str(web_env["project"].root)
+        r = web_env["client"].post(f"/projects/{path}/update-lod-splats", data={
+            "index": "0",
+            "splats": "30M",
+        })
+        assert r.status_code == 200
+        proj = Project(web_env["project"].root)
+        assert proj.lod_levels[0]["max_splats"] == 30_000_000
+        # Name should remain lod0 (index-based)
+        assert proj.lod_levels[0]["name"] == "lod0"
+
+    def test_update_splats_invalid(self, web_env):
+        """POST update-lod-splats with bad format returns error toast."""
+        path = str(web_env["project"].root)
+        r = web_env["client"].post(f"/projects/{path}/update-lod-splats", data={
+            "index": "0",
+            "splats": "abc",
+        })
+        assert r.status_code == 200
+        assert "HX-Trigger" in r.headers
+
+
 class TestBunnySettings:
     def test_settings_saves_bunny_credentials(self, web_env):
         """POST /settings/ saves bunny CDN credentials to TOML config."""

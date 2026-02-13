@@ -13,7 +13,7 @@ console = Console()
 
 
 def _parse_lods(lods_str: str) -> list[dict]:
-    """Parse LOD string like '20M,10M,5M,2M,1M,500K' into LOD level dicts."""
+    """Parse LOD string like '25M,10M,5M,2M,1M,500K' into LOD level dicts."""
     levels = []
     for i, part in enumerate(lods_str.split(",")):
         part = part.strip().upper()
@@ -23,8 +23,7 @@ def _parse_lods(lods_str: str) -> list[dict]:
             splats = int(float(part[:-1]) * 1_000)
         else:
             splats = int(part)
-        ksplats = splats // 1000
-        name = f"lod{i}_{ksplats}k"
+        name = f"lod{i}"
         levels.append({"name": name, "max_splats": splats})
     return levels
 
@@ -48,9 +47,9 @@ def init(
         help="Training backend to use",
     ),
     lods: str = typer.Option(
-        "20M,10M,5M,2M,1M,500K",
+        "25M,10M,5M,2M,1M,500K",
         "--lods",
-        help="LOD levels as comma-separated values (e.g. '20M,10M,5M,2M,1M,500K')",
+        help="LOD levels as comma-separated values (e.g. '25M,10M,5M,2M,1M,500K')",
     ),
     output: Path = typer.Option(
         None,

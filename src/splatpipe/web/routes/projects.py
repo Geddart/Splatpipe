@@ -101,7 +101,7 @@ def list_all_projects() -> list[dict]:
 
 
 def _parse_lods(lods_str: str) -> list[dict]:
-    """Parse LOD string like '20M,10M,5M,2M,1M,500K' into LOD level dicts."""
+    """Parse LOD string like '25M,10M,5M,2M,1M,500K' into LOD level dicts."""
     levels = []
     for i, part in enumerate(lods_str.split(",")):
         part = part.strip().upper()
@@ -111,8 +111,7 @@ def _parse_lods(lods_str: str) -> list[dict]:
             splats = int(float(part[:-1]) * 1_000)
         else:
             splats = int(part)
-        ksplats = splats // 1000
-        name = f"lod{i}_{ksplats}k"
+        name = f"lod{i}"
         levels.append({"name": name, "max_splats": splats})
     return levels
 
@@ -126,17 +125,17 @@ def _parse_single_lod(lod_str: str, index: int) -> dict:
         splats = int(float(part[:-1]) * 1_000)
     else:
         splats = int(part)
-    ksplats = splats // 1000
-    name = f"lod{index}_{ksplats}k"
+    name = f"lod{index}"
     return {"name": name, "max_splats": splats}
 
 
 def _renumber_lods(lods: list[dict]) -> list[dict]:
-    """Renumber LOD names after add/remove."""
+    """Renumber LOD names after add/remove, preserving extra fields."""
     result = []
     for i, lod in enumerate(lods):
-        ksplats = lod["max_splats"] // 1000
-        result.append({"name": f"lod{i}_{ksplats}k", "max_splats": lod["max_splats"]})
+        entry = dict(lod)
+        entry["name"] = f"lod{i}"
+        result.append(entry)
     return result
 
 
@@ -172,7 +171,7 @@ async def create_project(request: Request):
     name = str(form.get("name", "")).strip()
     colmap_dir_str = str(form.get("colmap_dir", "")).strip()
     trainer = str(form.get("trainer", "postshot"))
-    lods_str = str(form.get("lods", "20M,10M,5M,2M,1M,500K"))
+    lods_str = str(form.get("lods", "25M,10M,5M,2M,1M,500K"))
 
     values = {
         "name": name,
@@ -630,7 +629,11 @@ async def project_detail(request: Request, project_path: str):
         "bunny_cdn_url": bunny_cfg.get("cdn_url", ""),
         "bunny_has_credentials": bool(bunny_cfg.get("storage_zone") and bunny_cfg.get("storage_password")),
     }
-    step_defaults = {"clean": _Obj(clean_defaults), "train": _Obj(train_defaults), "export": _Obj(export_defaults)}
+    assemble_overrides = step_overrides.get("assemble", {})
+    assemble_defaults = {
+        "sh_bands": int(assemble_overrides.get("sh_bands", 0)),
+    }
+    step_defaults = {"clean": _Obj(clean_defaults), "train": _Obj(train_defaults), "assemble": _Obj(assemble_defaults), "export": _Obj(export_defaults)}
 
     # Build proper subfolder paths (avoid Jinja2 string concat with mixed slashes)
     project_root = proj.root
@@ -712,6 +715,35 @@ async def update_lod_train_steps(request: Request, project_path: str):
         proj.set_lod_levels(levels)
         return _toast(f"LOD {levels[index]['name']} train steps: {'auto' if train_steps == 0 else f'{train_steps} kSteps'}")
     return _toast("Invalid LOD index", "error")
+
+
+@router.post("/{project_path:path}/update-lod-splats")
+async def update_lod_splats(request: Request, project_path: str):
+    """Update a LOD's splat count inline."""
+    form = await request.form()
+    index = int(form.get("index", -1))
+    splats_str = str(form.get("splats", "")).strip()
+    if not splats_str:
+        return _toast("Splat count required", "error")
+    proj = Project(Path(project_path))
+    levels = list(proj.lod_levels)
+    if not (0 <= index < len(levels)):
+        return _toast("Invalid LOD index", "error")
+    try:
+        parsed = _parse_single_lod(splats_str, index)
+    except (ValueError, IndexError):
+        return _toast("Invalid format (e.g. 25M, 500K)", "error")
+    levels[index]["max_splats"] = parsed["max_splats"]
+    levels = _renumber_lods(levels)
+    proj.set_lod_levels(levels)
+    return templates.TemplateResponse("partials/lod_list.html", {
+        "request": request,
+        "lod_levels": levels,
+        "project_path": project_path,
+    }, headers={"HX-Trigger": json.dumps({"showToast": {
+        "message": f"LOD {index} set to {splats_str}",
+        "level": "success",
+    }})})
 
 
 # --- Per-step settings ---

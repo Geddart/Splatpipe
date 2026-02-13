@@ -16,14 +16,14 @@ PROJECT_FOLDERS = [
     FOLDER_OUTPUT,
 ]
 
-# Default LOD configurations: (name_suffix, max_splats)
+# Default LOD configurations: (name, max_splats)
 DEFAULT_LOD_LEVELS = [
-    ("lod0_20000k", 20_000_000),
-    ("lod1_10000k", 10_000_000),
-    ("lod2_5000k",   5_000_000),
-    ("lod3_2000k",   2_000_000),
-    ("lod4_1000k",   1_000_000),
-    ("lod5_500k",      500_000),
+    ("lod0", 25_000_000),
+    ("lod1", 10_000_000),
+    ("lod2",  5_000_000),
+    ("lod3",  2_000_000),
+    ("lod4",  1_000_000),
+    ("lod5",    500_000),
 ]
 
 # Step names used in state.json
