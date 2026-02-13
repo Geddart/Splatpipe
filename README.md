@@ -89,9 +89,10 @@ splatpipe web                   # Launch web dashboard
 |------|---------|---------|
 | **Python 3.11+** | Runtime | python.org |
 | **Postshot CLI** | Gaussian splat training | [jawset.com](https://jawset.com) |
-| **COLMAP** | (used upstream for photogrammetry) | [colmap.github.io](https://colmap.github.io) |
 | **LichtFeld Studio** | Alternative open-source trainer | [github.com/MrNeRF](https://github.com/MrNeRF/LichtFeld-Studio) |
 | **Node.js** | For `splat-transform` LOD assembly | [nodejs.org](https://nodejs.org) |
+
+> **Input data:** Splatpipe expects COLMAP export folders as input. You need to run photogrammetry (e.g. with [COLMAP](https://colmap.github.io) or Reality Capture) before using Splatpipe.
 
 > The web dashboard auto-detects tool paths on first run — no manual config needed if tools are installed in default locations.
 
