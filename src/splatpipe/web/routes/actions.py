@@ -9,7 +9,7 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
-from ...core.config import load_defaults, get_postshot_gui, get_lichtfeld_exe, get_colmap_exe
+from ...core.config import load_defaults, get_postshot_gui, get_lichtfeld_exe
 
 router = APIRouter(prefix="/actions", tags=["actions"])
 
@@ -73,7 +73,7 @@ async def open_file(request: Request, project_path: str):
 
 @router.post("/{project_path:path}/open-tool")
 async def open_tool(request: Request, project_path: str):
-    """Launch an external tool (Postshot, LichtFeld, COLMAP, SuperSplat)."""
+    """Launch an external tool (Postshot, LichtFeld, SuperSplat)."""
     form = await request.form()
     tool = str(form.get("tool", ""))
     config = load_defaults()
@@ -92,14 +92,6 @@ async def open_tool(request: Request, project_path: str):
             lf_exe = get_lichtfeld_exe(config)
             subprocess.Popen([str(lf_exe)], start_new_session=True)
             return _toast("Launched LichtFeld Studio")
-        except (ValueError, FileNotFoundError) as e:
-            return _toast(str(e), "error")
-
-    elif tool == "colmap":
-        try:
-            colmap_exe = get_colmap_exe(config)
-            subprocess.Popen([str(colmap_exe), "gui"], start_new_session=True)
-            return _toast("Launched COLMAP GUI")
         except (ValueError, FileNotFoundError) as e:
             return _toast(str(e), "error")
 

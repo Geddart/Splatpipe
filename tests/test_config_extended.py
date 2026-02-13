@@ -8,7 +8,6 @@ import tomli_w
 from splatpipe.core.config import (
     get_postshot_cli,
     get_postshot_gui,
-    get_colmap_exe,
     save_defaults,
     load_defaults,
     save_project_config,
@@ -69,30 +68,6 @@ class TestGetPostshotGui:
         with pytest.raises(FileNotFoundError, match="Postshot GUI not found"):
             get_postshot_gui(config)
 
-
-class TestGetColmapExe:
-    def test_valid_root(self, tmp_path):
-        """Returns bin/colmap.exe when root and exe exist."""
-        bin_dir = tmp_path / "colmap" / "bin"
-        bin_dir.mkdir(parents=True)
-        (bin_dir / "colmap.exe").write_text("")
-        config = {"tools": {"colmap": str(tmp_path / "colmap")}}
-        result = get_colmap_exe(config)
-        assert result == bin_dir / "colmap.exe"
-
-    def test_missing_config(self):
-        """Raises ValueError when colmap not in config."""
-        with pytest.raises(ValueError, match="not configured"):
-            get_colmap_exe({"tools": {}})
-
-    def test_root_exists_no_exe(self, tmp_path):
-        """Raises FileNotFoundError when root exists but binary missing."""
-        root = tmp_path / "colmap"
-        root.mkdir()
-        (root / "bin").mkdir()
-        config = {"tools": {"colmap": str(root)}}
-        with pytest.raises(FileNotFoundError, match="COLMAP not found"):
-            get_colmap_exe(config)
 
 
 # --- Save / roundtrip ---

@@ -9,7 +9,7 @@ CLI-first Gaussian splatting pipeline. Takes COLMAP data through: auto-clean →
 ```bash
 cd H:\001_ProjectCache\1000_Coding\Splatpipe
 pip install -e ".[dev]"
-pytest tests/ -v                    # Run tests (234 tests, ~11s)
+pytest tests/ -v                    # Run tests (231 tests, ~11s)
 splatpipe --help                    # CLI commands
 splatpipe web                       # Launch dashboard
 ```
@@ -160,9 +160,18 @@ This project uses [Semantic Versioning](https://semver.org/) and [Keep a Changel
    - Pre-1.0: breaking changes are allowed in MINOR bumps, but still document them clearly
 4. **No commit without a CHANGELOG entry** for user-facing changes. Internal-only changes (CI config, test refactors, CLAUDE.md updates) are exempt.
 
+### Pre-push / Pre-release Documentation Check
+
+**Before every push to GitHub or release**, verify that documentation is accurate:
+1. **Test count** — run `pytest --co -q` and update the count in `CLAUDE.md` (Quick Start + Tests sections) and `README.md` (badge + Development section) if it changed.
+2. **CLAUDE.md Package Layout** — verify against actual files on disk. New files/modules must be listed, removed ones must be deleted from the tree.
+3. **README.md** — verify the pipeline diagram, CLI reference, and requirements table still match reality.
+4. **CHANGELOG.md** — verify `[Unreleased]` has entries for all user-facing changes since the last release.
+
 ### Release Process
 
 ```bash
+# 0. Run pre-push documentation check (see above)
 # 1. Move [Unreleased] entries to a new version section in CHANGELOG.md
 # 2. Update version in pyproject.toml
 # 3. Commit: "Release vX.Y.Z"
@@ -274,7 +283,7 @@ Key config sections: `[tools]`, `[colmap_clean]`, `[postshot]`, `[lichtfeld]`, `
 ## Tests
 
 ```bash
-pytest tests/ -v              # All 234 tests
+pytest tests/ -v              # All 231 tests
 pytest tests/ -k colmap       # Just COLMAP tests
 pytest tests/ -k integration  # End-to-end with tiny data
 pytest tests/ -k trainers     # Trainer abstraction tests

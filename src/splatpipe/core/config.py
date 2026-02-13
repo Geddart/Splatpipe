@@ -19,11 +19,6 @@ TOOL_SEARCH_PATHS: dict[str, list[str]] = {
         r"C:\Program Files\LichtFeld-Studio",
         r"C:\Program Files\LichtFeld Studio",
     ],
-    "colmap": [
-        r"C:\Program Files\Colmap",
-        r"C:\Program Files (x86)\Colmap",
-        r"C:\Program Files\COLMAP",
-    ],
 }
 
 
@@ -92,14 +87,6 @@ def get_lichtfeld_exe(config: dict) -> Path:
         raise FileNotFoundError(f"LichtFeld Studio not found: {exe}")
     return exe
 
-
-def get_colmap_exe(config: dict) -> Path:
-    """Get the COLMAP executable from the configured root folder."""
-    root = get_tool_path(config, "colmap")
-    exe = root / "bin" / "colmap.exe"
-    if not exe.exists():
-        raise FileNotFoundError(f"COLMAP not found: {exe}")
-    return exe
 
 
 def auto_detect_tools() -> dict[str, str | None]:

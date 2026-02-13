@@ -24,7 +24,6 @@ CONFIG_SCHEMA: dict[str, dict[str, str]] = {
     "tools": {
         "postshot": "str",
         "lichtfeld_studio": "str",
-        "colmap": "str",
         "splat_transform": "str",
         "supersplat_url": "str",
     },

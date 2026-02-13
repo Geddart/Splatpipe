@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-02-13
+
+### Removed
+- COLMAP tool path setting and GUI launch button (Splatpipe reads COLMAP output files but never calls the COLMAP executable)
+
 ## [0.1.0] - 2026-02-13
 
 ### Added
@@ -31,5 +36,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Windows path normalization for runner lookup (URL forward-slash vs `Path()` backslash)
 - Postshot progress parser matched real v1.0.185 output format
 
-[Unreleased]: https://github.com/Geddart/Splatpipe/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Geddart/Splatpipe/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/Geddart/Splatpipe/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Geddart/Splatpipe/releases/tag/v0.1.0

@@ -1,7 +1,6 @@
 [tools]
 postshot = "C:\\Program Files\\Jawset Postshot"
 lichtfeld_studio = "C:\\Program Files\\LichtFeld-Studio"
-colmap = "C:\\Program Files\\Colmap"
 splat_transform = "splat-transform"
 supersplat_url = "https://superspl.at/editor"
 
