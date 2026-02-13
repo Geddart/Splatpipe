@@ -407,7 +407,7 @@ class TestActions:
         """POST open-folder with nonexistent path returns error toast."""
         path = str(web_env["project"].root)
         r = web_env["client"].post(f"/actions/{path}/open-folder", data={
-            "folder": r"C:\nonexistent\path\definitely",
+            "folder": "/nonexistent/path/definitely",
         })
         assert r.status_code == 200
         assert "error" in r.headers.get("hx-trigger", "").lower()
