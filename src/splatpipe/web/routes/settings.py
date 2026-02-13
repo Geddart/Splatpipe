@@ -43,6 +43,11 @@ CONFIG_SCHEMA: dict[str, dict[str, str]] = {
         "strategy": "str",
         "iterations": "int",
     },
+    "bunny": {
+        "storage_zone": "str",
+        "storage_password": "str",
+        "cdn_url": "str",
+    },
 }
 
 

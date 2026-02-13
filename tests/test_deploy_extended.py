@@ -86,6 +86,52 @@ class TestLoadBunnyEnv:
         # No crash, returns whatever env vars provide (likely empty)
         assert isinstance(env, dict)
 
+    def test_toml_config_fallback(self, tmp_path, monkeypatch):
+        """Falls back to defaults.toml [bunny] section when no .env or env vars."""
+        import tomli_w
+        toml_path = tmp_path / "defaults.toml"
+        config = {
+            "bunny": {
+                "storage_zone": "toml-zone",
+                "storage_password": "toml-pw",
+                "cdn_url": "https://toml-cdn.example.com",
+            },
+        }
+        with open(toml_path, "wb") as f:
+            tomli_w.dump(config, f)
+        monkeypatch.setattr("splatpipe.core.config.DEFAULTS_PATH", toml_path)
+        # Clear any env vars
+        monkeypatch.delenv("BUNNY_STORAGE_ZONE", raising=False)
+        monkeypatch.delenv("BUNNY_STORAGE_PASSWORD", raising=False)
+        monkeypatch.delenv("BUNNY_CDN_URL", raising=False)
+        env = load_bunny_env(tmp_path / "nonexistent.env")
+        assert env["BUNNY_STORAGE_ZONE"] == "toml-zone"
+        assert env["BUNNY_STORAGE_PASSWORD"] == "toml-pw"
+        assert env["BUNNY_CDN_URL"] == "https://toml-cdn.example.com"
+
+    def test_env_file_takes_priority_over_toml(self, tmp_path, monkeypatch):
+        """".env file credentials override TOML config."""
+        import tomli_w
+        toml_path = tmp_path / "defaults.toml"
+        config = {
+            "bunny": {
+                "storage_zone": "toml-zone",
+                "storage_password": "toml-pw",
+                "cdn_url": "https://toml-cdn.example.com",
+            },
+        }
+        with open(toml_path, "wb") as f:
+            tomli_w.dump(config, f)
+        monkeypatch.setattr("splatpipe.core.config.DEFAULTS_PATH", toml_path)
+        monkeypatch.delenv("BUNNY_STORAGE_ZONE", raising=False)
+        monkeypatch.delenv("BUNNY_STORAGE_PASSWORD", raising=False)
+        # .env file has different values
+        env_file = tmp_path / ".env"
+        env_file.write_text("BUNNY_STORAGE_ZONE=env-zone\nBUNNY_STORAGE_PASSWORD=env-pw\n")
+        env = load_bunny_env(env_file)
+        assert env["BUNNY_STORAGE_ZONE"] == "env-zone"
+        assert env["BUNNY_STORAGE_PASSWORD"] == "env-pw"
+
 
 class TestDeployToBunnyValidation:
     def test_missing_credentials(self, tmp_path):

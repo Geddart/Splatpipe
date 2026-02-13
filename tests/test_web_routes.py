@@ -476,3 +476,109 @@ class TestApproveReview:
         r = web_env["client"].get(f"/projects/{path}/detail")
         assert r.status_code == 200
         assert "Approve &amp; Continue" in r.text or "Approve" in r.text
+
+
+class TestCdnName:
+    def test_update_cdn_name(self, web_env):
+        """POST update-cdn-name sets the CDN folder name."""
+        path = str(web_env["project"].root)
+        r = web_env["client"].post(f"/projects/{path}/update-cdn-name", data={
+            "cdn_name": "my_custom_name",
+        })
+        assert r.status_code == 200
+        proj = Project(web_env["project"].root)
+        assert proj.cdn_name == "my_custom_name"
+
+    def test_update_cdn_name_empty_defaults(self, web_env):
+        """POST update-cdn-name with empty string resets to project name default."""
+        path = str(web_env["project"].root)
+        web_env["client"].post(f"/projects/{path}/update-cdn-name", data={"cdn_name": ""})
+        proj = Project(web_env["project"].root)
+        assert proj.cdn_name == "TestProject"
+
+    def test_detail_page_shows_cdn_name(self, web_env):
+        """Project detail page includes the CDN name in export settings."""
+        proj = web_env["project"]
+        proj.set_cdn_name("my_cdn_folder")
+        path = str(proj.root)
+        r = web_env["client"].get(f"/projects/{path}/detail")
+        assert r.status_code == 200
+        assert "my_cdn_folder" in r.text
+
+
+class TestBunnySettings:
+    def test_settings_saves_bunny_credentials(self, web_env):
+        """POST /settings/ saves bunny CDN credentials to TOML config."""
+        r = web_env["client"].post("/settings/", data={
+            "paths__projects_root": str(web_env["projects_root"]),
+            "tools__postshot": "",
+            "tools__lichtfeld_studio": "",
+            "tools__splat_transform": "",
+            "tools__supersplat_url": "https://superspl.at/editor",
+            "colmap_clean__outlier_threshold_fixed": "100.0",
+            "colmap_clean__outlier_percentile": "0.99",
+            "colmap_clean__outlier_multiplier": "2.5",
+            "colmap_clean__kdtree_threshold": "0.001",
+            "postshot__profile": "Splat3",
+            "postshot__login": "",
+            "postshot__password": "",
+            "lichtfeld__strategy": "mcmc",
+            "lichtfeld__iterations": "30000",
+            "bunny__storage_zone": "test-zone",
+            "bunny__storage_password": "test-pw",
+            "bunny__cdn_url": "https://test.b-cdn.net",
+        })
+        assert r.status_code == 200
+        from splatpipe.core.config import load_defaults
+        cfg = load_defaults()
+        assert cfg["bunny"]["storage_zone"] == "test-zone"
+        assert cfg["bunny"]["storage_password"] == "test-pw"
+        assert cfg["bunny"]["cdn_url"] == "https://test.b-cdn.net"
+
+    def test_detail_shows_bunny_status(self, web_env):
+        """Project detail shows credential status in CDN export settings."""
+        path = str(web_env["project"].root)
+        r = web_env["client"].get(f"/projects/{path}/detail")
+        assert r.status_code == 200
+        # Without credentials configured, should show "No credentials"
+        assert "No credentials" in r.text or "Settings" in r.text
+
+
+class TestPreviewRoute:
+    def test_preview_serves_file(self, web_env):
+        """GET preview route serves files from 05_output."""
+        proj = web_env["project"]
+        output_dir = proj.get_folder("05_output")
+        (output_dir / "test.txt").write_text("hello")
+        path = str(proj.root)
+        r = web_env["client"].get(f"/projects/{path}/preview/test.txt")
+        assert r.status_code == 200
+        assert r.text == "hello"
+        assert r.headers.get("access-control-allow-origin") == "*"
+
+    def test_preview_404_missing(self, web_env):
+        """GET preview for nonexistent file returns 404."""
+        path = str(web_env["project"].root)
+        r = web_env["client"].get(f"/projects/{path}/preview/nonexistent.html")
+        assert r.status_code == 404
+
+
+class TestHistorySection:
+    def test_detail_shows_history(self, web_env):
+        """Project detail page shows history section after recording steps."""
+        proj = web_env["project"]
+        proj.record_step("clean", "completed", summary={"cameras_kept": 8})
+        proj.record_step("train", "completed", summary={"lod_count": 3})
+        path = str(proj.root)
+        r = web_env["client"].get(f"/projects/{path}/detail")
+        assert r.status_code == 200
+        assert "History" in r.text
+        assert "Clean COLMAP" in r.text
+        assert "Train Splats" in r.text
+
+    def test_detail_no_history_for_new_project(self, web_env):
+        """New project with no runs does not show history section."""
+        path = str(web_env["project"].root)
+        r = web_env["client"].get(f"/projects/{path}/detail")
+        assert r.status_code == 200
+        assert "history-panel" not in r.text

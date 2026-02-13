@@ -197,6 +197,36 @@
             </div>
         </div>
 
+        <!-- Bunny CDN -->
+        <div class="card bg-base-100 shadow-xl">
+            <div class="card-body">
+                <h2 class="card-title">Bunny CDN</h2>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div class="form-control">
+                        <label class="label"><span class="label-text font-mono text-sm">storage_zone</span></label>
+                        <input type="text" name="bunny__storage_zone"
+                               value="{{ config.get('bunny', {}).get('storage_zone', '') }}"
+                               placeholder="e.g. splatpipe-cdn"
+                               class="input input-bordered input-sm font-mono text-sm">
+                    </div>
+                    <div class="form-control">
+                        <label class="label"><span class="label-text font-mono text-sm">storage_password</span></label>
+                        <input type="password" name="bunny__storage_password"
+                               value="{{ config.get('bunny', {}).get('storage_password', '') }}"
+                               class="input input-bordered input-sm font-mono text-sm">
+                    </div>
+                    <div class="form-control">
+                        <label class="label"><span class="label-text font-mono text-sm">cdn_url</span></label>
+                        <input type="text" name="bunny__cdn_url"
+                               value="{{ config.get('bunny', {}).get('cdn_url', '') }}"
+                               placeholder="e.g. https://splatpipe-cdn.b-cdn.net"
+                               class="input input-bordered input-sm font-mono text-sm">
+                    </div>
+                </div>
+                <p class="text-xs opacity-40 mt-2">Per-project <code>.env</code> files override these global settings.</p>
+            </div>
+        </div>
+
         <!-- Save Button -->
         <div class="flex justify-end">
             <button type="submit" class="btn btn-primary btn-wide">Save Settings</button>

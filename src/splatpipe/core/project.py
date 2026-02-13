@@ -22,6 +22,16 @@ from .constants import (
 ALL_STEPS = [STEP_CLEAN, STEP_TRAIN, STEP_REVIEW, STEP_ASSEMBLE, STEP_EXPORT]
 
 
+def _trim_summary(summary: dict | None) -> dict | None:
+    """Create a compact copy of summary for history storage."""
+    if not summary:
+        return None
+    trimmed = dict(summary)
+    if "failed_files" in trimmed:
+        trimmed["failed_files"] = trimmed["failed_files"][:3]
+    return trimmed
+
+
 class Project:
     """Manages a single splatpipe project."""
 
@@ -55,7 +65,7 @@ class Project:
             ]
 
         if enabled_steps is None:
-            enabled_steps = {s: True for s in ALL_STEPS}
+            enabled_steps = {s: s != STEP_CLEAN for s in ALL_STEPS}
 
         state = {
             "name": name,
@@ -106,7 +116,7 @@ class Project:
 
     @property
     def enabled_steps(self) -> dict[str, bool]:
-        return self.state.get("enabled_steps", {s: True for s in ALL_STEPS})
+        return self.state.get("enabled_steps", {s: s != STEP_CLEAN for s in ALL_STEPS})
 
     def is_step_enabled(self, step_name: str) -> bool:
         """Check if a step is enabled (defaults to True for unknown steps)."""
@@ -115,7 +125,7 @@ class Project:
     def set_step_enabled(self, step_name: str, enabled: bool) -> None:
         """Enable or disable a step and save state."""
         if "enabled_steps" not in self.state:
-            self.state["enabled_steps"] = {s: True for s in ALL_STEPS}
+            self.state["enabled_steps"] = {s: s != STEP_CLEAN for s in ALL_STEPS}
         self.state["enabled_steps"][step_name] = enabled
         self._save_state()
 
@@ -157,6 +167,15 @@ class Project:
 
     def set_export_folder(self, path: str) -> None:
         self.state["export_folder"] = path
+        self._save_state()
+
+    @property
+    def cdn_name(self) -> str:
+        """CDN remote folder name. Defaults to project name."""
+        return self.state.get("cdn_name", "") or self.name
+
+    def set_cdn_name(self, name: str) -> None:
+        self.state["cdn_name"] = name
         self._save_state()
 
     # PlayCanvas engine default: [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60]
@@ -223,6 +242,8 @@ class Project:
                 return p
         return source
 
+    _HISTORY_MAX = 100
+
     def record_step(
         self,
         step_name: str,
@@ -230,17 +251,59 @@ class Project:
         *,
         summary: dict | None = None,
         error: str | None = None,
+        started_at: str | None = None,
     ) -> None:
-        """Record the result of a step in state.json."""
+        """Record the result of a step in state.json.
+
+        Updates the per-step latest status AND appends terminal statuses
+        (completed, failed, cancelled) to the history log.
+        """
         if "steps" not in self.state:
             self.state["steps"] = {}
+
+        completed_at = datetime.now(timezone.utc).isoformat()
         self.state["steps"][step_name] = {
             "status": status,
-            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "completed_at": completed_at,
             "summary": summary,
             "error": error,
         }
+
+        if status in ("completed", "failed", "cancelled"):
+            self._append_history({
+                "step": step_name,
+                "status": status,
+                "started_at": started_at or completed_at,
+                "completed_at": completed_at,
+                "duration_s": None,
+                "summary": _trim_summary(summary),
+                "error": error,
+            })
+
         self._save_state()
+
+    def _append_history(self, entry: dict) -> None:
+        """Append an entry to the history log, trimming if over limit."""
+        if "history" not in self.state:
+            self.state["history"] = []
+
+        # Compute duration if both timestamps present
+        if entry.get("started_at") and entry.get("completed_at"):
+            try:
+                start = datetime.fromisoformat(entry["started_at"])
+                end = datetime.fromisoformat(entry["completed_at"])
+                entry["duration_s"] = round((end - start).total_seconds(), 1)
+            except (ValueError, TypeError):
+                pass
+
+        self.state["history"].append(entry)
+
+        if len(self.state["history"]) > self._HISTORY_MAX:
+            self.state["history"] = self.state["history"][-self._HISTORY_MAX:]
+
+    def get_history(self) -> list[dict]:
+        """Return the history log (newest first)."""
+        return list(reversed(self.state.get("history", [])))
 
     def get_step_status(self, step_name: str) -> str | None:
         """Get the status of a step, or None if not yet run."""

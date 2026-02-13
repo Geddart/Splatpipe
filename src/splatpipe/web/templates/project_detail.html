@@ -252,6 +252,13 @@
                                         {% else %}
                                             {{ step.summary.get('uploaded', '?') }} files uploaded
                                         {% endif %}
+                                        {% if step.summary.get('viewer_url') %}
+                                            &mdash; <a href="{{ step.summary.viewer_url }}" target="_blank" class="link link-primary">Viewer</a>
+                                        {% elif step.summary.get('cdn_url') %}
+                                            &mdash; <a href="{{ step.summary.cdn_url }}" target="_blank" class="link link-primary">CDN</a>
+                                        {% elif step.summary.get('destination') %}
+                                            &mdash; <span class="font-mono opacity-40">{{ step.summary.destination }}</span>
+                                        {% endif %}
                                     {% endif %}
                                 </div>
                                 {% endif %}
@@ -546,10 +553,51 @@
 
                             <!-- CDN settings (shown when mode=cdn) -->
                             <div id="export-cdn-settings" {% if step_defaults.export.export_mode != 'cdn' %}class="hidden"{% endif %}>
-                                <p class="text-xs opacity-60">
-                                    Uploads to Bunny CDN. Configure credentials in your project's <code>.env</code> file:
-                                    <code>BUNNY_STORAGE_ZONE</code>, <code>BUNNY_STORAGE_PASSWORD</code>, <code>BUNNY_CDN_URL</code>.
-                                </p>
+                                <!-- CDN Folder Name -->
+                                <div class="form-control w-full mb-3">
+                                    <label class="label py-0"><span class="label-text text-xs">CDN Folder Name</span></label>
+                                    <form hx-post="/projects/{{ project.path }}/update-cdn-name" hx-swap="none">
+                                        <input type="text" name="cdn_name" id="cdn-name-input"
+                                               value="{{ step_defaults.export.cdn_name }}"
+                                               placeholder="{{ project.name }}"
+                                               class="input input-bordered input-sm w-full font-mono text-xs"
+                                               onchange="this.form.requestSubmit()">
+                                    </form>
+                                </div>
+
+                                <!-- Existing models on CDN -->
+                                <div class="form-control w-full mb-3">
+                                    <label class="label py-0"><span class="label-text text-xs">Existing CDN Models</span></label>
+                                    <div class="flex gap-2">
+                                        <select id="cdn-models-select" class="select select-bordered select-sm flex-1 font-mono text-xs"
+                                                onchange="if(this.value) document.getElementById('cdn-name-input').value=this.value">
+                                            <option value="">— click Refresh —</option>
+                                        </select>
+                                        <button type="button" class="btn btn-outline btn-sm"
+                                                hx-get="/projects/{{ project.path }}/list-cdn-models"
+                                                hx-target="#cdn-models-select" hx-swap="innerHTML">
+                                            Refresh
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <!-- Credentials status -->
+                                <div class="mt-3 pt-3 border-t border-base-300">
+                                    <div class="flex items-center gap-2 text-xs mb-1">
+                                        {% if step_defaults.export.bunny_has_credentials %}
+                                            <span class="text-success">&#10003;</span>
+                                            <span class="opacity-60">Credentials configured</span>
+                                            <span class="font-mono opacity-40">({{ step_defaults.export.bunny_storage_zone }})</span>
+                                        {% else %}
+                                            <span class="text-error">&#10007;</span>
+                                            <span class="opacity-60">No credentials &mdash; configure in</span>
+                                            <a href="/settings/" class="link link-primary">Settings</a>
+                                        {% endif %}
+                                    </div>
+                                    {% if step_defaults.export.bunny_cdn_url %}
+                                    <div class="text-xs opacity-40 font-mono">{{ step_defaults.export.bunny_cdn_url }}</div>
+                                    {% endif %}
+                                </div>
                             </div>
                         </div>
                         <script>
@@ -615,6 +663,75 @@
                 {% endfor %}
             </div>
         </div>
+        <!-- History Log -->
+        {% if history %}
+        <div class="card bg-base-100 shadow-xl mt-6">
+            <div class="card-body py-4">
+                <button class="flex items-center justify-between w-full cursor-pointer"
+                        onclick="document.getElementById('history-panel').classList.toggle('hidden'); this.querySelector('.chevron').classList.toggle('rotate-90')">
+                    <h2 class="card-title text-lg">History ({{ history|length }})</h2>
+                    <svg class="chevron h-5 w-5 opacity-60 transition-transform duration-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                    </svg>
+                </button>
+                <div id="history-panel" class="hidden mt-3 space-y-1 max-h-96 overflow-y-auto">
+                    {% for entry in history %}
+                    <div class="flex items-start gap-3 py-2 {% if not loop.last %}border-b border-base-300{% endif %}">
+                        <div class="mt-1">
+                            {% if entry.status == 'completed' %}
+                                <span class="badge badge-success badge-xs"></span>
+                            {% elif entry.status == 'failed' %}
+                                <span class="badge badge-error badge-xs"></span>
+                            {% elif entry.status == 'cancelled' %}
+                                <span class="badge badge-warning badge-xs"></span>
+                            {% endif %}
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <div class="flex items-center gap-2 text-sm">
+                                <span class="font-bold">{{ step_labels.get(entry.step, entry.step) }}</span>
+                                <span class="badge badge-ghost badge-xs">{{ entry.status }}</span>
+                                {% if entry.duration_s is not none and entry.duration_s > 0 %}
+                                <span class="opacity-40">
+                                    {% if entry.duration_s >= 60 %}
+                                        {{ (entry.duration_s / 60)|round(1) }}m
+                                    {% else %}
+                                        {{ entry.duration_s|round(1) }}s
+                                    {% endif %}
+                                </span>
+                                {% endif %}
+                            </div>
+                            <div class="text-xs opacity-50 mt-0.5">
+                                {{ entry.completed_at[:19].replace('T', ' ') if entry.completed_at else '' }}
+                                {% if entry.summary %}
+                                    {% if entry.summary.get('viewer_url') %}
+                                        &mdash; <a href="{{ entry.summary.viewer_url }}" target="_blank" class="link link-primary">Viewer</a>
+                                    {% elif entry.summary.get('cdn_url') %}
+                                        &mdash; <a href="{{ entry.summary.cdn_url }}" target="_blank" class="link link-primary">CDN</a>
+                                    {% elif entry.summary.get('destination') %}
+                                        &mdash; {{ entry.summary.destination }}
+                                    {% elif entry.summary.get('uploaded') %}
+                                        &mdash; {{ entry.summary.uploaded }} files uploaded
+                                    {% elif entry.summary.get('copied') %}
+                                        &mdash; {{ entry.summary.copied }} files copied
+                                    {% elif entry.summary.get('lod_count') %}
+                                        &mdash; {{ entry.summary.lod_count }} LODs
+                                    {% elif entry.summary.get('cameras_kept') %}
+                                        &mdash; {{ entry.summary.cameras_kept }} cameras kept
+                                    {% elif entry.summary.get('chunk_count') %}
+                                        &mdash; {{ entry.summary.chunk_count }} chunks
+                                    {% endif %}
+                                {% endif %}
+                                {% if entry.error %}
+                                    &mdash; <span class="text-error">{{ entry.error[:80] }}</span>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+        {% endif %}
     </div>
 
     <!-- Right column: Quick Actions -->

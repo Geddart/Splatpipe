@@ -16,6 +16,7 @@ from ...core.config import load_project_config
 from ...core.constants import (
     STEP_REVIEW,
     FOLDER_REVIEW,
+    FOLDER_OUTPUT,
 )
 from ...core.project import Project
 from ..runner import (
@@ -80,6 +81,11 @@ def _success_event(proj: Project, project_path: str, message: str) -> dict:
             extra = f'<a href="{cdn_url}" target="_blank" class="btn btn-sm btn-ghost">Open CDN</a>'
         elif folder_dest:
             extra = f'<span class="text-sm opacity-70">{folder_dest}</span>'
+    # Always offer local preview if output has index.html and no CDN viewer
+    output_dir = proj.get_folder(FOLDER_OUTPUT)
+    if (output_dir / "index.html").exists() and not extra.startswith('<a href="http'):
+        preview_url = f"/projects/{project_path}/preview/index.html"
+        extra += f' <a href="{preview_url}" target="_blank" class="btn btn-sm btn-ghost">Preview</a>'
     return {
         "event": "complete",
         "data": f'''<div class="alert alert-success shadow-lg">

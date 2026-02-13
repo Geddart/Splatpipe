@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-02-13
+
+### Added
+- CDN folder name setting: configurable remote path for Bunny CDN exports (defaults to project name)
+- CDN model browser: "Refresh" button lists existing folders on Bunny CDN, click to select
+- Local preview: serve `05_output/` files through the dashboard for HTTP-based PlayCanvas viewer preview
+- Splat budget dropdown in viewer (No limit, 1M, 2M, 3M, 4M, 6M) — defaults to 4M desktop, 1M mobile
+- Bunny CDN credentials UI: editable on Settings page, status indicator on Export step panel
+- Project history log: all step runs recorded with timestamp, duration, and summary (collapsible section on project detail page)
+- Persistent export URL: CDN viewer/folder links survive page reload on Export step card
+
+### Changed
+- Viewer HTML now uses PlayCanvas engine with LOD streaming instead of SuperSplat iframe embed
+- Viewer supports fly + orbit camera controls (WASD + mouse) and respects project LOD distances
+- COLMAP clean step disabled by default for new projects
+
 ## [0.1.5] - 2026-02-13
 
 ### Fixed
@@ -61,7 +77,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Windows path normalization for runner lookup (URL forward-slash vs `Path()` backslash)
 - Postshot progress parser matched real v1.0.185 output format
 
-[Unreleased]: https://github.com/Geddart/Splatpipe/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/Geddart/Splatpipe/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Geddart/Splatpipe/compare/v0.1.5...v0.2.0
 [0.1.5]: https://github.com/Geddart/Splatpipe/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/Geddart/Splatpipe/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/Geddart/Splatpipe/compare/v0.1.2...v0.1.3

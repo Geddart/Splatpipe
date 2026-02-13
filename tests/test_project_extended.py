@@ -173,10 +173,11 @@ class TestLodDistances:
 
 
 class TestEnabledSteps:
-    def test_default_all_enabled(self, tmp_path):
-        """All steps enabled by default."""
+    def test_default_enabled_steps(self, tmp_path):
+        """Clean disabled by default, others enabled."""
         proj = Project.create(tmp_path / "p", "T")
-        for step in ["clean", "train", "assemble", "export"]:
+        assert proj.is_step_enabled("clean") is False
+        for step in ["train", "assemble", "export"]:
             assert proj.is_step_enabled(step) is True
 
     def test_set_step_enabled(self, tmp_path):
@@ -184,7 +185,7 @@ class TestEnabledSteps:
         proj = Project.create(tmp_path / "p", "T")
         proj.set_step_enabled("assemble", False)
         assert proj.is_step_enabled("assemble") is False
-        assert proj.is_step_enabled("clean") is True  # others unchanged
+        assert proj.is_step_enabled("train") is True  # others unchanged
 
     def test_step_enabled_persistence(self, tmp_path):
         """set_step_enabled persists."""
@@ -199,8 +200,116 @@ class TestEnabledSteps:
         assert proj.is_step_enabled("nonexistent") is True
 
 
+class TestCdnName:
+    def test_cdn_name_defaults_to_project_name(self, tmp_path):
+        """cdn_name defaults to project name when not set."""
+        proj = Project.create(tmp_path / "p", "MyProject")
+        assert proj.cdn_name == "MyProject"
+
+    def test_cdn_name_empty_defaults_to_project_name(self, tmp_path):
+        """cdn_name empty string still defaults to project name."""
+        proj = Project.create(tmp_path / "p", "MyProject")
+        proj.set_cdn_name("")
+        assert proj.cdn_name == "MyProject"
+
+    def test_cdn_name_set_and_persist(self, tmp_path):
+        """set_cdn_name persists and overrides default."""
+        proj = Project.create(tmp_path / "p", "MyProject")
+        proj.set_cdn_name("custom_folder")
+        assert proj.cdn_name == "custom_folder"
+        reloaded = Project(proj.root)
+        assert reloaded.cdn_name == "custom_folder"
+
+
 class TestThumbnailPath:
     def test_thumbnail_path(self, tmp_path):
         """thumbnail_path points to root/thumbnail.jpg."""
         proj = Project.create(tmp_path / "p", "T")
         assert proj.thumbnail_path == proj.root / "thumbnail.jpg"
+
+
+class TestHistory:
+    def test_record_step_appends_history(self, tmp_path):
+        """record_step with terminal status appends to history."""
+        proj = Project.create(tmp_path / "p", "T")
+        proj.record_step("clean", "completed", summary={"cameras_kept": 42})
+        history = proj.get_history()
+        assert len(history) == 1
+        assert history[0]["step"] == "clean"
+        assert history[0]["status"] == "completed"
+        assert history[0]["summary"]["cameras_kept"] == 42
+
+    def test_running_status_not_in_history(self, tmp_path):
+        """Intermediate statuses like 'running' are NOT appended to history."""
+        proj = Project.create(tmp_path / "p", "T")
+        proj.record_step("clean", "running")
+        assert proj.get_history() == []
+
+    def test_waiting_status_not_in_history(self, tmp_path):
+        """'waiting' status is NOT appended to history."""
+        proj = Project.create(tmp_path / "p", "T")
+        proj.record_step("review", "waiting")
+        assert proj.get_history() == []
+
+    def test_history_newest_first(self, tmp_path):
+        """get_history() returns newest first."""
+        proj = Project.create(tmp_path / "p", "T")
+        proj.record_step("clean", "completed")
+        proj.record_step("train", "completed")
+        history = proj.get_history()
+        assert history[0]["step"] == "train"
+        assert history[1]["step"] == "clean"
+
+    def test_history_backward_compat(self, tmp_path):
+        """Old projects without 'history' key return empty list."""
+        proj = Project.create(tmp_path / "p", "T")
+        # Simulate old state.json without history key
+        proj.state.pop("history", None)
+        proj._save_state()
+        reloaded = Project(proj.root)
+        assert reloaded.get_history() == []
+
+    def test_history_limit(self, tmp_path):
+        """History is capped at _HISTORY_MAX entries."""
+        proj = Project.create(tmp_path / "p", "T")
+        for i in range(120):
+            proj.record_step("clean", "completed", summary={"run": i})
+        assert len(proj.state.get("history", [])) == 100
+        # Newest kept
+        assert proj.get_history()[0]["summary"]["run"] == 119
+
+    def test_history_with_started_at(self, tmp_path):
+        """Passing started_at computes duration."""
+        proj = Project.create(tmp_path / "p", "T")
+        proj.record_step(
+            "export", "completed",
+            summary={"uploaded": 5},
+            started_at="2026-02-13T14:30:00+00:00",
+        )
+        entry = proj.get_history()[0]
+        assert entry["started_at"] == "2026-02-13T14:30:00+00:00"
+        assert entry["duration_s"] is not None
+        assert entry["duration_s"] >= 0
+
+    def test_history_trims_failed_files(self, tmp_path):
+        """Large failed_files lists are trimmed in history copies."""
+        proj = Project.create(tmp_path / "p", "T")
+        big_summary = {"failed_files": [f"file_{i}" for i in range(50)]}
+        proj.record_step("export", "failed", summary=big_summary, error="test")
+        entry = proj.get_history()[0]
+        assert len(entry["summary"]["failed_files"]) == 3
+        # Original summary in steps dict is untrimmed
+        step_summary = proj.get_step_summary("export")
+        assert len(step_summary["failed_files"]) == 50
+
+    def test_failed_and_cancelled_in_history(self, tmp_path):
+        """Failed and cancelled statuses are logged to history."""
+        proj = Project.create(tmp_path / "p", "T")
+        proj.record_step("train", "failed", error="CUDA OOM")
+        proj.record_step("export", "cancelled")
+        history = proj.get_history()
+        assert len(history) == 2
+        assert history[0]["step"] == "export"
+        assert history[0]["status"] == "cancelled"
+        assert history[1]["step"] == "train"
+        assert history[1]["error"] == "CUDA OOM"

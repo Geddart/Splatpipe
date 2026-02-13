@@ -1,6 +1,7 @@
 """splatpipe serve — Local HTTP server with viewer."""
 
 import http.server
+import json
 import threading
 import webbrowser
 from pathlib import Path
@@ -10,26 +11,9 @@ from rich.console import Console
 
 from ..core.constants import FOLDER_OUTPUT
 from ..core.project import Project
+from ..steps.lod_assembly import _VIEWER_TEMPLATE
 
 console = Console()
-
-VIEWER_TEMPLATE = """<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>{project_name} — Splatpipe Viewer</title>
-    <style>
-        body {{ margin: 0; overflow: hidden; background: #1a1a2e; }}
-        #viewer {{ width: 100vw; height: 100vh; border: none; }}
-    </style>
-</head>
-<body>
-    <iframe id="viewer"
-        src="https://superspl.at/editor?load={splat_url}"
-        allow="cross-origin-isolated">
-    </iframe>
-</body>
-</html>"""
 
 
 def serve(
@@ -57,9 +41,10 @@ def serve(
     # Use assemble-generated viewer if present, otherwise generate one
     viewer_path = output_dir / "index.html"
     if not viewer_path.exists():
-        html = VIEWER_TEMPLATE.format(
+        distances = proj.lod_distances[:len(proj.get_enabled_lods())]
+        html = _VIEWER_TEMPLATE.format(
             project_name=proj.name,
-            splat_url="lod-meta.json",
+            lod_distances_json=json.dumps(distances),
         )
         viewer_path.write_text(html, encoding="utf-8")
 

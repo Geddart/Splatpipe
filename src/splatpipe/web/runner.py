@@ -11,6 +11,7 @@ import shutil
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ..core.config import DEFAULTS_PATH
@@ -77,6 +78,7 @@ class PipelineRunner:
             updated_at=time.monotonic(),
         )
         self._thread: threading.Thread | None = None
+        self._step_started_at: str | None = None
 
     @property
     def snapshot(self) -> RunnerSnapshot:
@@ -127,6 +129,7 @@ class PipelineRunner:
         try:
             for step_idx, step_name in enumerate(self._steps):
                 self._check_cancel()
+                self._step_started_at = datetime.now(timezone.utc).isoformat()
 
                 label = STEP_LABELS.get(step_name, step_name)
                 # Review step manages its own state (may already be "completed")
@@ -162,13 +165,13 @@ class PipelineRunner:
             # Record the step that was active when cancelled
             current = self._snapshot.current_step
             if current:
-                proj.record_step(current, "cancelled")
+                proj.record_step(current, "cancelled", started_at=self._step_started_at)
             self._update(status="cancelled", message="Cancelled.")
 
         except Exception as e:
             current = self._snapshot.current_step
             if current:
-                proj.record_step(current, "failed", error=str(e))
+                proj.record_step(current, "failed", error=str(e), started_at=self._step_started_at)
             self._update(status="failed", error=str(e), message=f"Failed: {e}")
 
     # ── Step executors ────────────────────────────────────────────
@@ -178,7 +181,7 @@ class PipelineRunner:
         result = step.execute()
         # execute() records "completed" internally, but record again to be safe
         summary = result.get("summary", {})
-        proj.record_step(STEP_CLEAN, "completed", summary=summary)
+        proj.record_step(STEP_CLEAN, "completed", summary=summary, started_at=self._step_started_at)
         self._update(
             progress=base_pct + step_range,
             message="Clean COLMAP completed",
@@ -242,7 +245,7 @@ class PipelineRunner:
         active_lods = [(i, lod) for i, lod in enumerate(all_lod_levels) if lod.get("enabled", True)]
 
         if not active_lods:
-            proj.record_step(STEP_TRAIN, "failed", error="No LOD levels enabled")
+            proj.record_step(STEP_TRAIN, "failed", error="No LOD levels enabled", started_at=self._step_started_at)
             raise Exception("No LOD levels enabled")
 
         # Prepare review directory
@@ -304,7 +307,7 @@ class PipelineRunner:
                         message=f"LOD {lod_name} complete ({ret.duration_s:.1f}s)",
                     )
 
-            proj.record_step(STEP_TRAIN, "completed", summary={"lod_count": trained_count})
+            proj.record_step(STEP_TRAIN, "completed", summary={"lod_count": trained_count}, started_at=self._step_started_at)
             self._update(
                 progress=base_pct + step_range,
                 message="Training completed",
@@ -341,10 +344,10 @@ class PipelineRunner:
         summary = result.get("summary", {}) if result else {}
         if not summary.get("success", False):
             stderr = result.get("lod_streaming", {}).get("stderr", "") if result else ""
-            proj.record_step(STEP_ASSEMBLE, "failed", error=f"Assembly failed: {stderr[:500]}")
+            proj.record_step(STEP_ASSEMBLE, "failed", error=f"Assembly failed: {stderr[:500]}", started_at=self._step_started_at)
             raise Exception(f"Assembly failed: {stderr[:500]}")
 
-        proj.record_step(STEP_ASSEMBLE, "completed", summary=summary)
+        proj.record_step(STEP_ASSEMBLE, "completed", summary=summary, started_at=self._step_started_at)
         self._update(
             progress=base_pct + step_range,
             message="Assembly completed",
@@ -359,12 +362,12 @@ class PipelineRunner:
         if mode == "folder":
             dest = proj.export_folder
             if not dest:
-                proj.record_step(STEP_EXPORT, "failed", error="No export folder configured")
+                proj.record_step(STEP_EXPORT, "failed", error="No export folder configured", started_at=self._step_started_at)
                 raise Exception("No export folder configured")
             gen = export_to_folder(output_dir, Path(dest), purge=purge)
         else:
             env = load_bunny_env(proj.root / ".env", DEFAULTS_PATH.parent.parent / ".env")
-            gen = deploy_to_bunny(proj.name, output_dir, env, purge=purge)
+            gen = deploy_to_bunny(proj.cdn_name, output_dir, env, purge=purge)
 
         try:
             while True:
@@ -381,9 +384,9 @@ class PipelineRunner:
 
         if result:
             if result.success:
-                proj.record_step(STEP_EXPORT, "completed", summary=result.summary)
+                proj.record_step(STEP_EXPORT, "completed", summary=result.summary, started_at=self._step_started_at)
             else:
-                proj.record_step(STEP_EXPORT, "failed", error=result.error)
+                proj.record_step(STEP_EXPORT, "failed", error=result.error, started_at=self._step_started_at)
                 raise Exception(result.error)
 
         self._update(

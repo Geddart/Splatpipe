@@ -36,5 +36,10 @@ password = ""
 strategy = "mcmc"
 iterations = 30000
 
+[bunny]
+storage_zone = ""
+storage_password = ""
+cdn_url = ""
+
 [paths]
 projects_root = "H:\\001_ProjectCache\\660 Drone\\_Photogrammetry"

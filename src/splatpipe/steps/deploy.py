@@ -95,9 +95,12 @@ def export_to_folder(
 
 
 def load_bunny_env(*env_paths: Path | None) -> dict:
-    """Load Bunny CDN credentials from .env file(s) or environment.
+    """Load Bunny CDN credentials from .env file(s), environment, or TOML config.
 
-    Accepts multiple paths; the first existing file wins.
+    Priority (highest first):
+    1. .env file (first existing file wins)
+    2. OS environment variables
+    3. defaults.toml [bunny] section
     """
     env = {}
 
@@ -118,7 +121,47 @@ def load_bunny_env(*env_paths: Path | None) -> dict:
             if val:
                 env[key] = val
 
+    # Fall back to TOML config [bunny] section
+    if not all(k in env for k in ("BUNNY_STORAGE_ZONE", "BUNNY_STORAGE_PASSWORD")):
+        try:
+            from ..core.config import load_defaults
+            bunny_cfg = load_defaults().get("bunny", {})
+            key_map = {
+                "storage_zone": "BUNNY_STORAGE_ZONE",
+                "storage_password": "BUNNY_STORAGE_PASSWORD",
+                "cdn_url": "BUNNY_CDN_URL",
+            }
+            for toml_key, env_key in key_map.items():
+                if env_key not in env and bunny_cfg.get(toml_key):
+                    env[env_key] = bunny_cfg[toml_key]
+        except Exception:
+            pass
+
     return env
+
+
+def list_bunny_folders(storage_zone: str, password: str) -> list[dict]:
+    """List top-level items in Bunny CDN storage zone.
+
+    Returns list of dicts: [{"name": "IBUG_2025", "is_dir": True}, ...]
+    """
+    import json as _json
+
+    list_url = f"https://storage.bunnycdn.com/{storage_zone}/"
+    req = Request(list_url, method="GET")
+    req.add_header("AccessKey", password)
+
+    try:
+        resp = urlopen(req, timeout=30)
+        items = _json.loads(resp.read().decode())
+    except (HTTPError, Exception):
+        return []
+
+    return [
+        {"name": item.get("ObjectName", ""), "is_dir": item.get("IsDirectory", False)}
+        for item in items
+        if item.get("ObjectName")
+    ]
 
 
 def _purge_bunny_folder(storage_zone: str, password: str, remote_folder: str) -> int:

@@ -620,10 +620,15 @@ async def project_detail(request: Request, project_path: str):
         train_defaults.update(step_overrides["train"])
 
     export_overrides = step_overrides.get("export", {})
+    bunny_cfg = config.get("bunny", {})
     export_defaults = {
         "export_mode": proj.export_mode,
         "export_folder": proj.export_folder,
         "purge_before_export": export_overrides.get("purge_before_export", False),
+        "cdn_name": proj.cdn_name,
+        "bunny_storage_zone": bunny_cfg.get("storage_zone", ""),
+        "bunny_cdn_url": bunny_cfg.get("cdn_url", ""),
+        "bunny_has_credentials": bool(bunny_cfg.get("storage_zone") and bunny_cfg.get("storage_password")),
     }
     step_defaults = {"clean": _Obj(clean_defaults), "train": _Obj(train_defaults), "export": _Obj(export_defaults)}
 
@@ -636,6 +641,14 @@ async def project_detail(request: Request, project_path: str):
         "training": str(project_root / "03_training"),
         "review": str(project_root / "04_review"),
         "output": str(project_root / "05_output"),
+    }
+
+    step_labels = {
+        "clean": "Clean COLMAP",
+        "train": "Train Splats",
+        "review": "Review Splats",
+        "assemble": "Assemble LODs",
+        "export": "Export",
     }
 
     return templates.TemplateResponse("project_detail.html", {
@@ -658,6 +671,8 @@ async def project_detail(request: Request, project_path: str):
         "step_defaults": step_defaults,
         "supersplat_url": config.get("tools", {}).get("supersplat_url", "https://superspl.at/editor"),
         "review_lods": review_lods,
+        "history": proj.get_history(),
+        "step_labels": step_labels,
     })
 
 
@@ -766,6 +781,57 @@ async def update_export_folder(request: Request, project_path: str):
     proj = Project(Path(project_path))
     proj.set_export_folder(path)
     return _toast("Export folder updated")
+
+
+@router.post("/{project_path:path}/update-cdn-name")
+async def update_cdn_name(request: Request, project_path: str):
+    form = await request.form()
+    name = str(form.get("cdn_name", "")).strip()
+    proj = Project(Path(project_path))
+    proj.set_cdn_name(name)
+    return _toast("CDN name updated")
+
+
+@router.get("/{project_path:path}/list-cdn-models")
+async def list_cdn_models(request: Request, project_path: str):
+    """Return HTML <option> elements for existing CDN folders."""
+    from ...core.config import DEFAULTS_PATH
+    from ...steps.deploy import load_bunny_env, list_bunny_folders
+
+    proj = Project(Path(project_path))
+    env = load_bunny_env(proj.root / ".env", DEFAULTS_PATH.parent.parent / ".env")
+    zone = env.get("BUNNY_STORAGE_ZONE", "")
+    pw = env.get("BUNNY_STORAGE_PASSWORD", "")
+    if not zone or not pw:
+        return HTMLResponse('<option value="">No credentials configured</option>')
+
+    folders = list_bunny_folders(zone, pw)
+    dirs = [f for f in folders if f["is_dir"]]
+    if not dirs:
+        return HTMLResponse('<option value="">No models found</option>')
+
+    html = '<option value="">— select —</option>'
+    for d in sorted(dirs, key=lambda x: x["name"]):
+        html += f'<option value="{d["name"]}">{d["name"]}</option>'
+    return HTMLResponse(html)
+
+
+@router.get("/{project_path:path}/preview/{file_path:path}")
+async def preview_file(project_path: str, file_path: str):
+    """Serve output files for local PlayCanvas viewer preview."""
+    proj = Project(Path(project_path))
+    output_dir = proj.get_folder(FOLDER_OUTPUT)
+    full = (output_dir / file_path).resolve()
+    # Security: ensure file is inside output_dir
+    if not str(full).startswith(str(output_dir.resolve())):
+        return HTMLResponse("Forbidden", status_code=403)
+    if not full.is_file():
+        return HTMLResponse("Not found", status_code=404)
+    return FileResponse(full, headers={
+        "Access-Control-Allow-Origin": "*",
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Embedder-Policy": "require-corp",
+    })
 
 
 # --- Clear step data ---

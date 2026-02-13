@@ -104,7 +104,8 @@ class TestLodAssembly:
         html = viewer.read_text(encoding="utf-8")
         assert "MyProject" in html
         assert "lod-meta.json" in html
-        assert "superspl.at/editor" in html
+        assert "playcanvas" in html
+        assert "unified: true" in html
 
     def test_assembly_no_viewer_on_failure(self, tmp_path):
         """Assembly does NOT generate viewer when splat-transform fails."""
