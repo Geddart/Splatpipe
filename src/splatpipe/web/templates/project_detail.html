@@ -212,6 +212,7 @@
                                     <span class="font-bold text-lg">
                                         {% if step.name == 'clean' %}Clean COLMAP
                                         {% elif step.name == 'train' %}Train Splats
+                                        {% elif step.name == 'review' %}Review Splats
                                         {% elif step.name == 'assemble' %}Assemble LODs
                                         {% elif step.name == 'export' %}Export
                                         {% else %}{{ step.name }}
@@ -225,6 +226,8 @@
                                         <span class="badge badge-error badge-sm ml-2">Failed</span>
                                     {% elif step.status == 'cancelled' %}
                                         <span class="badge badge-warning badge-sm ml-2">Cancelled</span>
+                                    {% elif step.status == 'waiting' %}
+                                        <span class="badge badge-warning badge-sm ml-2">Awaiting Review</span>
                                     {% elif step.status == 'running' %}
                                         <span class="badge badge-info badge-sm ml-2">Running</span>
                                     {% else %}
@@ -239,6 +242,8 @@
                                         {{ step.summary.get('cameras_kept', '?') }} cameras kept
                                     {% elif step.name == 'train' and step.summary %}
                                         {{ step.summary.get('lod_count', '?') }} LODs trained
+                                    {% elif step.name == 'review' and step.summary %}
+                                        {{ step.summary.get('lod_count', '?') }} LODs reviewed
                                     {% elif step.name == 'assemble' and step.summary %}
                                         {{ step.summary.get('chunk_count', '?') }} chunks
                                     {% elif step.name == 'export' and step.summary %}
@@ -286,8 +291,9 @@
                                     </svg>
                                 </button>
                                 {% endif %}
+                                {# Review step: no Run button, but Approve button is in the review body below #}
 
-                                {% if step.enabled and not step.is_actively_running and not any_running %}
+                                {% if step.enabled and not step.is_actively_running and not any_running and step.name != 'review' %}
                                     {% set can_run = true %}
                                     {% if step.name == 'train' %}
                                         {% set clean_step = steps|selectattr('name', 'eq', 'clean')|first %}
@@ -295,9 +301,17 @@
                                             {% set can_run = false %}
                                         {% endif %}
                                     {% elif step.name == 'assemble' %}
-                                        {% set train_step = steps|selectattr('name', 'eq', 'train')|first %}
-                                        {% if train_step.enabled and train_step.status != 'completed' %}
-                                            {% set can_run = false %}
+                                        {# Assemble requires review (if enabled) or train (if review disabled) #}
+                                        {% set review_step = steps|selectattr('name', 'eq', 'review')|list %}
+                                        {% if review_step and review_step[0].enabled %}
+                                            {% if review_step[0].status != 'completed' %}
+                                                {% set can_run = false %}
+                                            {% endif %}
+                                        {% else %}
+                                            {% set train_step = steps|selectattr('name', 'eq', 'train')|first %}
+                                            {% if train_step.enabled and train_step.status != 'completed' %}
+                                                {% set can_run = false %}
+                                            {% endif %}
                                         {% endif %}
                                     {% elif step.name == 'export' %}
                                         {% set assemble_step = steps|selectattr('name', 'eq', 'assemble')|first %}
@@ -546,6 +560,54 @@
                         </script>
                         {% endif %}
 
+                        <!-- Review step: LOD list + approve button -->
+                        {% if step.name == 'review' and step.enabled and step.status != 'completed' %}
+                        <div class="mt-4 pt-4 border-t border-base-300">
+                            {% set train_step = steps|selectattr('name', 'eq', 'train')|first %}
+                            {% if train_step.status != 'completed' %}
+                                <p class="text-sm opacity-60">Train step must complete first.</p>
+                            {% elif review_lods|length == 0 %}
+                                <p class="text-sm opacity-60">No LODs found in review folder.</p>
+                            {% else %}
+                                <div class="space-y-3">
+                                    {% for rlod in review_lods %}
+                                    <div class="flex items-center justify-between bg-base-200 rounded-lg px-4 py-2">
+                                        <div class="flex items-center gap-4">
+                                            <span class="font-mono text-sm font-bold">{{ rlod.name }}</span>
+                                            {% if rlod.ply_exists %}
+                                                <span class="text-xs opacity-60">{{ rlod.vertex_display }} splats</span>
+                                                <span class="text-xs opacity-40">{{ rlod.ply_size }}</span>
+                                            {% else %}
+                                                <span class="text-xs opacity-40">No PLY</span>
+                                            {% endif %}
+                                        </div>
+                                        <div class="flex items-center gap-2">
+                                            {% if rlod.psht_path %}
+                                            <button class="btn btn-outline btn-xs"
+                                                    hx-post="/actions/{{ project.path }}/open-psht"
+                                                    hx-vals='{"file": {{ rlod.psht_path|tojson }}}'
+                                                    hx-swap="none">
+                                                Open in Postshot
+                                            </button>
+                                            {% endif %}
+                                            <a href="{{ supersplat_url }}" target="_blank"
+                                               class="btn btn-outline btn-xs">SuperSplat</a>
+                                        </div>
+                                    </div>
+                                    {% endfor %}
+                                </div>
+                                <div class="mt-4" id="review-approve-area">
+                                    <button class="btn btn-success btn-block"
+                                            hx-post="/steps/{{ project.path }}/approve-review"
+                                            hx-target="#review-approve-area"
+                                            hx-swap="innerHTML">
+                                        Approve & Continue
+                                    </button>
+                                </div>
+                            {% endif %}
+                        </div>
+                        {% endif %}
+
                         <!-- Progress panel (filled by HTMX) -->
                         <div id="progress-{{ step.name }}" class="mt-2"></div>
                     </div>
@@ -727,7 +789,7 @@ function doThumbnailUpload(blob) {
 
 <script>
 var PROJECT_PATH = {{ project.path|tojson }}.replace(/\\/g, '/');
-var STEP_LABELS = {clean: 'Clean COLMAP', train: 'Train Splats', assemble: 'Assemble LODs', export: 'Export'};
+var STEP_LABELS = {clean: 'Clean COLMAP', train: 'Train Splats', review: 'Review Splats', assemble: 'Assemble LODs', export: 'Export'};
 var STEP_DATA = {
     {% for step in steps %}
     {{ step.name|tojson }}: {

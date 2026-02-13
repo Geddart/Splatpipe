@@ -75,3 +75,58 @@ class TestLodAssembly:
         for i in range(5):
             assert "-l" in call_cmd
             assert str(i) in call_cmd
+
+    def test_assembly_generates_viewer_html(self, tmp_path):
+        """Assembly generates index.html viewer when splat-transform succeeds."""
+        from splatpipe.core.project import Project
+
+        project = Project.create(tmp_path / "proj", "MyProject")
+        config = {"tools": {"splat_transform": "@playcanvas/splat-transform"}}
+
+        review_dir = project.get_folder("04_review")
+        review_dir.mkdir(parents=True, exist_ok=True)
+        _create_fake_ply(review_dir / "lod0_reviewed.ply")
+
+        step = LodAssemblyStep(project, config)
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "Done"
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result):
+            output_dir = project.get_folder("05_output")
+            output_dir.mkdir(parents=True, exist_ok=True)
+            step.run(output_dir)
+
+        viewer = output_dir / "index.html"
+        assert viewer.exists()
+        html = viewer.read_text(encoding="utf-8")
+        assert "MyProject" in html
+        assert "lod-meta.json" in html
+        assert "superspl.at/editor" in html
+
+    def test_assembly_no_viewer_on_failure(self, tmp_path):
+        """Assembly does NOT generate viewer when splat-transform fails."""
+        from splatpipe.core.project import Project
+
+        project = Project.create(tmp_path / "proj", "Test")
+        config = {"tools": {"splat_transform": "@playcanvas/splat-transform"}}
+
+        review_dir = project.get_folder("04_review")
+        review_dir.mkdir(parents=True, exist_ok=True)
+        _create_fake_ply(review_dir / "lod0_reviewed.ply")
+
+        step = LodAssemblyStep(project, config)
+
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stdout = ""
+        mock_result.stderr = "Error"
+
+        with patch("subprocess.run", return_value=mock_result):
+            output_dir = project.get_folder("05_output")
+            output_dir.mkdir(parents=True, exist_ok=True)
+            step.run(output_dir)
+
+        assert not (output_dir / "index.html").exists()

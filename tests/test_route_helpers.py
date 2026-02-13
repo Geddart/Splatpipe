@@ -2,7 +2,6 @@
 
 from pathlib import Path
 
-import pytest
 
 from splatpipe.web.routes.projects import (
     _format_size,

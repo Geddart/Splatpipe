@@ -3,7 +3,7 @@
 import pytest
 
 from splatpipe.steps.deploy import export_to_folder
-from splatpipe.core.events import ProgressEvent, StepResult
+from splatpipe.core.events import ProgressEvent
 
 
 def _consume_generator(gen):

@@ -1,10 +1,6 @@
 """Extended tests for Project class: setters, colmap_dir fallback, step_settings, LODs."""
 
-import json
-import os
-from pathlib import Path
 
-import pytest
 
 from splatpipe.core.project import Project
 

@@ -1,7 +1,8 @@
 """LOD assembly step: uses splat-transform to build LOD streaming format.
 
 Takes reviewed PLY files from 04_review/ and produces PlayCanvas-ready
-LOD streaming output (lod-meta.json + SOG chunk files) in 05_output/.
+LOD streaming output (lod-meta.json + SOG chunk files + index.html viewer)
+in 05_output/.
 
 CLI syntax (splat-transform v1.7+):
   splat-transform lod0.ply -l 0 lod1.ply -l 1 ... --filter-nan output/lod-meta.json
@@ -26,6 +27,38 @@ from pathlib import Path
 from ..core.constants import FOLDER_REVIEW, FOLDER_OUTPUT
 from ..core.events import ProgressEvent
 from .base import PipelineStep
+
+# Self-contained viewer HTML that auto-detects its hosting URL.
+# Works on any origin: CDN, local HTTP server, etc.
+_VIEWER_TEMPLATE = """\
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>{project_name} — Splatpipe Viewer</title>
+    <style>
+        body {{ margin: 0; overflow: hidden; background: #1a1a2e; }}
+        #viewer {{ width: 100vw; height: 100vh; border: none; }}
+    </style>
+</head>
+<body>
+    <iframe id="viewer" allow="cross-origin-isolated"></iframe>
+    <script>
+        // Auto-detect base URL so the viewer works on any hosting
+        var base = window.location.href.substring(0, window.location.href.lastIndexOf('/') + 1);
+        var metaUrl = base + 'lod-meta.json';
+        document.getElementById('viewer').src =
+            'https://superspl.at/editor?load=' + encodeURIComponent(metaUrl);
+    </script>
+</body>
+</html>
+"""
+
+
+def _write_viewer_html(output_dir: Path, project_name: str) -> None:
+    """Generate index.html viewer alongside lod-meta.json."""
+    html = _VIEWER_TEMPLATE.format(project_name=project_name)
+    (output_dir / "index.html").write_text(html, encoding="utf-8")
 
 # splat-transform defaults: --lod-chunk-count 512 -> binSize = 512 * 1024
 _DEFAULT_BIN_SIZE = 512 * 1024  # 524,288 splats per output chunk
@@ -61,7 +94,8 @@ class LodAssemblyStep(PipelineStep):
         review_dir = self.project.get_folder(FOLDER_REVIEW)
         lod_levels = self.project.lod_levels
 
-        # Find reviewed PLY files
+        # Find reviewed PLY files — use sequential lod_index for splat-transform
+        # (passing -l 2 -l 3 -l 5 creates 6 LOD levels with empty gaps at 0,1,4)
         reviewed_plys = []
         for i, lod in enumerate(lod_levels):
             lod_name = lod["name"]
@@ -69,7 +103,7 @@ class LodAssemblyStep(PipelineStep):
             ply_path = review_dir / ply_name
             if ply_path.exists():
                 reviewed_plys.append({
-                    "lod_index": i,
+                    "lod_index": len(reviewed_plys),
                     "lod_name": lod_name,
                     "ply_path": str(ply_path),
                     "stats": self.file_stats(ply_path),
@@ -104,6 +138,10 @@ class LodAssemblyStep(PipelineStep):
             "success": lod_meta_result.get("returncode") == 0,
         }
 
+        # Generate viewer HTML if assembly succeeded
+        if lod_meta_result.get("returncode") == 0:
+            _write_viewer_html(output_dir, self.project.name)
+
         return result
 
     def run_streaming(self, output_dir: Path):
@@ -117,7 +155,7 @@ class LodAssemblyStep(PipelineStep):
         review_dir = self.project.get_folder(FOLDER_REVIEW)
         lod_levels = self.project.lod_levels
 
-        # Find reviewed PLY files
+        # Find reviewed PLY files — use sequential lod_index for splat-transform
         reviewed_plys = []
         for i, lod in enumerate(lod_levels):
             lod_name = lod["name"]
@@ -125,7 +163,7 @@ class LodAssemblyStep(PipelineStep):
             ply_path = review_dir / ply_name
             if ply_path.exists():
                 reviewed_plys.append({
-                    "lod_index": i,
+                    "lod_index": len(reviewed_plys),
                     "lod_name": lod_name,
                     "ply_path": str(ply_path),
                     "stats": self.file_stats(ply_path),
@@ -241,6 +279,11 @@ class LodAssemblyStep(PipelineStep):
 
         chunk_files = sorted(output_dir.rglob("*.webp"))
         chunk_dirs = [d for d in output_dir.iterdir() if d.is_dir()]
+
+        # Generate viewer HTML if assembly succeeded
+        if proc.returncode == 0:
+            _write_viewer_html(output_dir, self.project.name)
+
         result = {
             "input_plys": reviewed_plys,
             "lod_streaming": {

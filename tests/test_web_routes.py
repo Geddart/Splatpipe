@@ -1,8 +1,5 @@
 """Tests for web route endpoints using FastAPI TestClient."""
 
-import json
-import shutil
-from pathlib import Path
 
 import pytest
 import tomli_w
@@ -421,3 +418,61 @@ class TestActions:
         r = web_env["client"].post(f"/actions/{path}/open-folder", data={"folder": ""})
         assert r.status_code == 200
         assert "error" in r.headers.get("hx-trigger", "").lower()
+
+
+# --- Review step routes ---
+
+
+class TestApproveReview:
+    def test_approve_review_no_plys(self, web_env):
+        """Approve with empty review folder records 0 LODs."""
+        proj = web_env["project"]
+        path = str(proj.root)
+        r = web_env["client"].post(f"/steps/{path}/approve-review")
+        assert r.status_code == 200
+        assert "approved" in r.text.lower()
+
+        proj2 = Project(proj.root)
+        assert proj2.get_step_status("review") == "completed"
+        summary = proj2.get_step_summary("review")
+        assert summary["lod_count"] == 0
+
+    def test_approve_review_with_plys(self, web_env):
+        """Approve with PLY files records correct LOD count and vertex total."""
+        proj = web_env["project"]
+        review_dir = proj.get_folder("04_review")
+        # Create a minimal PLY with vertex count in header
+        ply_header = b"ply\nformat binary_little_endian 1.0\nelement vertex 5000000\nend_header\n"
+        (review_dir / "lod0_reviewed.ply").write_bytes(ply_header)
+        (review_dir / "lod1_reviewed.ply").write_bytes(ply_header)
+
+        path = str(proj.root)
+        r = web_env["client"].post(f"/steps/{path}/approve-review")
+        assert r.status_code == 200
+        assert "2 LODs" in r.text
+
+        proj2 = Project(proj.root)
+        summary = proj2.get_step_summary("review")
+        assert summary["lod_count"] == 2
+        assert summary["total_vertices"] == 10_000_000
+
+    def test_detail_shows_review_step(self, web_env):
+        """Project detail page includes the Review Splats step."""
+        path = str(web_env["project"].root)
+        r = web_env["client"].get(f"/projects/{path}/detail")
+        assert r.status_code == 200
+        assert "Review Splats" in r.text
+
+    def test_detail_shows_approve_button_when_train_complete(self, web_env):
+        """After train completes, the review card shows Approve button."""
+        proj = web_env["project"]
+        proj.record_step("train", "completed", summary={"lod_count": 2})
+        # Create review PLYs
+        review_dir = proj.get_folder("04_review")
+        ply_header = b"ply\nformat binary_little_endian 1.0\nelement vertex 1000000\nend_header\n"
+        (review_dir / "lod0_reviewed.ply").write_bytes(ply_header)
+
+        path = str(proj.root)
+        r = web_env["client"].get(f"/projects/{path}/detail")
+        assert r.status_code == 200
+        assert "Approve &amp; Continue" in r.text or "Approve" in r.text

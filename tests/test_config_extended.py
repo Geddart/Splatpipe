@@ -1,24 +1,18 @@
 """Extended tests for config helpers: tool path resolution, save/roundtrip, deep merge."""
 
 import tomllib
-from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 import tomli_w
 
 from splatpipe.core.config import (
-    DEFAULTS_PATH,
     get_postshot_cli,
     get_postshot_gui,
     get_colmap_exe,
-    get_tool_path,
     save_defaults,
     load_defaults,
     save_project_config,
-    load_project_config,
     check_dependencies,
-    auto_detect_tools,
     _deep_merge,
 )
 

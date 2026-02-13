@@ -1,6 +1,5 @@
 """Tests for ProgressEvent and StepResult dataclasses."""
 
-from typing import Generator
 
 from splatpipe.core.events import ProgressEvent, StepResult, ProgressGenerator
 

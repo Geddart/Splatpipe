@@ -54,13 +54,14 @@ def serve(
         console.print("Run 'splatpipe assemble' first.")
         raise typer.Exit(1)
 
-    # Generate viewer HTML
+    # Use assemble-generated viewer if present, otherwise generate one
     viewer_path = output_dir / "index.html"
-    html = VIEWER_TEMPLATE.format(
-        project_name=proj.name,
-        splat_url="lod-meta.json",
-    )
-    viewer_path.write_text(html, encoding="utf-8")
+    if not viewer_path.exists():
+        html = VIEWER_TEMPLATE.format(
+            project_name=proj.name,
+            splat_url="lod-meta.json",
+        )
+        viewer_path.write_text(html, encoding="utf-8")
 
     class Handler(http.server.SimpleHTTPRequestHandler):
         def __init__(self, *args, **kwargs):

@@ -29,5 +29,6 @@ DEFAULT_LOD_LEVELS = [
 # Step names used in state.json
 STEP_CLEAN = "clean"
 STEP_TRAIN = "train"
+STEP_REVIEW = "review"
 STEP_ASSEMBLE = "assemble"
 STEP_EXPORT = "export"

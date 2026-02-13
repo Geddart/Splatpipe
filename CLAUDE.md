@@ -9,7 +9,7 @@ CLI-first Gaussian splatting pipeline. Takes COLMAP data through: auto-clean →
 ```bash
 cd H:\001_ProjectCache\1000_Coding\Splatpipe
 pip install -e ".[dev]"
-pytest tests/ -v                    # Run tests (225 tests, ~11s)
+pytest tests/ -v                    # Run tests (234 tests, ~11s)
 splatpipe --help                    # CLI commands
 splatpipe web                       # Launch dashboard
 ```
@@ -145,6 +145,46 @@ Before reading from or writing to any directory:
 2. **After modifying state-writing code, verify all state-reading code still works.** `state.json` fields are read by templates, routes, CLI — grep for the field name and check every consumer.
 3. **After modifying any step, trace downstream.** If you change what train writes to `04_review/`, check what assemble reads from it. If you change assemble output, check what export reads.
 
+## Versioning & Releases
+
+This project uses [Semantic Versioning](https://semver.org/) and [Keep a Changelog](https://keepachangelog.com/).
+
+### Rules (mandatory — not optional)
+
+1. **Every user-facing change gets a CHANGELOG entry.** Before committing, add a line to the `[Unreleased]` section in `CHANGELOG.md`. Categories: Added, Changed, Deprecated, Removed, Fixed, Security.
+2. **Version lives in one place:** `pyproject.toml` → `[project].version`. Update it at release time, nowhere else.
+3. **Semantic Versioning:**
+   - **PATCH** (0.1.x): bug fixes, typos, lint fixes, internal refactors with no behavior change
+   - **MINOR** (0.x.0): new features, new CLI commands, new pipeline steps, new config options
+   - **MAJOR** (x.0.0): breaking changes to CLI interface, config format, state.json schema, or project folder structure
+   - Pre-1.0: breaking changes are allowed in MINOR bumps, but still document them clearly
+4. **No commit without a CHANGELOG entry** for user-facing changes. Internal-only changes (CI config, test refactors, CLAUDE.md updates) are exempt.
+
+### Release Process
+
+```bash
+# 1. Move [Unreleased] entries to a new version section in CHANGELOG.md
+# 2. Update version in pyproject.toml
+# 3. Commit: "Release vX.Y.Z"
+# 4. Tag and push:
+git tag vX.Y.Z
+git push origin main --tags
+# 5. Create GitHub release:
+gh release create vX.Y.Z --title "vX.Y.Z" --notes "[paste CHANGELOG section]"
+```
+
+### What a CHANGELOG entry looks like
+
+```markdown
+## [Unreleased]
+
+### Added
+- Viewer HTML auto-generation during assembly step
+
+### Fixed
+- Export no longer references nonexistent index.html
+```
+
 ## Key Design Decisions
 
 ### Debug Data over Fallbacks
@@ -234,7 +274,7 @@ Key config sections: `[tools]`, `[colmap_clean]`, `[postshot]`, `[lichtfeld]`, `
 ## Tests
 
 ```bash
-pytest tests/ -v              # All 225 tests
+pytest tests/ -v              # All 234 tests
 pytest tests/ -k colmap       # Just COLMAP tests
 pytest tests/ -k integration  # End-to-end with tiny data
 pytest tests/ -k trainers     # Trainer abstraction tests

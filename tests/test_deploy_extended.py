@@ -1,13 +1,11 @@
 """Extended tests for deploy module: load_bunny_env, deploy_to_bunny, upload_file."""
 
-from pathlib import Path
 from unittest.mock import patch, MagicMock
 from urllib.error import HTTPError
 
-import pytest
 
 from splatpipe.steps.deploy import load_bunny_env, deploy_to_bunny, upload_file
-from splatpipe.core.events import ProgressEvent, StepResult
+from splatpipe.core.events import ProgressEvent
 
 
 def _consume_generator(gen):

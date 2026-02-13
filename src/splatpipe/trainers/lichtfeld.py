@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Generator
 
-from ..core.config import get_lichtfeld_exe, get_tool_path
+from ..core.config import get_lichtfeld_exe
 from ..core.events import ProgressEvent
 from .base import Trainer, TrainResult
 

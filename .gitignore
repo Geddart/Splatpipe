@@ -35,3 +35,7 @@ package-lock.json
 Thumbs.db
 .DS_Store
 nul
+imgui.ini
+
+# Claude Code
+.claude/

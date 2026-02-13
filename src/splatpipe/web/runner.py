@@ -13,13 +13,14 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..core.config import load_project_config, DEFAULTS_PATH
+from ..core.config import DEFAULTS_PATH
 from ..core.constants import (
     FOLDER_COLMAP_CLEAN,
     FOLDER_OUTPUT,
     FOLDER_REVIEW,
     STEP_CLEAN,
     STEP_TRAIN,
+    STEP_REVIEW,
     STEP_ASSEMBLE,
     STEP_EXPORT,
 )
@@ -30,10 +31,11 @@ from ..steps.deploy import deploy_to_bunny, export_to_folder, load_bunny_env
 from ..trainers.registry import get_trainer
 
 
-STEP_ORDER = [STEP_CLEAN, STEP_TRAIN, STEP_ASSEMBLE, STEP_EXPORT]
+STEP_ORDER = [STEP_CLEAN, STEP_TRAIN, STEP_REVIEW, STEP_ASSEMBLE, STEP_EXPORT]
 STEP_LABELS = {
     STEP_CLEAN: "Clean COLMAP",
     STEP_TRAIN: "Train Splats",
+    STEP_REVIEW: "Review Splats",
     STEP_ASSEMBLE: "Assemble LODs",
     STEP_EXPORT: "Export",
 }
@@ -127,7 +129,9 @@ class PipelineRunner:
                 self._check_cancel()
 
                 label = STEP_LABELS.get(step_name, step_name)
-                proj.record_step(step_name, "running")
+                # Review step manages its own state (may already be "completed")
+                if step_name != STEP_REVIEW:
+                    proj.record_step(step_name, "running")
 
                 self._update(
                     current_step=step_name,
@@ -143,6 +147,8 @@ class PipelineRunner:
                     self._execute_clean(proj, base_pct, step_range)
                 elif step_name == STEP_TRAIN:
                     self._execute_train(proj, base_pct, step_range)
+                elif step_name == STEP_REVIEW:
+                    self._execute_review(proj, base_pct, step_range)
                 elif step_name == STEP_ASSEMBLE:
                     self._execute_assemble(proj, base_pct, step_range)
                 elif step_name == STEP_EXPORT:
@@ -177,6 +183,28 @@ class PipelineRunner:
             progress=base_pct + step_range,
             message="Clean COLMAP completed",
         )
+
+    def _execute_review(self, proj: Project, base_pct: float, step_range: float) -> None:
+        """Wait for manual review approval — no automated processing."""
+        # Re-read state from disk (approval may have been set before run-all started)
+        proj._state = None
+        if proj.get_step_status(STEP_REVIEW) == "completed":
+            self._update(
+                progress=base_pct + step_range,
+                message="Review already approved",
+            )
+            return
+
+        proj.record_step(STEP_REVIEW, "waiting")
+        self._update(message="Waiting for manual review — approve in the project page")
+        while True:
+            self._check_cancel()
+            # Re-read state from disk (approval is written by a separate HTTP request)
+            proj._state = None
+            if proj.get_step_status(STEP_REVIEW) == "completed":
+                break
+            time.sleep(2)
+        self._update(progress=base_pct + step_range, message="Review approved")
 
     def _execute_train(self, proj: Project, base_pct: float, step_range: float) -> None:
         trainer_name = proj.trainer
@@ -409,14 +437,16 @@ def cancel_run(project_path: str) -> bool:
 # ── Helpers (moved from steps.py) ─────────────────────────────────
 
 def _clean_lod_dir(lod_dir: Path) -> None:
-    """Remove existing .psht and .ply files before training a LOD."""
+    """Wipe and recreate LOD directory for a clean training slate.
+
+    Previous approach deleted only .psht/.ply with silent error swallowing.
+    If a file was locked (Resilio Sync, antivirus), deletion silently failed
+    and Postshot would open the existing .psht, adding a SECOND radiance field
+    on top of the first — doubling the exported splat count.
+    """
     if lod_dir.exists():
-        for f in lod_dir.iterdir():
-            if f.is_file() and f.suffix in (".psht", ".ply"):
-                try:
-                    f.unlink()
-                except OSError:
-                    pass
+        shutil.rmtree(lod_dir)
+    lod_dir.mkdir(parents=True, exist_ok=True)
 
 
 def _write_train_debug(lod_dir: Path, ret) -> None:

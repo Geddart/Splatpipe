@@ -14,15 +14,12 @@ from sse_starlette.sse import EventSourceResponse
 
 from ...core.config import load_project_config
 from ...core.constants import (
-    STEP_CLEAN,
-    STEP_TRAIN,
-    STEP_ASSEMBLE,
-    STEP_EXPORT,
+    STEP_REVIEW,
+    FOLDER_REVIEW,
 )
 from ...core.project import Project
 from ..runner import (
     STEP_ORDER,
-    STEP_LABELS,
     start_run,
     get_runner,
     cancel_run,
@@ -112,6 +109,43 @@ async def cancel_step(project_path: str):
     cancel_run(project_path)
     return HTMLResponse(
         '<span class="text-warning font-bold">Cancelling...</span>'
+    )
+
+
+@router.post("/{project_path:path}/approve-review", response_class=HTMLResponse)
+async def approve_review(project_path: str):
+    """Mark the review step as completed (manual approval gate)."""
+    proj = Project(Path(project_path))
+
+    # Count reviewed PLYs and read vertex counts from headers
+    review_dir = proj.get_folder(FOLDER_REVIEW)
+    lod_count = 0
+    total_vertices = 0
+    if review_dir.exists():
+        for ply in sorted(review_dir.glob("*.ply")):
+            lod_count += 1
+            try:
+                with open(ply, "rb") as f:
+                    while True:
+                        line = f.readline().decode("ascii", errors="replace").strip()
+                        if line.startswith("element vertex"):
+                            total_vertices += int(line.split()[-1])
+                            break
+                        if line == "end_header" or not line:
+                            break
+            except (OSError, ValueError):
+                pass
+
+    proj.record_step(STEP_REVIEW, "completed", summary={
+        "lod_count": lod_count,
+        "total_vertices": total_vertices,
+    })
+
+    return HTMLResponse(
+        f'<div class="alert alert-success shadow-lg">'
+        f'<span>Review approved: {lod_count} LODs</span>'
+        f'<a href="/projects/{project_path}/detail" class="btn btn-sm btn-ghost">Refresh</a>'
+        f'</div>'
     )
 
 

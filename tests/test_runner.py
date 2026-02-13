@@ -171,7 +171,6 @@ class TestPipelineRunnerTrain:
     def test_runner_multi_lod_writes_review_plys(self, runner_project):
         """Verify PLY copy to review folder during training."""
         config = _make_config()
-        training_dir = runner_project.get_folder("03_training")
 
         def mock_train(source_dir, output_dir, lod_name, max_splats, **kwargs):
             # Create a fake PLY in the training dir
@@ -332,6 +331,54 @@ class TestRunnerSnapshotThreadSafety:
             assert not errors, f"Errors during concurrent reads: {errors}"
             assert len(results) == 100  # 5 threads * 20 reads
             runner._thread.join(timeout=5)
+
+
+class TestPipelineRunnerReview:
+    def test_review_skips_when_already_approved(self, runner_project):
+        """If review is already completed, runner skips through immediately."""
+        config = _make_config()
+        runner_project.record_step("review", "completed", summary={"lod_count": 2})
+
+        runner = PipelineRunner(str(runner_project.root), ["review"], config)
+        runner.start()
+        runner._thread.join(timeout=5)
+
+        snap = runner.snapshot
+        assert snap.status == "completed"
+        assert snap.progress == 1.0
+
+    def test_review_waits_for_approval(self, runner_project):
+        """Runner waits at review step until status changes to completed."""
+        config = _make_config()
+        runner = PipelineRunner(str(runner_project.root), ["review"], config)
+        runner.start()
+
+        # Let it enter the waiting loop
+        time.sleep(1)
+        snap = runner.snapshot
+        assert snap.status == "running"
+        assert "manual review" in snap.message.lower()
+
+        # Simulate user clicking Approve
+        runner_project.record_step("review", "completed", summary={"lod_count": 1})
+
+        runner._thread.join(timeout=10)
+        snap = runner.snapshot
+        assert snap.status == "completed"
+        assert snap.progress == 1.0
+
+    def test_review_cancellable_while_waiting(self, runner_project):
+        """Cancelling while waiting for review stops the runner."""
+        config = _make_config()
+        runner = PipelineRunner(str(runner_project.root), ["review"], config)
+        runner.start()
+
+        time.sleep(0.5)
+        runner.cancel()
+        runner._thread.join(timeout=5)
+
+        snap = runner.snapshot
+        assert snap.status == "cancelled"
 
 
 class TestRunnerMultiStep:

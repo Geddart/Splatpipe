@@ -11,7 +11,7 @@ from fastapi.templating import Jinja2Templates
 
 from ...core.config import load_defaults
 from ...core.constants import (
-    STEP_CLEAN, STEP_TRAIN, STEP_ASSEMBLE, STEP_EXPORT,
+    STEP_CLEAN, STEP_TRAIN, STEP_REVIEW, STEP_ASSEMBLE, STEP_EXPORT,
     FOLDER_COLMAP_SOURCE, FOLDER_COLMAP_CLEAN, FOLDER_TRAINING, FOLDER_REVIEW, FOLDER_OUTPUT,
 )
 from ...core.project import Project, ALL_STEPS
@@ -20,12 +20,13 @@ from ..runner import get_runner
 router = APIRouter(prefix="/projects", tags=["projects"])
 templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templates"))
 
-STEPS = [STEP_CLEAN, STEP_TRAIN, STEP_ASSEMBLE, STEP_EXPORT]
+STEPS = [STEP_CLEAN, STEP_TRAIN, STEP_REVIEW, STEP_ASSEMBLE, STEP_EXPORT]
 
 # Maps step names to their output folders
 STEP_OUTPUT_FOLDERS = {
     STEP_CLEAN: FOLDER_COLMAP_CLEAN,
     STEP_TRAIN: FOLDER_TRAINING,
+    STEP_REVIEW: FOLDER_REVIEW,
     STEP_ASSEMBLE: FOLDER_OUTPUT,
 }
 # Additional folders to clear when a step is cleared
@@ -537,6 +538,50 @@ async def project_detail(request: Request, project_path: str):
             "exists": lod_dir.exists(),
         })
 
+    # Build review LOD data: for each enabled LOD, find PLY in 04_review and .psht in 03_training
+    review_dir = proj.get_folder(FOLDER_REVIEW)
+    training_dir_review = proj.get_folder(FOLDER_TRAINING)
+    review_lods = []
+    for i, lod in enumerate(proj.lod_levels):
+        if not lod.get("enabled", True):
+            continue
+        lod_name = lod["name"]
+        # PLY in review folder (lod{i}_reviewed.ply)
+        ply_path = review_dir / f"lod{i}_reviewed.ply"
+        ply_exists = ply_path.exists()
+        ply_size = ply_path.stat().st_size if ply_exists else 0
+        vertex_count = 0
+        if ply_exists:
+            try:
+                with open(ply_path, "rb") as f:
+                    while True:
+                        line = f.readline().decode("ascii", errors="replace").strip()
+                        if line.startswith("element vertex"):
+                            vertex_count = int(line.split()[-1])
+                            break
+                        if line == "end_header" or not line:
+                            break
+            except (OSError, ValueError):
+                pass
+        # .psht file in training folder
+        psht_path = None
+        lod_dir = training_dir_review / lod_name
+        if lod_dir.exists():
+            psht_files = list(lod_dir.glob("*.psht"))
+            if psht_files:
+                psht_path = str(psht_files[0])
+        review_lods.append({
+            "index": i,
+            "name": lod_name,
+            "max_splats": lod["max_splats"],
+            "ply_exists": ply_exists,
+            "ply_path": str(ply_path),
+            "ply_size": _format_size(ply_size) if ply_exists else "",
+            "vertex_count": vertex_count,
+            "vertex_display": f"{vertex_count / 1_000_000:.1f}M" if vertex_count else "",
+            "psht_path": psht_path,
+        })
+
     # Resolve COLMAP source path
     colmap_source_dir = proj.get_folder(FOLDER_COLMAP_SOURCE)
     if colmap_source_dir.is_symlink() or colmap_source_dir.is_junction():
@@ -612,6 +657,7 @@ async def project_detail(request: Request, project_path: str):
         "folders": folders,
         "step_defaults": step_defaults,
         "supersplat_url": config.get("tools", {}).get("supersplat_url", "https://superspl.at/editor"),
+        "review_lods": review_lods,
     })
 
 

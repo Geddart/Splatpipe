@@ -51,7 +51,7 @@ async def open_folder(request: Request, project_path: str):
         parent = str(Path(folder).parent)
         if Path(parent).exists():
             _open_in_foreground(parent)
-            return _toast(f"Folder not yet created, opened parent")
+            return _toast("Folder not yet created, opened parent")
         return _toast(f"Folder not found: {folder}", "error")
 
     _open_in_foreground(folder)
@@ -109,3 +109,22 @@ async def open_tool(request: Request, project_path: str):
         return _toast("Opened SuperSplat in browser")
 
     return _toast(f"Unknown tool: {tool}", "error")
+
+
+@router.post("/{project_path:path}/open-psht")
+async def open_psht(request: Request, project_path: str):
+    """Open a .psht file in Postshot GUI."""
+    form = await request.form()
+    file_path = str(form.get("file", ""))
+
+    if not file_path or not Path(file_path).exists():
+        return _toast(f"File not found: {file_path}", "error")
+
+    config = load_defaults()
+    try:
+        gui_path = get_postshot_gui(config)
+    except (ValueError, FileNotFoundError) as e:
+        return _toast(str(e), "error")
+
+    subprocess.Popen([str(gui_path), file_path], start_new_session=True)
+    return _toast(f"Opened in Postshot: {Path(file_path).name}")
