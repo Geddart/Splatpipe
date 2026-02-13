@@ -9,7 +9,7 @@ CLI-first Gaussian splatting pipeline. Takes COLMAP data through: auto-clean →
 ```bash
 cd H:\001_ProjectCache\1000_Coding\Splatpipe
 pip install -e ".[dev]"
-pytest tests/ -v                    # Run tests (223 tests, ~11s)
+pytest tests/ -v                    # Run tests (225 tests, ~11s)
 splatpipe --help                    # CLI commands
 splatpipe web                       # Launch dashboard
 ```
@@ -41,7 +41,7 @@ splatpipe/                    # repo root
       clean_cmd.py            # splatpipe clean
       train_cmd.py            # splatpipe train [--trainer postshot|lichtfeld]
       assemble_cmd.py         # splatpipe assemble
-      deploy_cmd.py           # splatpipe deploy --target bunny
+      deploy_cmd.py           # splatpipe export --mode folder|cdn
       serve_cmd.py            # splatpipe serve [--port 8080]
       run_cmd.py              # splatpipe run (full pipeline)
       web_cmd.py              # splatpipe web [--port 8000]
@@ -64,24 +64,37 @@ splatpipe/                    # repo root
       base.py                 # Abstract PipelineStep (debug JSON, env capture)
       colmap_clean.py         # COLMAP cleaning step (outliers + KD-tree + POINTS2D)
       lod_assembly.py         # splat-transform LOD meta + SOG compression
-      deploy.py               # Bunny CDN upload with progress events
+      deploy.py               # Folder export + Bunny CDN upload with progress events
     web/                      # FastAPI + HTMX dashboard
       app.py                  # FastAPI app
-      routes/projects.py      # Project list + detail
-      routes/training.py      # SSE training progress
-      routes/settings.py      # Config display
+      runner.py               # Background pipeline runner (daemon thread + RunnerSnapshot)
+      routes/projects.py      # Project list, detail, inline edit, LOD management
+      routes/steps.py         # Step execution: SSE progress streaming, cancel
+      routes/actions.py       # OS actions: open folder/tool, file browser API
+      routes/settings.py      # Config display + edit
       templates/              # Jinja2 templates (DaisyUI + HTMX via CDN)
+      templates/partials/     # Reusable partials (lod_list, browse_modal)
+      static/browse.js        # File/folder browser dialog
       static/viewer.html      # SuperSplat viewer embed
   tests/
     test_data/                # tiny_cameras.txt, tiny_images.txt, etc.
     conftest.py               # Shared fixtures
     test_colmap_*.py          # COLMAP module tests
     test_config.py            # Config loading tests
+    test_config_extended.py   # Config edge cases + tool path helpers
     test_project.py           # Project CRUD tests
+    test_project_extended.py  # Project state lifecycle + edge cases
     test_integration.py       # End-to-end COLMAP clean test
     test_lod_assembly.py      # LOD assembly mock tests
     test_trainers.py          # Trainer abstraction tests
     test_cli.py               # CLI command tests via CliRunner
+    test_runner.py            # Background runner + cancel + multi-step tests
+    test_web_routes.py        # Web route integration tests (TestClient)
+    test_route_helpers.py     # Route helper function tests
+    test_steps_base.py        # PipelineStep base class tests
+    test_events.py            # ProgressEvent + StepResult tests
+    test_export.py            # Folder export tests
+    test_deploy_extended.py   # CDN deploy + env loading tests
 ```
 
 ## Quality Discipline
@@ -221,11 +234,13 @@ Key config sections: `[tools]`, `[colmap_clean]`, `[postshot]`, `[lichtfeld]`, `
 ## Tests
 
 ```bash
-pytest tests/ -v              # All 223 tests
+pytest tests/ -v              # All 225 tests
 pytest tests/ -k colmap       # Just COLMAP tests
 pytest tests/ -k integration  # End-to-end with tiny data
 pytest tests/ -k trainers     # Trainer abstraction tests
 pytest tests/ -k cli          # CLI command tests
+pytest tests/ -k runner       # Background runner tests
+pytest tests/ -k web_routes   # Web route integration tests
 ```
 
 Test fixtures in `tests/test_data/`:

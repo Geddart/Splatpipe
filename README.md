@@ -12,20 +12,20 @@
   <img src="https://img.shields.io/badge/python-3.11+-blue?logo=python&logoColor=white" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   <img src="https://img.shields.io/badge/platform-Windows-0078D4?logo=windows" alt="Windows">
-  <img src="https://img.shields.io/badge/tests-70%20passed-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-225%20passed-brightgreen" alt="Tests">
 </p>
 
 ---
 
 Takes COLMAP photogrammetry data through a complete pipeline:
-**auto-clean** &rarr; **training** (Postshot / LichtFeld Studio) &rarr; **SuperSplat review** &rarr; **PlayCanvas LOD output** &rarr; **CDN deploy**
+**auto-clean** &rarr; **training** (Postshot / LichtFeld Studio) &rarr; **SuperSplat review** &rarr; **PlayCanvas LOD output** &rarr; **export / deploy**
 
 Every operation is a CLI command. The web dashboard (FastAPI + HTMX + DaisyUI) sits on top and calls the same functions — so you can work from the terminal or the browser.
 
 ## Quick Start
 
 ```bash
-git clone https://github.com/your-org/splatpipe.git
+git clone https://github.com/Geddart/Splatpipe.git
 cd splatpipe
 pip install -e ".[web]"
 splatpipe web
@@ -44,10 +44,10 @@ Open **http://localhost:8000** — first-run setup guides you through:
 ```
 COLMAP data ──► Clean ──► Train ──► Review ──► Assemble ──► Deploy
                  │          │         │           │           │
-            Outlier      Postshot  SuperSplat  splat-       Bunny
-            removal +    or        manual      transform    CDN
-            KD-tree      LichtFeld cleanup     LOD meta     upload
-            filtering    Studio                + SOG
+            Outlier      Postshot  SuperSplat  splat-       Local
+            removal +    or        manual      transform    folder or
+            KD-tree      LichtFeld cleanup     LOD meta     Bunny CDN
+            filtering    Studio                + SOG        upload
 ```
 
 | Step | What it does |
@@ -56,7 +56,7 @@ COLMAP data ──► Clean ──► Train ──► Review ──► Assemble 
 | **Train** | Gaussian splat training at multiple LOD levels (e.g. 20M, 10M, 5M, 3M, 1.5M) |
 | **Review** | Open trained PLYs in SuperSplat for manual floater removal |
 | **Assemble** | Build PlayCanvas LOD streaming format (`lod-meta.json` + SOG chunks) |
-| **Deploy** | Upload to Bunny CDN with parallel uploads and progress tracking |
+| **Export** | Export to local folder or upload to Bunny CDN with progress tracking |
 
 Each step is independent — skip what you don't need with per-project **step toggles**.
 
@@ -77,7 +77,7 @@ splatpipe init <colmap_dir>     # Create project from COLMAP data
 splatpipe clean                 # Clean COLMAP data (outliers + KD-tree)
 splatpipe train                 # Train splats at all LOD levels
 splatpipe assemble              # Build LOD streaming output
-splatpipe deploy --target bunny # Upload to CDN
+splatpipe export --mode folder  # Export to local folder (or --mode cdn)
 splatpipe status                # Show project state
 splatpipe run                   # Run full pipeline
 splatpipe web                   # Launch web dashboard
@@ -114,7 +114,7 @@ MyProject/
 
 ```bash
 pip install -e ".[dev]"     # Install with dev dependencies
-pytest tests/ -v            # Run all 70 tests (~1s)
+pytest tests/ -v            # Run all 225 tests (~11s)
 ```
 
 Key design principle: **debug data over fallbacks**. No try/except — every step writes a `_debug.json` with full command, stdout/stderr, file stats, metrics, timing, and environment. When something fails, the debug JSON tells you exactly why.
