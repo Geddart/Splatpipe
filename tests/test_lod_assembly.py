@@ -139,7 +139,7 @@ class TestLodAssembly:
         assert call_cmd[idx + 1] == "2"
 
     def test_assembly_filter_harmonics_default(self, tmp_path):
-        """Assembly defaults to --filter-harmonics 0 when no step_settings."""
+        """Assembly defaults to --filter-harmonics 3 when no step_settings."""
         from splatpipe.core.project import Project
 
         project = Project.create(tmp_path / "proj", "Test")
@@ -163,7 +163,7 @@ class TestLodAssembly:
 
         call_cmd = mock_run.call_args[0][0]
         idx = call_cmd.index("--filter-harmonics")
-        assert call_cmd[idx + 1] == "0"
+        assert call_cmd[idx + 1] == "3"
 
     def test_assembly_no_viewer_on_failure(self, tmp_path):
         """Assembly does NOT generate viewer when splat-transform fails."""

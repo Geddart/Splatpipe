@@ -631,7 +631,7 @@ async def project_detail(request: Request, project_path: str):
     }
     assemble_overrides = step_overrides.get("assemble", {})
     assemble_defaults = {
-        "sh_bands": int(assemble_overrides.get("sh_bands", 0)),
+        "sh_bands": int(assemble_overrides.get("sh_bands", 3)),
     }
     step_defaults = {"clean": _Obj(clean_defaults), "train": _Obj(train_defaults), "assemble": _Obj(assemble_defaults), "export": _Obj(export_defaults)}
 
