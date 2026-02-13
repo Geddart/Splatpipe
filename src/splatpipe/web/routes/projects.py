@@ -584,7 +584,7 @@ async def project_detail(request: Request, project_path: str):
 
     # Resolve COLMAP source path
     colmap_source_dir = proj.get_folder(FOLDER_COLMAP_SOURCE)
-    if colmap_source_dir.is_symlink() or colmap_source_dir.is_junction():
+    if colmap_source_dir.is_symlink() or (hasattr(colmap_source_dir, 'is_junction') and colmap_source_dir.is_junction()):
         colmap_source_resolved = str(colmap_source_dir.resolve())
     else:
         colmap_source_resolved = state.get("colmap_source", str(colmap_source_dir))

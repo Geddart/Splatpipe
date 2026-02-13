@@ -211,7 +211,7 @@ class Project:
         ``01_colmap_source`` folder doesn't exist on disk.
         """
         source = self.get_folder(FOLDER_COLMAP_SOURCE)
-        if source.is_symlink() or source.is_junction():
+        if source.is_symlink() or (hasattr(source, 'is_junction') and source.is_junction()):
             return source.resolve()
         if source.is_dir():
             return source
