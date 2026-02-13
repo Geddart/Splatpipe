@@ -19,7 +19,7 @@ def test_create_project(tmp_path):
     state = json.loads(project.state_path.read_text())
     assert state["name"] == "TestProject"
     assert state["trainer"] == "postshot"
-    assert len(state["lod_levels"]) == 5
+    assert len(state["lod_levels"]) == 6
     assert state["steps"] == {}
 
 
@@ -110,3 +110,71 @@ def test_get_folder(tmp_path):
     clean_dir = project.get_folder("02_colmap_clean")
     assert clean_dir == project.root / "02_colmap_clean"
     assert clean_dir.is_dir()
+
+
+def test_reset_step(tmp_path):
+    """reset_step removes step entry, making status None (pending)."""
+    project = Project.create(tmp_path / "proj", "Test")
+    project.record_step("clean", "completed", summary={"cameras_kept": 42})
+    assert project.get_step_status("clean") == "completed"
+
+    project.reset_step("clean")
+    assert project.get_step_status("clean") is None
+    # Verify persisted
+    project2 = Project(project.root)
+    assert project2.get_step_status("clean") is None
+
+
+def test_reset_step_nonexistent(tmp_path):
+    """reset_step on a step that hasn't run is a no-op."""
+    project = Project.create(tmp_path / "proj", "Test")
+    project.reset_step("clean")  # should not raise
+    assert project.get_step_status("clean") is None
+
+
+def test_reset_all_steps(tmp_path):
+    """reset_all_steps clears all step entries."""
+    project = Project.create(tmp_path / "proj", "Test")
+    project.record_step("clean", "completed")
+    project.record_step("train", "failed", error="test")
+    project.record_step("assemble", "completed")
+
+    project.reset_all_steps()
+    assert project.get_step_status("clean") is None
+    assert project.get_step_status("train") is None
+    assert project.get_step_status("assemble") is None
+    # Verify persisted
+    project2 = Project(project.root)
+    assert project2.state["steps"] == {}
+
+
+def test_export_mode_default(tmp_path):
+    """Export mode defaults to 'folder'."""
+    project = Project.create(tmp_path / "proj", "Test")
+    assert project.export_mode == "folder"
+
+
+def test_set_export_mode(tmp_path):
+    """set_export_mode persists to state.json."""
+    project = Project.create(tmp_path / "proj", "Test")
+    project.set_export_mode("cdn")
+    assert project.export_mode == "cdn"
+    # Verify persisted
+    project2 = Project(project.root)
+    assert project2.export_mode == "cdn"
+
+
+def test_export_folder_default(tmp_path):
+    """Export folder defaults to empty string."""
+    project = Project.create(tmp_path / "proj", "Test")
+    assert project.export_folder == ""
+
+
+def test_set_export_folder(tmp_path):
+    """set_export_folder persists to state.json."""
+    project = Project.create(tmp_path / "proj", "Test")
+    project.set_export_folder(r"Z:\output\test")
+    assert project.export_folder == r"Z:\output\test"
+    # Verify persisted
+    project2 = Project(project.root)
+    assert project2.export_folder == r"Z:\output\test"

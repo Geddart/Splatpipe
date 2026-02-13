@@ -2,151 +2,808 @@
 {% block title %}{{ project.name }} — Splatpipe{% endblock %}
 
 {% block content %}
-<div class="flex items-center gap-4 mb-6">
-    <a href="/" class="btn btn-ghost btn-sm">&larr; Back</a>
-    <h1 class="text-3xl font-bold">{{ project.name }}</h1>
-</div>
-
-<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-    <!-- Project Info -->
-    <div class="card bg-base-100 shadow-xl">
-        <div class="card-body">
-            <h2 class="card-title">Info</h2>
-            <div class="space-y-2 text-sm">
-                <div><span class="opacity-60">Path:</span> <span class="font-mono text-xs">{{ project.path }}</span></div>
-                <div><span class="opacity-60">Trainer:</span> {{ project.trainer }}</div>
-                <div><span class="opacity-60">Created:</span> {{ project.created_at[:10] if project.created_at else 'N/A' }}</div>
+<!-- Header: Thumbnail + Name + Path + Date -->
+<div class="flex items-start gap-6 mb-8">
+    <!-- Thumbnail -->
+    <div class="flex-shrink-0">
+        <div id="thumbnail-zone" tabindex="0"
+             data-upload-url="/projects/{{ project.path }}/upload-thumbnail"
+             data-thumbnail-url="/projects/{{ project.path }}/thumbnail"
+             class="w-28 h-28 rounded-lg border-2 border-dashed border-base-300 bg-base-100
+                    flex items-center justify-center cursor-pointer overflow-hidden relative group
+                    focus:outline-none focus:ring-2 focus:ring-primary"
+             ondrop="handleThumbnailDrop(event)" ondragover="event.preventDefault()" ondragenter="event.preventDefault()"
+             onclick="document.getElementById('thumb-input').click()"
+             onpaste="handleThumbnailPaste(event)">
+            <div id="thumbnail-img">
+                {% if project.has_thumbnail %}
+                <img src="/projects/{{ project.path }}/thumbnail?t={{ range(99999)|random }}"
+                     class="w-full h-full object-cover rounded-lg" alt="Thumbnail">
+                {% else %}
+                <div class="text-center opacity-40">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 mx-auto mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                    </svg>
+                    <span class="text-xs">Click, paste, or drop</span>
+                </div>
+                {% endif %}
+            </div>
+            <div class="absolute inset-0 bg-black bg-opacity-50 opacity-0 group-hover:opacity-100 transition-opacity
+                        flex items-center justify-center rounded-lg">
+                <span class="text-white text-xs font-bold">Change</span>
             </div>
         </div>
+        <input type="file" id="thumb-input" accept="image/*" class="hidden" onchange="uploadThumbnail(this)">
     </div>
 
-    <!-- LOD Levels -->
-    <div class="card bg-base-100 shadow-xl">
-        <div class="card-body">
-            <h2 class="card-title">LOD Levels</h2>
-            <div class="space-y-1">
-                {% for lod in project.lod_levels %}
-                <div class="flex justify-between text-sm">
-                    <span class="font-mono">{{ lod.name }}</span>
-                    <span class="opacity-60">{{ (lod.max_splats / 1000000)|round(1) }}M</span>
+    <!-- Project info -->
+    <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-3 mb-1">
+            <a href="/projects/" class="btn btn-ghost btn-sm btn-circle">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+                </svg>
+            </a>
+            <!-- Editable name -->
+            <form hx-post="/projects/{{ project.path }}/update-name" hx-swap="none" class="flex-1">
+                <input type="text" name="name" value="{{ project.name }}"
+                       class="input input-ghost text-3xl font-bold w-full p-0 h-auto focus:outline-none focus:bg-base-100 rounded"
+                       onchange="this.form.requestSubmit()">
+            </form>
+        </div>
+        <div class="text-sm opacity-60 ml-12">
+            <span>{{ project.created_at[:10] if project.created_at else '' }}</span>
+        </div>
+    </div>
+</div>
+
+<!-- Two-column layout: Main content + Quick Actions -->
+<div class="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-6 mb-8">
+
+    <!-- Left column: Settings + Pipeline Steps -->
+    <div class="space-y-6">
+
+        <!-- Settings card (collapsible) -->
+        <div class="card bg-base-100 shadow-xl">
+            <div class="card-body py-4">
+                <button class="flex items-center justify-between w-full cursor-pointer"
+                        onclick="document.getElementById('settings-panel').classList.toggle('hidden'); this.querySelector('.chevron').classList.toggle('rotate-90')">
+                    <h2 class="card-title text-lg">Settings</h2>
+                    <svg class="chevron h-5 w-5 opacity-60 transition-transform duration-200" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                    </svg>
+                </button>
+                <div id="settings-panel" class="hidden grid grid-cols-1 gap-3 mt-2">
+                    <!-- Project Root (read-only) -->
+                    <div class="form-control w-full">
+                        <label class="label py-1"><span class="label-text text-xs opacity-60">Project Root</span></label>
+                        <div class="join w-full">
+                            <input type="text" value="{{ project.path }}" readonly
+                                   class="input input-bordered input-sm join-item w-full font-mono text-xs opacity-70"
+                                   title="{{ project.path }}">
+                            <button type="button" class="btn btn-outline btn-sm join-item"
+                                    hx-post="/actions/{{ project.path }}/open-folder"
+                                    hx-vals='{"folder": {{ project.path|tojson }}}'
+                                    hx-swap="none"
+                                    title="Open project folder">Open</button>
+                            <button type="button" class="btn btn-outline btn-sm join-item"
+                                    onclick="openBrowser('path-move-target', 'folder')"
+                                    title="Move project to a different location">Move</button>
+                        </div>
+                        <!-- Hidden move form (shown after browse picks a folder) -->
+                        <input type="hidden" id="path-move-target" value=""
+                               onchange="if(this.value) { if(confirm('Move project to:\\n' + this.value + '?')) { document.getElementById('move-form').querySelector('[name=destination]').value = this.value; document.getElementById('move-form').requestSubmit(); } else { this.value=''; } }">
+                        <form id="move-form" hx-post="/projects/{{ project.path }}/move" hx-swap="none" class="hidden">
+                            <input type="hidden" name="destination" value="">
+                        </form>
+                    </div>
+
+                    <!-- COLMAP Source -->
+                    <div class="form-control w-full">
+                        <label class="label py-1"><span class="label-text text-xs opacity-60">COLMAP Source</span></label>
+                        <form hx-post="/projects/{{ project.path }}/update-colmap-source" hx-swap="none">
+                            <div class="join w-full">
+                                <input type="text" name="colmap_source" id="path-colmap"
+                                       value="{{ project.colmap_source }}"
+                                       placeholder="Path to COLMAP export folder"
+                                       class="input input-bordered input-sm join-item w-full font-mono text-xs"
+                                       onchange="this.form.requestSubmit()">
+                                <button type="button" class="btn btn-outline btn-sm join-item"
+                                        onclick="openBrowser('path-colmap', 'folder')">Browse</button>
+                            </div>
+                        </form>
+                    </div>
+
+                    <!-- Alignment File -->
+                    <div class="form-control w-full">
+                        <label class="label py-1"><span class="label-text text-xs opacity-60">Alignment File</span></label>
+                        <form hx-post="/projects/{{ project.path }}/update-alignment-file" hx-swap="none">
+                            <div class="join w-full">
+                                <input type="text" name="alignment_file" id="path-alignment"
+                                       value="{{ project.alignment_file }}"
+                                       placeholder="Path to .rcproj, .psx, etc."
+                                       class="input input-bordered input-sm join-item w-full font-mono text-xs"
+                                       onchange="this.form.requestSubmit()">
+                                <button type="button" class="btn btn-outline btn-sm join-item"
+                                        onclick="openBrowser('path-alignment', 'file')">Browse</button>
+                            </div>
+                        </form>
+                    </div>
+
+                    <!-- Clear Output -->
+                    <div class="form-control w-full pt-2 border-t border-base-300">
+                        <button class="btn btn-error btn-sm btn-outline w-full"
+                                onclick="confirmClearAll()">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                            </svg>
+                            Clear Output
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Pipeline Steps -->
+        <div>
+            {% set any_running = steps|selectattr('is_actively_running')|list|length > 0 %}
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-2xl font-bold">Pipeline Steps</h2>
+                {% if not any_running %}
+                <button class="btn btn-primary btn-sm gap-2"
+                        hx-post="/steps/{{ project.path }}/run-all"
+                        hx-target="#run-all-progress"
+                        hx-swap="innerHTML">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    </svg>
+                    Run Enabled
+                </button>
+                {% endif %}
+            </div>
+
+            <!-- Run All progress panel (auto-reconnect if running) -->
+            <div id="run-all-progress" class="mb-4">
+                {% if any_running %}
+                <div hx-ext="sse" sse-connect="/steps/{{ project.path }}/progress"
+                     sse-close="complete" class="space-y-2 p-4 bg-base-100 rounded-lg shadow">
+                    <div class="flex items-center justify-between mb-2">
+                        <div class="flex items-center gap-2">
+                            <span class="loading loading-spinner loading-sm"></span>
+                            <span class="font-bold" sse-swap="step-label" hx-swap="innerHTML">Reconnecting...</span>
+                        </div>
+                        <button class="btn btn-error btn-sm btn-outline"
+                                hx-post="/steps/{{ project.path }}/cancel"
+                                hx-swap="outerHTML">Cancel</button>
+                    </div>
+                    <div sse-swap="progress" hx-swap="innerHTML">
+                        <div class="flex items-center gap-3">
+                            <progress class="progress progress-primary flex-1 h-3"></progress>
+                            <span class="text-sm font-mono font-bold w-12 text-right">...</span>
+                        </div>
+                    </div>
+                    <div class="text-sm font-mono opacity-70" sse-swap="message" hx-swap="innerHTML"></div>
+                    <div sse-swap="complete" hx-swap="outerHTML"></div>
+                </div>
+                {% endif %}
+            </div>
+
+            <div class="grid gap-4">
+                {% for step in steps %}
+                <div class="card bg-base-100 shadow-xl {% if not step.enabled %}opacity-50{% endif %}">
+                    <div class="card-body py-4 px-5">
+                        <!-- Step header row -->
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center gap-4">
+                                <!-- Toggle -->
+                                <form method="post" action="/projects/{{ project.path }}/toggle-step">
+                                    <input type="hidden" name="step_name" value="{{ step.name }}">
+                                    <input type="hidden" name="enabled" value="{{ 'false' if step.enabled else 'true' }}">
+                                    <button type="submit" class="tooltip" data-tip="{{ 'Disable' if step.enabled else 'Enable' }}">
+                                        <input type="checkbox" class="toggle toggle-primary toggle-sm"
+                                               {% if step.enabled %}checked{% endif %}
+                                               onclick="this.form.submit()" tabindex="-1">
+                                    </button>
+                                </form>
+
+                                <!-- Name + status -->
+                                <div>
+                                    <span class="font-bold text-lg">
+                                        {% if step.name == 'clean' %}Clean COLMAP
+                                        {% elif step.name == 'train' %}Train Splats
+                                        {% elif step.name == 'assemble' %}Assemble LODs
+                                        {% elif step.name == 'export' %}Export
+                                        {% else %}{{ step.name }}
+                                        {% endif %}
+                                    </span>
+                                    {% if not step.enabled %}
+                                        <span class="badge badge-ghost badge-sm ml-2">Skipped</span>
+                                    {% elif step.status == 'completed' %}
+                                        <span class="badge badge-success badge-sm ml-2">Completed</span>
+                                    {% elif step.status == 'failed' %}
+                                        <span class="badge badge-error badge-sm ml-2">Failed</span>
+                                    {% elif step.status == 'cancelled' %}
+                                        <span class="badge badge-warning badge-sm ml-2">Cancelled</span>
+                                    {% elif step.status == 'running' %}
+                                        <span class="badge badge-info badge-sm ml-2">Running</span>
+                                    {% else %}
+                                        <span class="badge badge-ghost badge-sm ml-2">Pending</span>
+                                    {% endif %}
+                                </div>
+
+                                <!-- Summary -->
+                                {% if step.summary %}
+                                <div class="text-xs opacity-60">
+                                    {% if step.name == 'clean' and step.summary %}
+                                        {{ step.summary.get('cameras_kept', '?') }} cameras kept
+                                    {% elif step.name == 'train' and step.summary %}
+                                        {{ step.summary.get('lod_count', '?') }} LODs trained
+                                    {% elif step.name == 'assemble' and step.summary %}
+                                        {{ step.summary.get('chunk_count', '?') }} chunks
+                                    {% elif step.name == 'export' and step.summary %}
+                                        {% if step.summary.get('copied') %}
+                                            {{ step.summary.get('copied', '?') }} files copied
+                                        {% else %}
+                                            {{ step.summary.get('uploaded', '?') }} files uploaded
+                                        {% endif %}
+                                    {% endif %}
+                                </div>
+                                {% endif %}
+
+                                <!-- File size indicator -->
+                                {% if step.folder_stats and step.folder_stats.display %}
+                                <div class="text-xs opacity-40 font-mono">{{ step.folder_stats.display }}</div>
+                                {% endif %}
+                            </div>
+
+                            <!-- Right side: delete + settings + run -->
+                            <div class="flex items-center gap-2">
+                                <!-- Delete step data / reset status -->
+                                {% set has_files = step.folder_stats and step.folder_stats.file_count > 0 %}
+                                {% set has_status = step.status != 'pending' %}
+                                {% if step.output_folder or has_status %}
+                                <button class="btn btn-ghost btn-sm btn-circle text-error opacity-40 hover:opacity-100
+                                               {% if not has_files and not has_status %}btn-disabled{% endif %}"
+                                        {% if has_files or has_status %}
+                                        onclick="confirmClearStep('{{ step.name }}')"
+                                        {% else %}
+                                        disabled
+                                        {% endif %}
+                                        title="{% if has_files %}Clear {{ step.folder_stats.display }}{% elif has_status %}Reset step status{% else %}No output files{% endif %}">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                    </svg>
+                                </button>
+                                {% endif %}
+
+                                {% if step.name in ('clean', 'train', 'assemble', 'export') %}
+                                <button class="btn btn-ghost btn-sm btn-circle"
+                                        onclick="var p=document.getElementById('settings-{{ step.name }}'); p.classList.toggle('hidden'); this.querySelector('.step-chevron').classList.toggle('rotate-90')"
+                                        title="Step settings">
+                                    <svg class="step-chevron h-4 w-4 transition-transform duration-200" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                                    </svg>
+                                </button>
+                                {% endif %}
+
+                                {% if step.enabled and not step.is_actively_running and not any_running %}
+                                    {% set can_run = true %}
+                                    {% if step.name == 'train' %}
+                                        {% set clean_step = steps|selectattr('name', 'eq', 'clean')|first %}
+                                        {% if clean_step.enabled and clean_step.status != 'completed' %}
+                                            {% set can_run = false %}
+                                        {% endif %}
+                                    {% elif step.name == 'assemble' %}
+                                        {% set train_step = steps|selectattr('name', 'eq', 'train')|first %}
+                                        {% if train_step.enabled and train_step.status != 'completed' %}
+                                            {% set can_run = false %}
+                                        {% endif %}
+                                    {% elif step.name == 'export' %}
+                                        {% set assemble_step = steps|selectattr('name', 'eq', 'assemble')|first %}
+                                        {% if assemble_step.enabled and assemble_step.status != 'completed' %}
+                                            {% set can_run = false %}
+                                        {% endif %}
+                                    {% endif %}
+
+                                    <button class="btn btn-primary btn-sm"
+                                            {% if not can_run %}disabled{% endif %}
+                                            hx-post="/steps/{{ project.path }}/run/{{ step.name }}"
+                                            hx-target="#progress-{{ step.name }}"
+                                            hx-swap="innerHTML">
+                                        {% if step.status == 'completed' %}Re-run{% elif step.status == 'failed' %}Retry{% else %}Run{% endif %}
+                                    </button>
+                                {% endif %}
+                            </div>
+                        </div>
+
+                        <!-- Collapsible settings: Clean COLMAP -->
+                        {% if step.name == 'clean' %}
+                        <div id="settings-clean" class="hidden mt-4 pt-4 border-t border-base-300">
+                            <form hx-post="/projects/{{ project.path }}/update-step-settings"
+                                  hx-vals='{"step_name": "clean"}' hx-swap="none"
+                                  class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                                <div class="form-control">
+                                    <label class="label py-0"><span class="label-text text-xs">Threshold Mode</span></label>
+                                    <select name="outlier_threshold_auto" class="select select-bordered select-xs w-full" onchange="this.form.requestSubmit()">
+                                        <option value="true" {% if step_defaults.clean.outlier_threshold_auto %}selected{% endif %}>Auto</option>
+                                        <option value="false" {% if not step_defaults.clean.outlier_threshold_auto %}selected{% endif %}>Fixed</option>
+                                    </select>
+                                </div>
+                                <div class="form-control">
+                                    <label class="label py-0"><span class="label-text text-xs">Percentile</span></label>
+                                    <input type="number" name="outlier_percentile" step="0.01"
+                                           value="{{ step_defaults.clean.outlier_percentile }}"
+                                           class="input input-bordered input-xs w-full" onchange="this.form.requestSubmit()">
+                                </div>
+                                <div class="form-control">
+                                    <label class="label py-0"><span class="label-text text-xs">Multiplier</span></label>
+                                    <input type="number" name="outlier_multiplier" step="0.1"
+                                           value="{{ step_defaults.clean.outlier_multiplier }}"
+                                           class="input input-bordered input-xs w-full" onchange="this.form.requestSubmit()">
+                                </div>
+                                <div class="form-control">
+                                    <label class="label py-0"><span class="label-text text-xs">KD-tree Threshold</span></label>
+                                    <input type="number" name="kdtree_threshold" step="0.01"
+                                           value="{{ step_defaults.clean.kdtree_threshold }}"
+                                           class="input input-bordered input-xs w-full" onchange="this.form.requestSubmit()">
+                                </div>
+                            </form>
+                        </div>
+                        {% endif %}
+
+                        <!-- Collapsible settings: Train Splats -->
+                        {% if step.name == 'train' %}
+                        <div id="settings-train" class="hidden mt-4 pt-4 border-t border-base-300">
+                            <!-- Trainer selection -->
+                            <div class="flex items-center gap-4 mb-4">
+                                <div class="form-control">
+                                    <label class="label py-0"><span class="label-text text-xs">Trainer</span></label>
+                                    <form hx-post="/projects/{{ project.path }}/update-trainer" hx-swap="none">
+                                        <select name="trainer" class="select select-bordered select-sm" onchange="this.form.requestSubmit()">
+                                            <option value="postshot" {% if project.trainer == 'postshot' %}selected{% endif %}>Postshot</option>
+                                            <option value="lichtfeld" {% if project.trainer == 'lichtfeld' %}selected{% endif %}>LichtFeld Studio</option>
+                                        </select>
+                                    </form>
+                                </div>
+                            </div>
+
+                            <!-- Training options (saved as step_settings["train"]) -->
+                            <form hx-post="/projects/{{ project.path }}/update-step-settings"
+                                  hx-vals='{"step_name": "train"}' hx-swap="none"
+                                  class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
+                                <!-- Model Profile -->
+                                <div class="form-control">
+                                    <label class="label py-0"><span class="label-text text-xs">Model Profile</span></label>
+                                    <select name="profile" class="select select-bordered select-xs w-full" onchange="this.form.requestSubmit()">
+                                        <option value="Splat3" {% if step_defaults.train.profile == 'Splat3' %}selected{% endif %}>Splat3</option>
+                                        <option value="Splat MCMC" {% if step_defaults.train.profile == 'Splat MCMC' %}selected{% endif %}>Splat MCMC</option>
+                                        <option value="Splat ADC" {% if step_defaults.train.profile == 'Splat ADC' %}selected{% endif %}>Splat ADC</option>
+                                    </select>
+                                </div>
+
+                                <!-- Downsample Images -->
+                                <div class="form-control">
+                                    <label class="label py-0"><span class="label-text text-xs">Downsample Images</span></label>
+                                    <div class="flex items-center gap-2">
+                                        <input type="hidden" name="downsample" value="false">
+                                        <input type="checkbox" name="downsample" value="true"
+                                               class="checkbox checkbox-xs checkbox-primary"
+                                               {% if step_defaults.train.downsample %}checked{% endif %}
+                                               onchange="this.form.requestSubmit(); document.getElementById('max-image-size').classList.toggle('opacity-30', !this.checked)">
+                                        <input type="number" name="max_image_size" id="max-image-size"
+                                               value="{{ step_defaults.train.max_image_size }}"
+                                               class="input input-bordered input-xs w-20 font-mono {% if not step_defaults.train.downsample %}opacity-30{% endif %}"
+                                               onchange="this.form.requestSubmit()">
+                                        <span class="text-xs opacity-40">px</span>
+                                    </div>
+                                </div>
+
+                                <!-- Anti-Aliasing -->
+                                <div class="form-control">
+                                    <label class="label py-0"><span class="label-text text-xs">Anti-Aliasing</span></label>
+                                    <label class="cursor-pointer flex items-center gap-2 mt-1">
+                                        <input type="hidden" name="anti_aliasing" value="false">
+                                        <input type="checkbox" name="anti_aliasing" value="true"
+                                               class="checkbox checkbox-xs checkbox-primary"
+                                               {% if step_defaults.train.anti_aliasing %}checked{% endif %}
+                                               onchange="this.form.requestSubmit()">
+                                        <span class="text-xs">Enabled</span>
+                                    </label>
+                                </div>
+
+                                <!-- Create Sky Model -->
+                                <div class="form-control">
+                                    <label class="label py-0"><span class="label-text text-xs">Sky Model</span></label>
+                                    <label class="cursor-pointer flex items-center gap-2 mt-1">
+                                        <input type="hidden" name="create_sky_model" value="false">
+                                        <input type="checkbox" name="create_sky_model" value="true"
+                                               class="checkbox checkbox-xs checkbox-primary"
+                                               {% if step_defaults.train.create_sky_model %}checked{% endif %}
+                                               onchange="this.form.requestSubmit()">
+                                        <span class="text-xs">Create</span>
+                                    </label>
+                                </div>
+
+                                <!-- Stop Training After -->
+                                <div class="form-control">
+                                    <label class="label py-0"><span class="label-text text-xs">Stop After</span></label>
+                                    <div class="flex items-center gap-2">
+                                        <input type="number" name="train_steps_limit"
+                                               value="{{ step_defaults.train.train_steps_limit }}"
+                                               min="0" step="10"
+                                               class="input input-bordered input-xs w-20 font-mono"
+                                               onchange="this.form.requestSubmit()">
+                                        <span class="text-xs opacity-40">kSteps (0=auto)</span>
+                                    </div>
+                                </div>
+                            </form>
+
+                            <!-- LOD Levels -->
+                            <div class="mb-2">
+                                <span class="text-xs font-bold opacity-60 uppercase tracking-wider">LOD Levels</span>
+                            </div>
+
+                            {% include "partials/lod_list.html" with context %}
+
+                            <!-- Add LOD -->
+                            <form hx-post="/projects/{{ project.path }}/add-lod"
+                                  hx-target="#lod-list" hx-swap="outerHTML"
+                                  class="flex gap-2 mt-3">
+                                <input type="text" name="lod" placeholder="e.g. 5M"
+                                       class="input input-bordered input-sm flex-1 font-mono text-sm">
+                                <button type="submit" class="btn btn-primary btn-sm">+ Add</button>
+                            </form>
+                        </div>
+                        {% endif %}
+
+                        <!-- Collapsible settings: Assemble LODs -->
+                        {% if step.name == 'assemble' %}
+                        <div id="settings-assemble" class="hidden mt-4 pt-4 border-t border-base-300">
+                            <div class="mb-2">
+                                <span class="text-xs font-bold opacity-60 uppercase tracking-wider">LOD Viewer Distances (meters)</span>
+                            </div>
+                            <form hx-post="/projects/{{ project.path }}/update-lod-distances" hx-swap="none"
+                                  class="space-y-2">
+                                {% for lod in lod_levels %}
+                                <div class="flex items-center gap-3 text-sm">
+                                    <span class="font-mono w-32 {% if not lod.get('enabled', true) %}opacity-40{% endif %}">{{ lod.name }}</span>
+                                    <input type="number" name="dist_{{ loop.index0 }}" step="1" min="0"
+                                           value="{{ lod_distances[loop.index0] if loop.index0 < lod_distances|length else (loop.index0 + 1) * 5 }}"
+                                           class="input input-bordered input-xs w-24 font-mono"
+                                           {% if not lod.get('enabled', true) %}disabled{% endif %}
+                                           onchange="this.form.requestSubmit()">
+                                    <span class="text-xs opacity-40">m</span>
+                                </div>
+                                {% endfor %}
+                            </form>
+                            <p class="text-xs opacity-40 mt-3">Camera distance at which each LOD activates in the PlayCanvas viewer.</p>
+                        </div>
+                        {% endif %}
+
+                        <!-- Collapsible settings: Export -->
+                        {% if step.name == 'export' %}
+                        <div id="settings-export" class="hidden mt-4 pt-4 border-t border-base-300">
+                            <!-- Mode selection + Purge toggle -->
+                            <div class="flex items-center gap-6 mb-4">
+                                <div class="form-control">
+                                    <label class="label py-0"><span class="label-text text-xs">Export Mode</span></label>
+                                    <form hx-post="/projects/{{ project.path }}/update-export-mode" hx-swap="none">
+                                        <select name="export_mode" class="select select-bordered select-sm"
+                                                onchange="this.form.requestSubmit(); toggleExportSettings(this.value)">
+                                            <option value="folder" {% if step_defaults.export.export_mode == 'folder' %}selected{% endif %}>Export to Folder</option>
+                                            <option value="cdn" {% if step_defaults.export.export_mode == 'cdn' %}selected{% endif %}>Deploy to CDN</option>
+                                        </select>
+                                    </form>
+                                </div>
+                                <div class="form-control">
+                                    <label class="label py-0"><span class="label-text text-xs">Clean Export</span></label>
+                                    <form hx-post="/projects/{{ project.path }}/update-step-settings"
+                                          hx-vals='{"step_name": "export"}' hx-swap="none">
+                                        <label class="cursor-pointer flex items-center gap-2 mt-1">
+                                            <input type="hidden" name="purge_before_export" value="false">
+                                            <input type="checkbox" name="purge_before_export" value="true"
+                                                   class="checkbox checkbox-xs checkbox-primary"
+                                                   {% if step_defaults.export.purge_before_export %}checked{% endif %}
+                                                   onchange="this.form.requestSubmit()">
+                                            <span class="text-xs">Delete old files first</span>
+                                        </label>
+                                    </form>
+                                </div>
+                            </div>
+
+                            <!-- Folder settings (shown when mode=folder) -->
+                            <div id="export-folder-settings" {% if step_defaults.export.export_mode != 'folder' %}class="hidden"{% endif %}>
+                                <div class="form-control w-full">
+                                    <label class="label py-0"><span class="label-text text-xs">Destination Folder</span></label>
+                                    <form hx-post="/projects/{{ project.path }}/update-export-folder" hx-swap="none">
+                                        <div class="join w-full">
+                                            <input type="text" name="export_folder" id="path-export-folder"
+                                                   value="{{ step_defaults.export.export_folder }}"
+                                                   placeholder="Path to export destination"
+                                                   class="input input-bordered input-sm join-item w-full font-mono text-xs"
+                                                   onchange="this.form.requestSubmit()">
+                                            <button type="button" class="btn btn-outline btn-sm join-item"
+                                                    onclick="openBrowser('path-export-folder', 'folder')">Browse</button>
+                                        </div>
+                                    </form>
+                                </div>
+                            </div>
+
+                            <!-- CDN settings (shown when mode=cdn) -->
+                            <div id="export-cdn-settings" {% if step_defaults.export.export_mode != 'cdn' %}class="hidden"{% endif %}>
+                                <p class="text-xs opacity-60">
+                                    Uploads to Bunny CDN. Configure credentials in your project's <code>.env</code> file:
+                                    <code>BUNNY_STORAGE_ZONE</code>, <code>BUNNY_STORAGE_PASSWORD</code>, <code>BUNNY_CDN_URL</code>.
+                                </p>
+                            </div>
+                        </div>
+                        <script>
+                        function toggleExportSettings(mode) {
+                            document.getElementById('export-folder-settings').classList.toggle('hidden', mode !== 'folder');
+                            document.getElementById('export-cdn-settings').classList.toggle('hidden', mode !== 'cdn');
+                        }
+                        </script>
+                        {% endif %}
+
+                        <!-- Progress panel (filled by HTMX) -->
+                        <div id="progress-{{ step.name }}" class="mt-2"></div>
+                    </div>
                 </div>
                 {% endfor %}
             </div>
         </div>
     </div>
 
-    <!-- Quick Actions -->
-    <div class="card bg-base-100 shadow-xl">
-        <div class="card-body">
-            <h2 class="card-title">Quick Actions</h2>
-            <div class="space-y-2">
-                <a href="https://superspl.at/editor" target="_blank"
-                   class="btn btn-outline btn-sm btn-block">
-                    Open SuperSplat
-                </a>
-            </div>
-        </div>
-    </div>
-</div>
+    <!-- Right column: Quick Actions -->
+    <div class="space-y-6">
+        <div class="card bg-base-100 shadow-xl">
+            <div class="card-body py-4">
+                <h2 class="card-title text-lg mb-3">Quick Actions</h2>
 
-<!-- Pipeline Steps -->
-<div class="mt-8">
-    <h2 class="text-2xl font-bold mb-4">Pipeline Steps</h2>
-
-    <div class="grid gap-4">
-        {% for step in steps %}
-        <div class="card bg-base-100 shadow-xl {% if not step.enabled %}opacity-50{% endif %}">
-            <div class="card-body flex-row items-center justify-between py-4">
-                <!-- Step info -->
-                <div class="flex items-center gap-4">
-                    <!-- Toggle -->
-                    <form method="post" action="/projects/{{ project.path }}/toggle-step">
-                        <input type="hidden" name="step_name" value="{{ step.name }}">
-                        <input type="hidden" name="enabled" value="{{ 'false' if step.enabled else 'true' }}">
-                        <button type="submit" class="tooltip" data-tip="{{ 'Disable' if step.enabled else 'Enable' }}">
-                            <input type="checkbox" class="toggle toggle-primary toggle-sm"
-                                   {% if step.enabled %}checked{% endif %}
-                                   onclick="this.form.submit()" tabindex="-1">
+                <!-- Open Tools -->
+                <div class="mb-4">
+                    <h3 class="text-xs font-bold opacity-60 uppercase tracking-wider mb-2">Open Tools</h3>
+                    <div class="space-y-1">
+                        <button class="btn btn-outline btn-sm btn-block justify-start gap-2"
+                                hx-post="/actions/{{ project.path }}/open-tool"
+                                hx-vals='{"tool": "postshot"}' hx-swap="none">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+                            Postshot
                         </button>
-                    </form>
-
-                    <!-- Name + status -->
-                    <div>
-                        <span class="font-bold text-lg">
-                            {% if step.name == 'clean' %}Clean COLMAP
-                            {% elif step.name == 'train' %}Train Splats
-                            {% elif step.name == 'assemble' %}Assemble LODs
-                            {% elif step.name == 'deploy' %}Deploy to CDN
-                            {% else %}{{ step.name }}
-                            {% endif %}
-                        </span>
-                        {% if not step.enabled %}
-                            <span class="badge badge-ghost badge-sm ml-2">Skipped</span>
-                        {% elif step.status == 'completed' %}
-                            <span class="badge badge-success badge-sm ml-2">Completed</span>
-                        {% elif step.status == 'failed' %}
-                            <span class="badge badge-error badge-sm ml-2">Failed</span>
-                        {% elif step.status == 'running' %}
-                            <span class="badge badge-warning badge-sm ml-2">Running</span>
-                        {% else %}
-                            <span class="badge badge-ghost badge-sm ml-2">Pending</span>
+                        <button class="btn btn-outline btn-sm btn-block justify-start gap-2"
+                                hx-post="/actions/{{ project.path }}/open-tool"
+                                hx-vals='{"tool": "lichtfeld"}' hx-swap="none">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+                            LichtFeld Studio
+                        </button>
+                        <button class="btn btn-outline btn-sm btn-block justify-start gap-2"
+                                hx-post="/actions/{{ project.path }}/open-tool"
+                                hx-vals='{"tool": "colmap"}' hx-swap="none">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+                            COLMAP GUI
+                        </button>
+                        <a href="{{ supersplat_url }}" target="_blank"
+                           class="btn btn-outline btn-sm btn-block justify-start gap-2">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+                            SuperSplat
+                        </a>
+                        {% if project.alignment_file %}
+                        <button class="btn btn-outline btn-sm btn-block justify-start gap-2"
+                                hx-post="/actions/{{ project.path }}/open-file"
+                                hx-vals='{"file": {{ project.alignment_file|tojson }}}'
+                                hx-swap="none">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                            Alignment File
+                        </button>
                         {% endif %}
                     </div>
-
-                    <!-- Summary -->
-                    {% if step.summary %}
-                    <div class="text-xs opacity-60">
-                        {% if step.name == 'clean' and step.summary %}
-                            {{ step.summary.get('cameras_kept', '?') }} cameras kept
-                        {% elif step.name == 'train' and step.summary %}
-                            {{ step.summary.get('lod_count', '?') }} LODs trained
-                        {% elif step.name == 'assemble' and step.summary %}
-                            {{ step.summary.get('chunk_count', '?') }} chunks
-                        {% elif step.name == 'deploy' and step.summary %}
-                            {{ step.summary.get('uploaded', '?') }} files uploaded
-                        {% endif %}
-                    </div>
-                    {% endif %}
                 </div>
 
-                <!-- Run button -->
+                <!-- Open Folders -->
                 <div>
-                    {% if step.enabled and step.status != 'running' %}
-                        {% set can_run = true %}
-
-                        {# Prerequisites: train needs clean done (or disabled), assemble needs train done, deploy needs assemble done #}
-                        {% if step.name == 'train' %}
-                            {% set clean_step = steps|selectattr('name', 'eq', 'clean')|first %}
-                            {% if clean_step.enabled and clean_step.status != 'completed' %}
-                                {% set can_run = false %}
-                            {% endif %}
-                        {% elif step.name == 'assemble' %}
-                            {% set train_step = steps|selectattr('name', 'eq', 'train')|first %}
-                            {% if train_step.enabled and train_step.status != 'completed' %}
-                                {% set can_run = false %}
-                            {% endif %}
-                        {% elif step.name == 'deploy' %}
-                            {% set assemble_step = steps|selectattr('name', 'eq', 'assemble')|first %}
-                            {% if assemble_step.enabled and assemble_step.status != 'completed' %}
-                                {% set can_run = false %}
-                            {% endif %}
-                        {% endif %}
-
-                        <button class="btn btn-primary btn-sm"
-                                {% if not can_run %}disabled{% endif %}
-                                hx-post="/steps/{{ project.path }}/run/{{ step.name }}"
-                                hx-target="#progress-{{ step.name }}"
-                                hx-swap="innerHTML">
-                            {% if step.status == 'completed' %}Re-run{% elif step.status == 'failed' %}Retry{% else %}Run{% endif %}
+                    <h3 class="text-xs font-bold opacity-60 uppercase tracking-wider mb-2">Open Folders</h3>
+                    <div class="space-y-1">
+                        {% set folder_items = [
+                            ("Project Root", folders.root),
+                            ("COLMAP Source", folders.colmap_source),
+                            ("Clean Output", folders.colmap_clean),
+                            ("Training", folders.training),
+                            ("Review", folders.review),
+                            ("Output", folders.output),
+                        ] %}
+                        {% for label, path in folder_items %}
+                        <button class="btn btn-ghost btn-sm btn-block justify-start gap-2 font-normal"
+                                hx-post="/actions/{{ project.path }}/open-folder"
+                                hx-vals='{"folder": {{ path|tojson }}}' hx-swap="none">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-warning" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
+                            {{ label }}
                         </button>
-                    {% endif %}
+                        {% endfor %}
+                    </div>
                 </div>
             </div>
-
-            <!-- Progress panel (filled by HTMX) -->
-            <div id="progress-{{ step.name }}" class="px-6 pb-4"></div>
         </div>
-        {% endfor %}
     </div>
 </div>
+
+<!-- Browse Modal (shared) -->
+{% include "partials/browse_modal.html" %}
+<script src="/static/browse.js"></script>
+
+<!-- Thumbnail upload (drag-and-drop, file picker, clipboard paste, client-side JPEG conversion) -->
+<script>
+var MAX_THUMB_SIZE = 512;
+
+function handleThumbnailDrop(event) {
+    event.preventDefault();
+    var file = event.dataTransfer.files[0];
+    if (file && file.type.startsWith('image/')) {
+        convertAndUpload(file);
+    }
+}
+
+function handleThumbnailPaste(event) {
+    var items = (event.clipboardData || event.originalEvent.clipboardData).items;
+    for (var i = 0; i < items.length; i++) {
+        if (items[i].type.indexOf('image') !== -1) {
+            event.preventDefault();
+            var blob = items[i].getAsFile();
+            convertAndUpload(blob);
+            return;
+        }
+    }
+}
+
+function uploadThumbnail(input) {
+    if (input.files && input.files[0]) {
+        convertAndUpload(input.files[0]);
+    }
+}
+
+function convertAndUpload(blob) {
+    var img = new Image();
+    img.onload = function() {
+        var w = img.width, h = img.height;
+        if (w > MAX_THUMB_SIZE || h > MAX_THUMB_SIZE) {
+            var scale = MAX_THUMB_SIZE / Math.max(w, h);
+            w = Math.round(w * scale);
+            h = Math.round(h * scale);
+        }
+        var canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        var ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, w, h);
+        canvas.toBlob(function(jpegBlob) {
+            doThumbnailUpload(jpegBlob);
+        }, 'image/jpeg', 0.85);
+        URL.revokeObjectURL(img.src);
+    };
+    img.src = URL.createObjectURL(blob);
+}
+
+function doThumbnailUpload(blob) {
+    var zone = document.getElementById('thumbnail-zone');
+    var uploadUrl = zone.getAttribute('data-upload-url');
+
+    var formData = new FormData();
+    formData.append('file', blob, 'thumbnail.jpg');
+
+    fetch(uploadUrl, {
+        method: 'POST',
+        body: formData
+    })
+    .then(function(r) {
+        var trigger = r.headers.get('HX-Trigger');
+        if (trigger) {
+            var parsed = JSON.parse(trigger);
+            if (parsed.showToast) {
+                document.body.dispatchEvent(new CustomEvent('showToast', {detail: parsed.showToast}));
+            }
+        }
+        return r.text();
+    })
+    .then(function(html) {
+        if (html) {
+            document.getElementById('thumbnail-img').innerHTML = html;
+        }
+    });
+}
+</script>
+
+<!-- Delete confirmation dialogs -->
+<dialog id="delete-dialog" class="modal">
+    <div class="modal-box">
+        <h3 class="text-lg font-bold mb-3" id="delete-dialog-title">Delete files?</h3>
+        <div id="delete-dialog-body" class="space-y-2"></div>
+        <div class="modal-action">
+            <button class="btn btn-ghost" onclick="document.getElementById('delete-dialog').close()">Cancel</button>
+            <button class="btn btn-error" id="delete-dialog-confirm">Delete</button>
+        </div>
+    </div>
+    <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>
+
+<script>
+var PROJECT_PATH = {{ project.path|tojson }}.replace(/\\/g, '/');
+var STEP_LABELS = {clean: 'Clean COLMAP', train: 'Train Splats', assemble: 'Assemble LODs', export: 'Export'};
+var STEP_DATA = {
+    {% for step in steps %}
+    {{ step.name|tojson }}: {
+        folder: {{ (step.output_folder|replace('\\', '/') if step.output_folder else '')|tojson }},
+        file_list: {{ (step.folder_stats.file_list if step.folder_stats else [])|tojson }},
+        display: {{ (step.folder_stats.display if step.folder_stats and step.folder_stats.display else '')|tojson }},
+        status: {{ step.status|tojson }}
+    }{% if not loop.last %},{% endif %}
+    {% endfor %}
+};
+
+function confirmClearStep(stepName) {
+    var data = STEP_DATA[stepName] || {};
+    var folderPath = data.folder || '';
+    var items = data.file_list || [];
+    var displaySize = data.display || '';
+    var currentStatus = data.status || 'pending';
+
+    var dialog = document.getElementById('delete-dialog');
+    var title = document.getElementById('delete-dialog-title');
+    var body = document.getElementById('delete-dialog-body');
+    var confirmBtn = document.getElementById('delete-dialog-confirm');
+
+    var hasFiles = items && items.length > 0;
+
+    if (hasFiles) {
+        title.textContent = 'Delete ' + (STEP_LABELS[stepName] || stepName) + ' output?';
+        var html = '<div class="text-sm opacity-70 font-mono mb-3">' + folderPath + '</div>';
+        html += '<div class="text-sm font-bold mb-1">' + displaySize + '</div>';
+        html += '<ul class="text-sm font-mono opacity-70 list-disc list-inside max-h-48 overflow-y-auto">';
+        items.forEach(function(item) {
+            html += '<li>' + item + '</li>';
+        });
+        html += '</ul>';
+        html += '<p class="text-xs opacity-50 mt-3">Step status will be reset to Pending.</p>';
+    } else {
+        title.textContent = 'Reset ' + (STEP_LABELS[stepName] || stepName) + '?';
+        var html = '<p class="text-sm">No output files to delete.</p>';
+        html += '<p class="text-sm mt-2">Reset step status from <strong>' + currentStatus + '</strong> to <strong>Pending</strong>?</p>';
+    }
+    body.innerHTML = html;
+
+    confirmBtn.textContent = hasFiles ? 'Delete' : 'Reset';
+    confirmBtn.onclick = function() {
+        dialog.close();
+        fetch('/projects/' + PROJECT_PATH + '/clear-step/' + stepName, {method: 'POST'}).then(function() { location.reload(); });
+    };
+
+    dialog.showModal();
+}
+
+function confirmClearAll() {
+    var dialog = document.getElementById('delete-dialog');
+    var title = document.getElementById('delete-dialog-title');
+    var body = document.getElementById('delete-dialog-body');
+    var confirmBtn = document.getElementById('delete-dialog-confirm');
+
+    title.textContent = 'Clear all output?';
+
+    var html = '<p class="text-sm mb-3">This will delete the contents of:</p>';
+    html += '<ul class="text-sm font-mono opacity-70 list-disc list-inside">';
+    {% for step in steps %}
+    {% if step.output_folder and step.folder_stats and step.folder_stats.file_count > 0 %}
+    html += '<li>{{ step.output_folder|replace("\\", "\\\\") }} ({{ step.folder_stats.display }})</li>';
+    {% endif %}
+    {% endfor %}
+    html += '</ul>';
+    html += '<p class="text-xs opacity-50 mt-3">All step statuses will be reset to Pending.</p>';
+    body.innerHTML = html;
+
+    confirmBtn.onclick = function() {
+        dialog.close();
+        fetch('/projects/' + PROJECT_PATH + '/clear-all', {method: 'POST'}).then(function() { location.reload(); });
+    };
+
+    dialog.showModal();
+}
+</script>
 {% endblock %}

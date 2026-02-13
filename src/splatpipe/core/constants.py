@@ -21,12 +21,13 @@ DEFAULT_LOD_LEVELS = [
     ("lod0_20000k", 20_000_000),
     ("lod1_10000k", 10_000_000),
     ("lod2_5000k",   5_000_000),
-    ("lod3_3000k",   3_000_000),
-    ("lod4_1500k",   1_500_000),
+    ("lod3_2000k",   2_000_000),
+    ("lod4_1000k",   1_000_000),
+    ("lod5_500k",      500_000),
 ]
 
 # Step names used in state.json
 STEP_CLEAN = "clean"
 STEP_TRAIN = "train"
 STEP_ASSEMBLE = "assemble"
-STEP_DEPLOY = "deploy"
+STEP_EXPORT = "export"

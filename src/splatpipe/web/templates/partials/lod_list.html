@@ -1,0 +1,42 @@
+<!-- LOD list partial — used by project_detail and HTMX partial responses -->
+<div id="lod-list" class="space-y-1">
+    {% for lod in lod_levels %}
+    <div class="flex justify-between items-center text-sm group">
+        <div class="flex items-center gap-2">
+            {% if project_path is defined %}
+            <input type="checkbox" class="toggle toggle-xs toggle-primary"
+                   {% if lod.get('enabled', true) %}checked{% endif %}
+                   hx-post="/projects/{{ project_path }}/toggle-lod"
+                   hx-vals='{"index": "{{ loop.index0 }}", "enabled": "{{ 'false' if lod.get('enabled', true) else 'true' }}"}'
+                   hx-target="#lod-list"
+                   hx-swap="outerHTML">
+            {% endif %}
+            <span class="font-mono {% if not lod.get('enabled', true) %}opacity-40 line-through{% endif %}">{{ lod.name }}</span>
+            <span class="opacity-60">{{ "%.1f"|format(lod.max_splats / 1000000) }}M</span>
+        </div>
+        <div class="flex items-center gap-1">
+            {% if project_path is defined %}
+            <input type="number" min="0" step="10" placeholder="auto"
+                   value="{{ lod.get('train_steps', 0) or '' }}"
+                   class="input input-bordered input-xs w-16 font-mono text-right"
+                   title="Train steps override (kSteps, empty=auto)"
+                   hx-post="/projects/{{ project_path }}/update-lod-train-steps"
+                   hx-vals='{"index": "{{ loop.index0 }}"}'
+                   hx-swap="none"
+                   hx-trigger="change"
+                   name="train_steps">
+            <span class="text-xs opacity-40 w-12">kSteps</span>
+            <button class="btn btn-ghost btn-xs opacity-0 group-hover:opacity-100 text-error"
+                    hx-post="/projects/{{ project_path }}/remove-lod"
+                    hx-vals='{"index": "{{ loop.index0 }}"}'
+                    hx-target="#lod-list"
+                    hx-swap="outerHTML"
+                    title="Remove LOD">x</button>
+            {% endif %}
+        </div>
+    </div>
+    {% endfor %}
+    {% if not lod_levels %}
+    <div class="text-sm opacity-60">No LOD levels configured.</div>
+    {% endif %}
+</div>

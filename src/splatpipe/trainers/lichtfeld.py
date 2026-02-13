@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Generator
 
-from ..core.config import get_tool_path
+from ..core.config import get_lichtfeld_exe, get_tool_path
 from ..core.events import ProgressEvent
 from .base import Trainer, TrainResult
 
@@ -36,7 +36,7 @@ class LichtfeldTrainer(Trainer):
         num_images: int = 0,
         **kwargs,
     ) -> Generator[ProgressEvent, None, TrainResult]:
-        lf_path = get_tool_path(self.config, "lichtfeld_studio")
+        lf_exe = get_lichtfeld_exe(self.config)
         lf_cfg = self.config.get("lichtfeld", {})
 
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -45,7 +45,7 @@ class LichtfeldTrainer(Trainer):
         iterations = lf_cfg.get("iterations", 30000)
 
         cmd = [
-            str(lf_path),
+            str(lf_exe),
             "-d", str(source_dir),
             "-o", str(output_dir / lod_name),
             "--strategy", strategy,
@@ -62,10 +62,12 @@ class LichtfeldTrainer(Trainer):
             message=f"Starting {lod_name}", sub_step=lod_name,
         )
 
+        self._proc = None
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, bufsize=1,
         )
+        self._proc = proc
 
         for line in proc.stdout:
             stdout_lines.append(line)
@@ -78,6 +80,7 @@ class LichtfeldTrainer(Trainer):
                 )
 
         proc.wait()
+        self._proc = None
         stderr_lines = proc.stderr.read().splitlines() if proc.stderr else []
         duration = time.time() - t0
 
@@ -103,8 +106,8 @@ class LichtfeldTrainer(Trainer):
 
     def validate_environment(self) -> tuple[bool, str]:
         try:
-            path = get_tool_path(self.config, "lichtfeld_studio")
-            return True, f"Found at {path}"
+            exe = get_lichtfeld_exe(self.config)
+            return True, f"Found at {exe}"
         except (ValueError, FileNotFoundError) as e:
             return False, str(e)
 

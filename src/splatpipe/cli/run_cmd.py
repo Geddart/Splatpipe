@@ -14,13 +14,13 @@ def run(
         "--project", "-p",
         help="Project directory (auto-detected if not specified)",
     ),
-    skip_deploy: bool = typer.Option(
+    skip_export: bool = typer.Option(
         False,
-        "--skip-deploy",
-        help="Stop after assembly, don't deploy",
+        "--skip-export",
+        help="Stop after assembly, don't export",
     ),
 ) -> None:
-    """Run the full pipeline: clean, train, (review pause), assemble, deploy."""
+    """Run the full pipeline: clean, train, (review pause), assemble, export."""
     from .clean_cmd import clean as run_clean
     from .train_cmd import train as run_train
 
@@ -52,10 +52,10 @@ def run(
     from .assemble_cmd import assemble as run_assemble
     run_assemble(project=project)
 
-    # Optional: Deploy
-    if not skip_deploy:
-        console.print("\n[bold cyan]Deploying to CDN[/bold cyan]")
-        from .deploy_cmd import deploy as run_deploy
-        run_deploy(project=project, target="bunny", workers=8, dry_run=False)
+    # Optional: Export
+    if not skip_export:
+        console.print("\n[bold cyan]Exporting output[/bold cyan]")
+        from .deploy_cmd import export as run_export
+        run_export(project=project, mode="folder", destination=None, workers=8, dry_run=False)
 
     console.print("\n[bold green]Pipeline complete![/bold green]")

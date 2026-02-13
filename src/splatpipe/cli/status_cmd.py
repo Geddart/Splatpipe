@@ -6,12 +6,12 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from ..core.constants import STEP_CLEAN, STEP_TRAIN, STEP_ASSEMBLE, STEP_DEPLOY
+from ..core.constants import STEP_CLEAN, STEP_TRAIN, STEP_ASSEMBLE, STEP_EXPORT
 from ..core.project import Project
 
 console = Console()
 
-STEP_ORDER = [STEP_CLEAN, STEP_TRAIN, STEP_ASSEMBLE, STEP_DEPLOY]
+STEP_ORDER = [STEP_CLEAN, STEP_TRAIN, STEP_ASSEMBLE, STEP_EXPORT]
 
 STATUS_STYLES = {
     "completed": "[green]completed[/green]",

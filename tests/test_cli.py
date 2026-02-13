@@ -36,7 +36,7 @@ class TestInitCommand:
         state = json.loads((output / "state.json").read_text())
         assert state["name"] == "TestProject"
         assert state["trainer"] == "postshot"
-        assert len(state["lod_levels"]) == 5
+        assert len(state["lod_levels"]) == 6
 
     def test_init_custom_lods(self, tmp_path):
         """Custom LODs are parsed correctly."""
@@ -93,6 +93,43 @@ class TestInitCommand:
         assert result.exit_code == 0
         state = json.loads((output / "state.json").read_text())
         assert state["trainer"] == "lichtfeld"
+
+
+class TestExportCommand:
+    def test_export_folder_mode(self, tmp_path):
+        """splatpipe export --mode folder copies output files."""
+        project = Project.create(tmp_path / "proj", "ExportTest")
+
+        # Create some output files
+        output_dir = project.get_folder("05_output")
+        (output_dir / "lod-meta.json").write_text('{"lods": []}')
+        (output_dir / "chunk0.sog").write_bytes(b"x" * 100)
+
+        dest = tmp_path / "export_dest"
+        result = runner.invoke(app, [
+            "export",
+            "--project", str(project.root),
+            "--mode", "folder",
+            "--destination", str(dest),
+        ])
+
+        assert result.exit_code == 0
+        assert (dest / "lod-meta.json").exists()
+        assert (dest / "chunk0.sog").exists()
+
+    def test_export_no_output_files(self, tmp_path):
+        """Export with empty output dir gives error."""
+        project = Project.create(tmp_path / "proj", "EmptyTest")
+
+        result = runner.invoke(app, [
+            "export",
+            "--project", str(project.root),
+            "--mode", "folder",
+            "--destination", str(tmp_path / "dest"),
+        ])
+
+        assert result.exit_code == 1
+        assert "No output files" in result.output
 
 
 class TestStatusCommand:

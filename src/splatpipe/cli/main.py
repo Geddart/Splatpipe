@@ -6,7 +6,7 @@ from .init_cmd import init
 from .clean_cmd import clean
 from .train_cmd import train
 from .assemble_cmd import assemble
-from .deploy_cmd import deploy
+from .deploy_cmd import export
 from .serve_cmd import serve
 from .run_cmd import run
 from .web_cmd import web
@@ -22,7 +22,7 @@ app.command()(init)
 app.command()(clean)
 app.command()(train)
 app.command()(assemble)
-app.command()(deploy)
+app.command(name="export")(export)
 app.command()(serve)
 app.command()(run)
 app.command()(web)

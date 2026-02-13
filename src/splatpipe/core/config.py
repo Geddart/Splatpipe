@@ -9,20 +9,20 @@ import tomli_w
 
 DEFAULTS_PATH = Path(__file__).parent.parent.parent.parent / "config" / "defaults.toml"
 
-# Standard install locations for auto-detection
+# Standard install locations for auto-detection (root folders)
 TOOL_SEARCH_PATHS: dict[str, list[str]] = {
-    "postshot_cli": [
-        r"C:\Program Files\Jawset Postshot\bin\postshot-cli.exe",
-        r"C:\Program Files (x86)\Jawset Postshot\bin\postshot-cli.exe",
+    "postshot": [
+        r"C:\Program Files\Jawset Postshot",
+        r"C:\Program Files (x86)\Jawset Postshot",
     ],
     "lichtfeld_studio": [
-        r"C:\Program Files\LichtFeld-Studio\LichtFeld-Studio.exe",
-        r"C:\Program Files\LichtFeld Studio\LichtFeld-Studio.exe",
+        r"C:\Program Files\LichtFeld-Studio",
+        r"C:\Program Files\LichtFeld Studio",
     ],
     "colmap": [
-        r"C:\Program Files\Colmap\bin\colmap.exe",
-        r"C:\Program Files (x86)\Colmap\bin\colmap.exe",
-        r"C:\Program Files\COLMAP\bin\colmap.exe",
+        r"C:\Program Files\Colmap",
+        r"C:\Program Files (x86)\Colmap",
+        r"C:\Program Files\COLMAP",
     ],
 }
 
@@ -64,6 +64,42 @@ def get_tool_path(config: dict, tool_name: str) -> Path:
     if not path.exists():
         raise FileNotFoundError(f"Tool not found at configured path: {path}")
     return path
+
+
+def get_postshot_cli(config: dict) -> Path:
+    """Get the Postshot CLI executable from the configured root folder."""
+    root = get_tool_path(config, "postshot")
+    cli = root / "bin" / "postshot-cli.exe"
+    if not cli.exists():
+        raise FileNotFoundError(f"Postshot CLI not found: {cli}")
+    return cli
+
+
+def get_postshot_gui(config: dict) -> Path:
+    """Get the Postshot GUI executable from the configured root folder."""
+    root = get_tool_path(config, "postshot")
+    gui = root / "bin" / "postshot.exe"
+    if not gui.exists():
+        raise FileNotFoundError(f"Postshot GUI not found: {gui}")
+    return gui
+
+
+def get_lichtfeld_exe(config: dict) -> Path:
+    """Get the LichtFeld Studio executable from the configured root folder."""
+    root = get_tool_path(config, "lichtfeld_studio")
+    exe = root / "bin" / "LichtFeld-Studio.exe"
+    if not exe.exists():
+        raise FileNotFoundError(f"LichtFeld Studio not found: {exe}")
+    return exe
+
+
+def get_colmap_exe(config: dict) -> Path:
+    """Get the COLMAP executable from the configured root folder."""
+    root = get_tool_path(config, "colmap")
+    exe = root / "bin" / "colmap.exe"
+    if not exe.exists():
+        raise FileNotFoundError(f"COLMAP not found: {exe}")
+    return exe
 
 
 def auto_detect_tools() -> dict[str, str | None]:

@@ -1,7 +1,7 @@
 [tools]
-postshot_cli = 'C:\Program Files\Jawset Postshot\bin\postshot-cli.exe'
-lichtfeld_studio = ""
-colmap = 'C:\Program Files\Colmap\bin\colmap.exe'
+postshot = "C:\\Program Files\\Jawset Postshot"
+lichtfeld_studio = "C:\\Program Files\\LichtFeld-Studio"
+colmap = "C:\\Program Files\\Colmap"
 splat_transform = "splat-transform"
 supersplat_url = "https://superspl.at/editor"
 
@@ -11,10 +11,25 @@ outlier_threshold_fixed = 100.0
 outlier_percentile = 0.99
 outlier_multiplier = 2.5
 kdtree_threshold = 0.001
-coordinate_transform = [1, 0, 0, 0, 0, -1, 0, 1, 0]  # PLY Z-up -> COLMAP: X, -Z, Y
+coordinate_transform = [
+    1,
+    0,
+    0,
+    0,
+    0,
+    -1,
+    0,
+    1,
+    0,
+]
 
 [postshot]
 profile = "Splat3"
+downsample = true
+max_image_size = 3840
+anti_aliasing = false
+create_sky_model = false
+train_steps_limit = 0           # 0 = auto (Postshot computes from image count)
 login = ""
 password = ""
 
@@ -23,4 +38,4 @@ strategy = "mcmc"
 iterations = 30000
 
 [paths]
-projects_root = ""
+projects_root = "H:\\001_ProjectCache\\660 Drone\\_Photogrammetry"

@@ -1,0 +1,22 @@
+<!-- Browse Modal — shared across settings, create_project, project_detail -->
+<dialog id="browse-modal" class="modal">
+    <div class="modal-box w-11/12 max-w-2xl">
+        <h3 class="font-bold text-lg mb-2">Browse</h3>
+        <div class="flex items-center gap-2 mb-3">
+            <button class="btn btn-ghost btn-sm" onclick="browseUp()">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"/></svg>
+            </button>
+            <input type="text" id="browse-path-input" class="input input-bordered input-sm w-full font-mono text-sm"
+                   placeholder="Type a path and press Enter"
+                   onkeydown="if(event.key==='Enter'){event.preventDefault();browseNavigate(this.value);}">
+        </div>
+        <div id="browse-list" class="overflow-y-auto max-h-80 border border-base-300 rounded-lg">
+            <div class="text-center p-4 opacity-60">Loading...</div>
+        </div>
+        <div class="modal-action">
+            <button class="btn btn-ghost" onclick="closeBrowser()">Cancel</button>
+            <button class="btn btn-primary" onclick="selectBrowsed()">Select</button>
+        </div>
+    </div>
+    <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>
