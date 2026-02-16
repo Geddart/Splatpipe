@@ -9,13 +9,13 @@ from fastapi import APIRouter, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 
-from ...colmap.parsers import detect_alignment_format, detect_source_type, ALIGNMENT_FORMAT_LABELS
+from ...colmap.parsers import detect_alignment_format
 from ...core.config import load_defaults
 from ...core.constants import (
     STEP_CLEAN, STEP_TRAIN, STEP_REVIEW, STEP_ASSEMBLE, STEP_EXPORT,
     FOLDER_COLMAP_SOURCE, FOLDER_COLMAP_CLEAN, FOLDER_TRAINING, FOLDER_REVIEW, FOLDER_OUTPUT,
 )
-from ...core.project import Project, ALL_STEPS
+from ...core.project import Project
 from ..runner import get_runner
 
 router = APIRouter(prefix="/projects", tags=["projects"])

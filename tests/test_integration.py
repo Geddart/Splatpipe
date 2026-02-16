@@ -10,7 +10,7 @@ from splatpipe.core.constants import FOLDER_COLMAP_SOURCE, FOLDER_COLMAP_CLEAN
 from splatpipe.core.config import load_defaults
 from splatpipe.core.project import Project
 from splatpipe.steps.colmap_clean import ColmapCleanStep
-from splatpipe.colmap.parsers import parse_cameras_txt, parse_images_txt, count_cameras, count_images
+from splatpipe.colmap.parsers import parse_cameras_txt, parse_images_txt
 
 TEST_DATA = Path(__file__).parent / "test_data"
 

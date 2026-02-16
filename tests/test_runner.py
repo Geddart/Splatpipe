@@ -13,7 +13,6 @@ from splatpipe.trainers.base import TrainResult
 from splatpipe.web.runner import (
     PipelineRunner,
     QueueEntry,
-    QueueSnapshot,
     RunnerSnapshot,
     start_run,
     get_runner,
