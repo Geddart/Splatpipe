@@ -50,6 +50,7 @@ class Project:
         trainer: str = "postshot",
         lod_levels: list[dict] | None = None,
         colmap_source: str | None = None,
+        source_type: str = "",
         enabled_steps: dict[str, bool] | None = None,
     ) -> "Project":
         """Create a new project with folder scaffolding and initial state."""
@@ -73,6 +74,7 @@ class Project:
             "created_at": datetime.now(timezone.utc).isoformat(),
             "lod_levels": lod_levels,
             "colmap_source": colmap_source,
+            "source_type": source_type,
             "alignment_file": "",
             "has_thumbnail": False,
             "enabled_steps": enabled_steps,
@@ -154,6 +156,31 @@ class Project:
         self._save_state()
 
     @property
+    def source_type(self) -> str:
+        """Source type: 'postshot' for .psht files, or alignment format for directories."""
+        st = self.state.get("source_type", "")
+        if st:
+            return st
+        # Fallback: detect from colmap_source path
+        raw = self.colmap_source
+        if raw and Path(raw).suffix.lower() == ".psht":
+            return "postshot"
+        return ""
+
+    def set_source_type(self, source_type: str) -> None:
+        self.state["source_type"] = source_type
+        self._save_state()
+
+    def source_file(self) -> Path | None:
+        """Return path to local .psht copy, or None if not a file source."""
+        if self.source_type != "postshot":
+            return None
+        local = self.get_folder(FOLDER_COLMAP_SOURCE) / "source.psht"
+        if local.exists():
+            return local
+        return None
+
+    @property
     def export_mode(self) -> str:
         return self.state.get("export_mode", "folder")
 
@@ -207,6 +234,44 @@ class Project:
         if "step_settings" not in self.state:
             self.state["step_settings"] = {}
         self.state["step_settings"][step_name] = settings
+        self._save_state()
+
+    DEFAULT_SCENE_CONFIG = {
+        "camera": {
+            "pitch_min": -89, "pitch_max": 89,
+            "zoom_min": 1, "zoom_max": 200,
+            "ground_height": 0.3, "bounds_radius": 150,
+        },
+        "splat_budget": 0,  # 0 = platform default (4M desktop / 1M mobile)
+        "annotations": [],
+        "background": {"type": "color", "color": "#1a1a1a", "skybox": ""},
+        "postprocessing": {
+            "tonemapping": "neutral", "exposure": 1.5,
+            "bloom": False, "bloom_intensity": 0.01,
+            "vignette": False, "vignette_intensity": 0.5,
+        },
+        "audio": [],
+    }
+
+    @property
+    def scene_config(self) -> dict:
+        """Scene config with defaults <- saved overrides (deep merge for dicts, replace for lists)."""
+        import copy
+        result = copy.deepcopy(self.DEFAULT_SCENE_CONFIG)
+        saved = self.state.get("scene_config", {})
+        for key in result:
+            if key in saved:
+                if isinstance(result[key], dict):
+                    result[key].update(saved[key])
+                else:
+                    result[key] = saved[key]
+        return result
+
+    def set_scene_config_section(self, section: str, data) -> None:
+        """Update one section of scene_config."""
+        if "scene_config" not in self.state:
+            self.state["scene_config"] = {}
+        self.state["scene_config"][section] = data
         self._save_state()
 
     def get_enabled_lods(self) -> list[dict]:

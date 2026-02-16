@@ -28,58 +28,18 @@
                                class="input input-bordered w-full" required>
                     </div>
                     <div class="form-control w-full">
-                        <label class="label"><span class="label-text">COLMAP Data Directory</span></label>
+                        <label class="label"><span class="label-text">Source (Postshot file, COLMAP folder, etc.)</span></label>
                         <div class="join w-full">
                             <input type="text" name="colmap_dir" id="path-colmap_dir" value="{{ values.get('colmap_dir', '') }}"
-                                   placeholder="H:\path\to\colmap\export"
+                                   placeholder="H:\path\to\alignment\data"
                                    class="input input-bordered join-item w-full font-mono text-sm" required>
                             <button type="button" class="btn btn-outline join-item"
-                                    onclick="openBrowser('path-colmap_dir', 'dir')">Browse</button>
+                                    onclick="openBrowser('path-colmap_dir', 'dir')">Folder</button>
+                            <button type="button" class="btn btn-outline join-item"
+                                    onclick="openBrowser('path-colmap_dir', 'file')">File</button>
                         </div>
-                        <label class="label"><span class="label-text-alt">Must contain cameras.txt, images.txt, points3D.txt</span></label>
+                        <label class="label"><span class="label-text-alt">Postshot (.psht), COLMAP (.txt/.bin), Bundler, RealityScan, BlocksExchange</span></label>
                     </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Training -->
-        <div class="card bg-base-100 shadow-xl">
-            <div class="card-body">
-                <h2 class="card-title">Training</h2>
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div class="form-control w-full">
-                        <label class="label"><span class="label-text">Trainer</span></label>
-                        <select name="trainer" class="select select-bordered w-full">
-                            <option value="postshot" {% if values.get('trainer', 'postshot') == 'postshot' %}selected{% endif %}>Postshot</option>
-                            <option value="lichtfeld" {% if values.get('trainer') == 'lichtfeld' %}selected{% endif %}>LichtFeld Studio</option>
-                        </select>
-                    </div>
-                    <div class="form-control w-full">
-                        <label class="label"><span class="label-text">LOD Levels</span></label>
-                        <input type="text" name="lods" value="{{ values.get('lods', '25M,10M,5M,2M,1M,500K') }}"
-                               class="input input-bordered w-full font-mono text-sm">
-                        <label class="label"><span class="label-text-alt">Comma-separated: 25M,10M,5M,2M,1M,500K (M=million, K=thousand)</span></label>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Step Toggles -->
-        <div class="card bg-base-100 shadow-xl">
-            <div class="card-body">
-                <h2 class="card-title">Pipeline Steps</h2>
-                <p class="text-sm opacity-60 mb-3">Enable or disable steps for this project.</p>
-                <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    {% for step_name, label in [('clean', 'Clean COLMAP'), ('train', 'Train Splats'), ('assemble', 'Assemble LODs'), ('export', 'Export')] %}
-                    <div class="form-control">
-                        <label class="label cursor-pointer justify-start gap-3">
-                            <input type="checkbox" name="step_{{ step_name }}"
-                                   {% if values.get('step_' + step_name, 'on') %}checked{% endif %}
-                                   class="toggle toggle-primary">
-                            <span class="label-text">{{ label }}</span>
-                        </label>
-                    </div>
-                    {% endfor %}
                 </div>
             </div>
         </div>

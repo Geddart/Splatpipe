@@ -313,3 +313,209 @@ class TestHistory:
         assert history[0]["status"] == "cancelled"
         assert history[1]["step"] == "train"
         assert history[1]["error"] == "CUDA OOM"
+
+
+class TestSceneConfig:
+    """Tests for scene_config property and set_scene_config_section."""
+
+    def test_defaults_when_unset(self, tmp_path):
+        """scene_config returns full defaults for new projects."""
+        proj = Project.create(tmp_path / "p", "T")
+        cfg = proj.scene_config
+        assert cfg["camera"]["pitch_min"] == -89
+        assert cfg["camera"]["bounds_radius"] == 150
+        assert cfg["annotations"] == []
+        assert cfg["audio"] == []
+
+    def test_camera_round_trip(self, tmp_path):
+        """set_scene_config_section persists camera to disk."""
+        proj = Project.create(tmp_path / "p", "T")
+        proj.set_scene_config_section("camera", {
+            "pitch_min": -45, "pitch_max": 45,
+            "zoom_min": 2, "zoom_max": 100,
+            "ground_height": 1.0, "bounds_radius": 50,
+        })
+        reloaded = Project(proj.root)
+        assert reloaded.scene_config["camera"]["pitch_min"] == -45
+        assert reloaded.scene_config["camera"]["bounds_radius"] == 50
+
+    def test_partial_camera_override(self, tmp_path):
+        """Setting only ground_height preserves other camera defaults."""
+        proj = Project.create(tmp_path / "p", "T")
+        proj.set_scene_config_section("camera", {"ground_height": 2.0})
+        cfg = proj.scene_config
+        assert cfg["camera"]["ground_height"] == 2.0
+        assert cfg["camera"]["pitch_min"] == -89
+        assert cfg["camera"]["zoom_max"] == 200
+
+    def test_annotations_replace_not_merge(self, tmp_path):
+        """Annotations list replaces default empty list wholesale."""
+        proj = Project.create(tmp_path / "p", "T")
+        annotations = [{"pos": [1, 2, 3], "title": "Test", "text": "Desc", "label": "1"}]
+        proj.set_scene_config_section("annotations", annotations)
+        cfg = proj.scene_config
+        assert len(cfg["annotations"]) == 1
+        assert cfg["annotations"][0]["title"] == "Test"
+
+    def test_sections_independent(self, tmp_path):
+        """Setting camera doesn't affect annotations and vice versa."""
+        proj = Project.create(tmp_path / "p", "T")
+        proj.set_scene_config_section("camera", {"ground_height": 5.0})
+        proj.set_scene_config_section("annotations", [{"pos": [0, 0, 0], "title": "A", "text": "", "label": "1"}])
+        cfg = proj.scene_config
+        assert cfg["camera"]["ground_height"] == 5.0
+        assert len(cfg["annotations"]) == 1
+
+    def test_backward_compat_old_project(self, tmp_path):
+        """Old project without scene_config returns all defaults."""
+        proj = Project.create(tmp_path / "p", "T")
+        # Simulate old project: ensure no scene_config in state
+        proj.state.pop("scene_config", None)
+        proj._save_state()
+        reloaded = Project(proj.root)
+        cfg = reloaded.scene_config
+        assert cfg["camera"]["pitch_min"] == -89
+        assert cfg["annotations"] == []
+
+    def test_splat_budget_default_zero(self, tmp_path):
+        """splat_budget defaults to 0 (platform default)."""
+        proj = Project.create(tmp_path / "p", "T")
+        assert proj.scene_config["splat_budget"] == 0
+
+    def test_splat_budget_round_trip(self, tmp_path):
+        """set_scene_config_section persists splat_budget as int."""
+        proj = Project.create(tmp_path / "p", "T")
+        proj.set_scene_config_section("splat_budget", 3000000)
+        reloaded = Project(proj.root)
+        assert reloaded.scene_config["splat_budget"] == 3000000
+
+    def test_splat_budget_does_not_affect_camera(self, tmp_path):
+        """Setting splat_budget doesn't interfere with camera defaults."""
+        proj = Project.create(tmp_path / "p", "T")
+        proj.set_scene_config_section("splat_budget", 2000000)
+        cfg = proj.scene_config
+        assert cfg["splat_budget"] == 2000000
+        assert cfg["camera"]["pitch_min"] == -89
+
+    def test_add_multiple_annotations(self, tmp_path):
+        """Multiple annotations stored and retrieved correctly."""
+        proj = Project.create(tmp_path / "p", "T")
+        proj.set_scene_config_section("annotations", [
+            {"pos": [1, 0, 0], "title": "A", "text": "", "label": "1"},
+            {"pos": [0, 1, 0], "title": "B", "text": "", "label": "2"},
+        ])
+        assert len(proj.scene_config["annotations"]) == 2
+        assert proj.scene_config["annotations"][1]["title"] == "B"
+
+    def test_annotations_survive_reload(self, tmp_path):
+        """Annotations persist across project reload."""
+        proj = Project.create(tmp_path / "p", "T")
+        proj.set_scene_config_section("annotations", [
+            {"pos": [1, 2, 3], "title": "X", "text": "Y", "label": "1"}
+        ])
+        reloaded = Project(proj.root)
+        assert reloaded.scene_config["annotations"][0]["title"] == "X"
+        assert reloaded.scene_config["annotations"][0]["pos"] == [1, 2, 3]
+
+    def test_background_default(self, tmp_path):
+        """Background defaults to color #1a1a1a."""
+        proj = Project.create(tmp_path / "p", "T")
+        bg = proj.scene_config["background"]
+        assert bg["type"] == "color"
+        assert bg["color"] == "#1a1a1a"
+
+    def test_background_round_trip(self, tmp_path):
+        """set_scene_config_section persists background color."""
+        proj = Project.create(tmp_path / "p", "T")
+        proj.set_scene_config_section("background", {"type": "color", "color": "#ff0000"})
+        reloaded = Project(proj.root)
+        assert reloaded.scene_config["background"]["color"] == "#ff0000"
+        assert reloaded.scene_config["background"]["type"] == "color"
+
+    def test_postprocessing_default(self, tmp_path):
+        """Post-processing defaults to neutral tonemapping, 1.5 exposure."""
+        proj = Project.create(tmp_path / "p", "T")
+        pp = proj.scene_config["postprocessing"]
+        assert pp["tonemapping"] == "neutral"
+        assert pp["exposure"] == 1.5
+        assert pp["bloom"] is False
+        assert pp["vignette"] is False
+
+    def test_postprocessing_round_trip(self, tmp_path):
+        """set_scene_config_section persists post-processing settings."""
+        proj = Project.create(tmp_path / "p", "T")
+        proj.set_scene_config_section("postprocessing", {
+            "bloom": True, "bloom_intensity": 0.05, "exposure": 2.0
+        })
+        reloaded = Project(proj.root)
+        pp = reloaded.scene_config["postprocessing"]
+        assert pp["bloom"] is True
+        assert pp["bloom_intensity"] == 0.05
+        assert pp["exposure"] == 2.0
+        assert pp["tonemapping"] == "neutral"  # default preserved
+
+    def test_postprocessing_partial_override(self, tmp_path):
+        """Setting only exposure preserves other postprocessing defaults."""
+        proj = Project.create(tmp_path / "p", "T")
+        proj.set_scene_config_section("postprocessing", {"exposure": 3.0})
+        pp = proj.scene_config["postprocessing"]
+        assert pp["exposure"] == 3.0
+        assert pp["tonemapping"] == "neutral"
+        assert pp["bloom"] is False
+        assert pp["vignette_intensity"] == 0.5
+
+    def test_audio_default_empty(self, tmp_path):
+        """Audio defaults to empty list."""
+        proj = Project.create(tmp_path / "p", "T")
+        assert proj.scene_config["audio"] == []
+
+    def test_audio_round_trip(self, tmp_path):
+        """set_scene_config_section persists audio sources."""
+        proj = Project.create(tmp_path / "p", "T")
+        proj.set_scene_config_section("audio", [
+            {"file": "assets/audio/test.mp3", "volume": 0.8, "loop": True, "positional": False}
+        ])
+        reloaded = Project(proj.root)
+        assert len(reloaded.scene_config["audio"]) == 1
+        assert reloaded.scene_config["audio"][0]["volume"] == 0.8
+        assert reloaded.scene_config["audio"][0]["loop"] is True
+
+    def test_audio_does_not_affect_other_sections(self, tmp_path):
+        """Setting audio doesn't interfere with camera or annotations."""
+        proj = Project.create(tmp_path / "p", "T")
+        proj.set_scene_config_section("audio", [
+            {"file": "assets/audio/a.mp3", "volume": 0.5, "loop": True, "positional": False}
+        ])
+        cfg = proj.scene_config
+        assert cfg["camera"]["pitch_min"] == -89
+        assert cfg["annotations"] == []
+        assert len(cfg["audio"]) == 1
+
+
+class TestSourceType:
+    """source_type property and source_file() method."""
+
+    def test_source_type_stored_and_retrieved(self, tmp_path):
+        proj = Project.create(tmp_path / "p", "T", source_type="postshot")
+        assert proj.source_type == "postshot"
+        reloaded = Project(proj.root)
+        assert reloaded.source_type == "postshot"
+
+    def test_source_type_fallback_from_colmap_source(self, tmp_path):
+        """source_type detected from colmap_source path if not stored."""
+        proj = Project.create(tmp_path / "p", "T", colmap_source="/path/to/scene.psht")
+        # Clear source_type to test fallback
+        proj.state["source_type"] = ""
+        proj._save_state()
+        reloaded = Project(proj.root)
+        assert reloaded.source_type == "postshot"
+
+    def test_source_file_returns_path(self, tmp_path):
+        proj = Project.create(tmp_path / "p", "T", source_type="postshot")
+        psht = proj.get_folder("01_colmap_source") / "source.psht"
+        psht.write_bytes(b"fake")
+        assert proj.source_file() == psht
+
+    def test_source_file_none_for_directory_source(self, tmp_path):
+        proj = Project.create(tmp_path / "p", "T", source_type="colmap_text")
+        assert proj.source_file() is None

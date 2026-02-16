@@ -10,7 +10,10 @@ def read_ply_header(f) -> tuple[int, list[str]]:
     header_lines = []
     num_vertices = 0
     while True:
-        line = f.readline().decode("ascii").strip()
+        raw = f.readline()
+        if not raw:
+            break  # EOF before end_header
+        line = raw.decode("ascii").strip()
         header_lines.append(line)
         if line.startswith("element vertex"):
             num_vertices = int(line.split()[-1])

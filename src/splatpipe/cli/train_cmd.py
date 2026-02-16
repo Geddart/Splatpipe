@@ -52,15 +52,27 @@ def train(
         console.print(f"[red]Trainer {trainer_name!r} not available:[/red] {msg}")
         raise typer.Exit(1)
 
-    # Determine source directory
-    clean_dir = proj.get_folder(FOLDER_COLMAP_CLEAN)
-    if not clean_dir.exists() or not (clean_dir / "cameras.txt").exists():
-        # Fall back to colmap source
-        clean_dir = proj.colmap_dir()
-        if not (clean_dir / "cameras.txt").exists():
-            console.print("[red]No COLMAP data found. Run 'splatpipe clean' first.[/red]")
+    # Determine source (file or directory)
+    if proj.source_type == "postshot":
+        source_file = proj.source_file()
+        if not source_file or not source_file.exists():
+            console.print("[red]Postshot source file not found in project[/red]")
             raise typer.Exit(1)
-        console.print("[yellow]Using uncleaned COLMAP data[/yellow]")
+        clean_dir = source_file  # Pass file path directly to trainer
+        console.print(f"[bold]Source:[/bold] {source_file} (Postshot project)")
+    else:
+        clean_dir = proj.get_folder(FOLDER_COLMAP_CLEAN)
+        has_clean = clean_dir.exists() and (
+            (clean_dir / "cameras.txt").exists() or (clean_dir / "cameras.bin").exists()
+        )
+        if not has_clean:
+            # Fall back to colmap source
+            clean_dir = proj.colmap_dir()
+            has_source = (clean_dir / "cameras.txt").exists() or (clean_dir / "cameras.bin").exists()
+            if not has_source:
+                console.print("[red]No COLMAP data found. Run 'splatpipe clean' first.[/red]")
+                raise typer.Exit(1)
+            console.print("[yellow]Using uncleaned COLMAP data[/yellow]")
 
     # Parse LOD levels
     if lods:

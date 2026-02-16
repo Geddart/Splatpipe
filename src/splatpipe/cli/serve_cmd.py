@@ -48,6 +48,13 @@ def serve(
         )
         viewer_path.write_text(html, encoding="utf-8")
 
+    # Generate viewer-config.json fallback if missing
+    config_path = output_dir / "viewer-config.json"
+    if not config_path.exists():
+        config_path.write_text(
+            json.dumps(proj.scene_config, indent=2), encoding="utf-8"
+        )
+
     class Handler(http.server.SimpleHTTPRequestHandler):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, directory=str(output_dir), **kwargs)

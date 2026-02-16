@@ -1,5 +1,6 @@
 """Tests for web route endpoints using FastAPI TestClient."""
 
+import json
 
 import pytest
 import tomli_w
@@ -67,10 +68,17 @@ def web_env(tmp_path, monkeypatch):
         colmap_source=str(colmap_dir),
     )
 
+    # Clean queue state before each test
+    import splatpipe.web.runner as runner_module
+    runner_module._queue.clear()
+    runner_module._queue_current = None
+    runner_module._queue_paused = False
+    runner_module._queue_wake.clear()
+
     from splatpipe.web.app import app
     client = TestClient(app)
 
-    return {
+    yield {
         "client": client,
         "project": project,
         "projects_root": projects_root,
@@ -78,6 +86,12 @@ def web_env(tmp_path, monkeypatch):
         "colmap_dir": colmap_dir,
         "tmp_path": tmp_path,
     }
+
+    # Cleanup
+    runner_module._queue.clear()
+    runner_module._queue_current = None
+    runner_module._queue_paused = False
+    runner_module._queue_wake.clear()
 
 
 # --- Root / Index ---
@@ -127,15 +141,23 @@ class TestProjectNew:
         r = web_env["client"].post("/projects/new", data={
             "name": "NewProject",
             "colmap_dir": str(web_env["colmap_dir"]),
-            "trainer": "postshot",
-            "lods": "5M,2M",
-            "step_clean": "step_clean",
-            "step_train": "step_train",
-            "step_assemble": "step_assemble",
-            "step_export": "step_export",
         }, follow_redirects=False)
         assert r.status_code == 303
         new_dir = web_env["projects_root"] / "NewProject"
+        assert new_dir.exists()
+        assert (new_dir / "state.json").exists()
+
+    def test_create_project_unknown_format(self, web_env):
+        """POST /projects/new with unknown format still creates project."""
+        empty_dir = web_env["tmp_path"] / "unknown_data"
+        empty_dir.mkdir()
+        (empty_dir / "random.dat").touch()
+        r = web_env["client"].post("/projects/new", data={
+            "name": "UnknownFormat",
+            "colmap_dir": str(empty_dir),
+        }, follow_redirects=False)
+        assert r.status_code == 303
+        new_dir = web_env["projects_root"] / "UnknownFormat"
         assert new_dir.exists()
         assert (new_dir / "state.json").exists()
 
@@ -147,6 +169,21 @@ class TestProjectNew:
         })
         assert r.status_code == 200
         assert "required" in r.text.lower()
+
+    def test_create_project_psht_file(self, web_env):
+        """POST /projects/new with .psht file creates project with source_type='postshot'."""
+        psht = web_env["tmp_path"] / "scene.psht"
+        psht.write_bytes(b"fake psht data")
+        r = web_env["client"].post("/projects/new", data={
+            "name": "PshtProject",
+            "colmap_dir": str(psht),
+        }, follow_redirects=False)
+        assert r.status_code == 303
+        new_dir = web_env["projects_root"] / "PshtProject"
+        assert new_dir.exists()
+        state = json.loads((new_dir / "state.json").read_text())
+        assert state["source_type"] == "postshot"
+        assert (new_dir / "01_colmap_source" / "source.psht").exists()
 
 
 class TestProjectDetail:
@@ -607,3 +644,380 @@ class TestHistorySection:
         r = web_env["client"].get(f"/projects/{path}/detail")
         assert r.status_code == 200
         assert "history-panel" not in r.text
+
+
+# --- Queue routes ---
+
+
+class TestQueueRoutes:
+    def test_queue_panel_empty(self, web_env):
+        """GET /queue/panel returns 200 with no content when queue is empty."""
+        r = web_env["client"].get("/queue/panel")
+        assert r.status_code == 200
+        # Empty queue → no card rendered (just whitespace)
+        assert "Pipeline Queue" not in r.text
+
+    def test_queue_panel_with_current(self, web_env):
+        """GET /queue/panel shows current job when something is running."""
+        import splatpipe.web.runner as runner_module
+        from splatpipe.web.runner import QueueEntry
+
+        runner_module._queue_current = QueueEntry(
+            id="abc", project_path=str(web_env["project"].root),
+            project_name="TestProject", steps=["clean"],
+            config={}, added_at=0.0,
+        )
+        try:
+            r = web_env["client"].get("/queue/panel")
+            assert r.status_code == 200
+            assert "Pipeline Queue" in r.text
+            assert "TestProject" in r.text
+        finally:
+            runner_module._queue_current = None
+
+    def test_queue_panel_with_pending(self, web_env):
+        """GET /queue/panel shows pending entries."""
+        import splatpipe.web.runner as runner_module
+        from splatpipe.web.runner import QueueEntry
+
+        runner_module._queue.append(QueueEntry(
+            id="pend1", project_path="/fake1",
+            project_name="Project1", steps=["train"],
+            config={}, added_at=0.0,
+        ))
+        runner_module._queue.append(QueueEntry(
+            id="pend2", project_path="/fake2",
+            project_name="Project2", steps=["train"],
+            config={}, added_at=0.0,
+        ))
+        try:
+            r = web_env["client"].get("/queue/panel")
+            assert r.status_code == 200
+            assert "Project1" in r.text
+            assert "Project2" in r.text
+            assert "#1" in r.text
+            assert "#2" in r.text
+        finally:
+            runner_module._queue.clear()
+
+    def test_toggle_pause(self, web_env):
+        """POST /queue/toggle-pause toggles the pause state."""
+        import splatpipe.web.runner as runner_module
+
+        assert runner_module._queue_paused is False
+        r = web_env["client"].post("/queue/toggle-pause")
+        assert r.status_code == 200
+        assert runner_module._queue_paused is True
+        # Toggle back
+        r = web_env["client"].post("/queue/toggle-pause")
+        assert runner_module._queue_paused is False
+
+    def test_remove_from_queue(self, web_env):
+        """POST /queue/{id}/remove removes a pending entry."""
+        import splatpipe.web.runner as runner_module
+        from splatpipe.web.runner import QueueEntry
+
+        runner_module._queue.append(QueueEntry(
+            id="rem1", project_path="/fake",
+            project_name="RemoveMe", steps=["clean"],
+            config={}, added_at=0.0,
+        ))
+        try:
+            r = web_env["client"].post("/queue/rem1/remove")
+            assert r.status_code == 200
+            assert len(runner_module._queue) == 0
+        finally:
+            runner_module._queue.clear()
+
+    def test_run_all_enqueues_immediately(self, web_env):
+        """POST run-all with empty queue starts immediately (SSE panel)."""
+        path = str(web_env["project"].root)
+        r = web_env["client"].post(f"/steps/{path}/run-all")
+        assert r.status_code == 200
+        assert "sse-connect" in r.text
+
+    def test_run_all_queues_when_busy(self, web_env):
+        """POST run-all when another project is running returns queued panel."""
+        import splatpipe.web.runner as runner_module
+        from splatpipe.web.runner import QueueEntry
+
+        # Simulate another project already running
+        runner_module._queue_current = QueueEntry(
+            id="other", project_path="/other/project",
+            project_name="OtherProject", steps=["train"],
+            config={}, added_at=0.0,
+        )
+        try:
+            path = str(web_env["project"].root)
+            r = web_env["client"].post(f"/steps/{path}/run-all")
+            assert r.status_code == 200
+            assert "Queued" in r.text
+            assert len(runner_module._queue) == 1
+        finally:
+            runner_module._queue_current = None
+            runner_module._queue.clear()
+
+
+class TestSceneConfig:
+    def test_update_scene_config_camera(self, web_env):
+        """POST update-scene-config persists camera constraints."""
+        path = str(web_env["project"].root)
+        r = web_env["client"].post(
+            f"/projects/{path}/update-scene-config",
+            data={"section": "camera", "ground_height": "2.5", "pitch_min": "-45"}
+        )
+        assert r.status_code == 200
+        proj = Project(web_env["project"].root)
+        assert proj.scene_config["camera"]["ground_height"] == 2.5
+        assert proj.scene_config["camera"]["pitch_min"] == -45.0
+
+    def test_update_scene_config_missing_section(self, web_env):
+        """POST without section returns error toast."""
+        path = str(web_env["project"].root)
+        r = web_env["client"].post(
+            f"/projects/{path}/update-scene-config",
+            data={"ground_height": "2.5"}
+        )
+        assert r.status_code == 200
+
+    def test_project_detail_has_scene_config(self, web_env):
+        """Project detail page renders camera constraint fields."""
+        path = str(web_env["project"].root)
+        r = web_env["client"].get(f"/projects/{path}/detail")
+        assert r.status_code == 200
+        assert "Camera Constraints" in r.text
+
+    def test_update_scene_config_splat_budget(self, web_env):
+        """POST update-scene-config with section=splat_budget stores int."""
+        path = str(web_env["project"].root)
+        r = web_env["client"].post(
+            f"/projects/{path}/update-scene-config",
+            data={"section": "splat_budget", "value": "4000000"}
+        )
+        assert r.status_code == 200
+        proj = Project(web_env["project"].root)
+        assert proj.scene_config["splat_budget"] == 4000000
+
+    def test_update_scene_config_splat_budget_zero(self, web_env):
+        """POST splat_budget=0 resets to platform default."""
+        path = str(web_env["project"].root)
+        web_env["project"].set_scene_config_section("splat_budget", 3000000)
+        r = web_env["client"].post(
+            f"/projects/{path}/update-scene-config",
+            data={"section": "splat_budget", "value": "0"}
+        )
+        assert r.status_code == 200
+        proj = Project(web_env["project"].root)
+        assert proj.scene_config["splat_budget"] == 0
+
+    def test_project_detail_has_splat_budget(self, web_env):
+        """Project detail page renders splat budget dropdown."""
+        path = str(web_env["project"].root)
+        r = web_env["client"].get(f"/projects/{path}/detail")
+        assert r.status_code == 200
+        assert "Splat Budget" in r.text
+
+
+class TestAnnotations:
+    def test_add_annotation(self, web_env):
+        """POST add-annotation persists annotation."""
+        path = str(web_env["project"].root)
+        r = web_env["client"].post(
+            f"/projects/{path}/add-annotation",
+            json={"pos": [1, 2, 3], "title": "Test", "text": "Desc", "label": "1"}
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["ok"] is True
+        assert data["index"] == 0
+        proj = Project(web_env["project"].root)
+        assert len(proj.scene_config["annotations"]) == 1
+        assert proj.scene_config["annotations"][0]["title"] == "Test"
+
+    def test_update_annotation(self, web_env):
+        """POST update-annotation updates fields."""
+        path = str(web_env["project"].root)
+        proj = web_env["project"]
+        proj.set_scene_config_section("annotations", [
+            {"pos": [0, 0, 0], "title": "Old", "text": "", "label": "1"}
+        ])
+        r = web_env["client"].post(
+            f"/projects/{path}/update-annotation/0",
+            json={"title": "New Title", "text": "New text"}
+        )
+        assert r.status_code == 200
+        reloaded = Project(proj.root)
+        assert reloaded.scene_config["annotations"][0]["title"] == "New Title"
+        assert reloaded.scene_config["annotations"][0]["text"] == "New text"
+
+    def test_delete_annotation_relabels(self, web_env):
+        """POST delete-annotation removes and re-labels remaining."""
+        path = str(web_env["project"].root)
+        proj = web_env["project"]
+        proj.set_scene_config_section("annotations", [
+            {"pos": [0, 0, 0], "title": "A", "text": "", "label": "1"},
+            {"pos": [1, 1, 1], "title": "B", "text": "", "label": "2"},
+        ])
+        r = web_env["client"].post(f"/projects/{path}/delete-annotation/0")
+        assert r.status_code == 200
+        data = r.json()
+        assert len(data["annotations"]) == 1
+        assert data["annotations"][0]["title"] == "B"
+        assert data["annotations"][0]["label"] == "1"  # re-labeled
+        reloaded = Project(proj.root)
+        assert len(reloaded.scene_config["annotations"]) == 1
+
+    def test_get_annotations_empty(self, web_env):
+        """GET annotations returns empty list for new project."""
+        path = str(web_env["project"].root)
+        r = web_env["client"].get(f"/projects/{path}/annotations")
+        assert r.status_code == 200
+        assert r.json() == []
+
+    def test_get_annotations_with_data(self, web_env):
+        """GET annotations returns saved annotations."""
+        path = str(web_env["project"].root)
+        web_env["project"].set_scene_config_section("annotations", [
+            {"pos": [1, 2, 3], "title": "X", "text": "Y", "label": "1"}
+        ])
+        r = web_env["client"].get(f"/projects/{path}/annotations")
+        assert r.status_code == 200
+        data = r.json()
+        assert len(data) == 1
+        assert data[0]["title"] == "X"
+
+    def test_scene_editor_page(self, web_env):
+        """GET scene-editor returns 200."""
+        path = str(web_env["project"].root)
+        r = web_env["client"].get(f"/projects/{path}/scene-editor")
+        assert r.status_code == 200
+        assert "Scene Editor" in r.text
+
+    def test_project_detail_has_scene_editor_link(self, web_env):
+        """Project detail page has Scene Editor button."""
+        path = str(web_env["project"].root)
+        r = web_env["client"].get(f"/projects/{path}/detail")
+        assert r.status_code == 200
+        assert "scene-editor" in r.text
+
+
+class TestBackgroundPostProcessing:
+    def test_update_scene_config_background(self, web_env):
+        """POST update-scene-config with background section persists color."""
+        path = str(web_env["project"].root)
+        r = web_env["client"].post(
+            f"/projects/{path}/update-scene-config",
+            data={"section": "background", "type": "color", "color": "#ff0000"}
+        )
+        assert r.status_code == 200
+        proj = Project(web_env["project"].root)
+        assert proj.scene_config["background"]["color"] == "#ff0000"
+        assert proj.scene_config["background"]["type"] == "color"
+
+    def test_update_scene_config_postprocessing(self, web_env):
+        """POST update-scene-config with postprocessing persists settings."""
+        path = str(web_env["project"].root)
+        r = web_env["client"].post(
+            f"/projects/{path}/update-scene-config",
+            data={
+                "section": "postprocessing",
+                "tonemapping": "aces",
+                "exposure": "2.5",
+                "bloom": "true",
+                "bloom_intensity": "0.05",
+                "vignette": "false",
+                "vignette_intensity": "0.5",
+            }
+        )
+        assert r.status_code == 200
+        proj = Project(web_env["project"].root)
+        pp = proj.scene_config["postprocessing"]
+        assert pp["tonemapping"] == "aces"
+        assert pp["exposure"] == 2.5
+        assert pp["bloom"] is True
+        assert pp["bloom_intensity"] == 0.05
+        assert pp["vignette"] is False
+
+    def test_project_detail_has_background_section(self, web_env):
+        """Project detail page renders Background section."""
+        path = str(web_env["project"].root)
+        r = web_env["client"].get(f"/projects/{path}/detail")
+        assert r.status_code == 200
+        assert "Background" in r.text
+
+    def test_project_detail_has_postprocessing_section(self, web_env):
+        """Project detail page renders Post-Processing section."""
+        path = str(web_env["project"].root)
+        r = web_env["client"].get(f"/projects/{path}/detail")
+        assert r.status_code == 200
+        assert "Post-Processing" in r.text
+        assert "Tonemapping" in r.text
+
+
+class TestAudio:
+    def test_add_audio(self, web_env):
+        """POST add-audio persists audio source."""
+        path = str(web_env["project"].root)
+        r = web_env["client"].post(
+            f"/projects/{path}/add-audio",
+            json={"file": "assets/audio/test.mp3", "volume": 0.5, "loop": True, "positional": False}
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["ok"] is True
+        assert data["index"] == 0
+        proj = Project(web_env["project"].root)
+        assert len(proj.scene_config["audio"]) == 1
+        assert proj.scene_config["audio"][0]["file"] == "assets/audio/test.mp3"
+
+    def test_update_audio(self, web_env):
+        """POST update-audio updates fields."""
+        path = str(web_env["project"].root)
+        proj = web_env["project"]
+        proj.set_scene_config_section("audio", [
+            {"file": "assets/audio/a.mp3", "volume": 0.5, "loop": True, "positional": False}
+        ])
+        r = web_env["client"].post(
+            f"/projects/{path}/update-audio/0",
+            json={"volume": 0.8, "loop": False}
+        )
+        assert r.status_code == 200
+        reloaded = Project(proj.root)
+        assert reloaded.scene_config["audio"][0]["volume"] == 0.8
+        assert reloaded.scene_config["audio"][0]["loop"] is False
+
+    def test_delete_audio(self, web_env):
+        """POST delete-audio removes audio source."""
+        path = str(web_env["project"].root)
+        proj = web_env["project"]
+        proj.set_scene_config_section("audio", [
+            {"file": "assets/audio/a.mp3", "volume": 0.5, "loop": True, "positional": False},
+            {"file": "assets/audio/b.mp3", "volume": 0.3, "loop": False, "positional": True},
+        ])
+        r = web_env["client"].post(f"/projects/{path}/delete-audio/0")
+        assert r.status_code == 200
+        data = r.json()
+        assert len(data["audio"]) == 1
+        assert data["audio"][0]["file"] == "assets/audio/b.mp3"
+        reloaded = Project(proj.root)
+        assert len(reloaded.scene_config["audio"]) == 1
+
+    def test_project_detail_has_audio_section(self, web_env):
+        """Project detail page renders Audio section."""
+        path = str(web_env["project"].root)
+        r = web_env["client"].get(f"/projects/{path}/detail")
+        assert r.status_code == 200
+        assert "Audio" in r.text
+
+    def test_upload_audio(self, web_env):
+        """POST upload-audio saves file to assets/audio/."""
+        path = str(web_env["project"].root)
+        r = web_env["client"].post(
+            f"/projects/{path}/upload-audio",
+            files={"file": ("test.mp3", b"fake-audio-data", "audio/mpeg")}
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["ok"] is True
+        assert data["path"] == "assets/audio/test.mp3"
+        assert (web_env["project"].root / "assets" / "audio" / "test.mp3").exists()

@@ -191,15 +191,24 @@ class PostshotTrainer(Trainer):
         duration = time.time() - t0
 
         ply_path = output_dir / f"{lod_name}.ply"
+        full_output = "".join(stdout_lines)
+
+        # Detect missing images in .psht input
+        stderr_msg = ""
+        if "Missing Images" in full_output and proc.returncode != 0:
+            stderr_msg = (
+                "Missing images in .psht file. Open the file in Postshot GUI "
+                "and relink images before using as pipeline input."
+            )
 
         return TrainResult(
             lod_name=lod_name,
             max_splats=max_splats,
-            success=proc.returncode == 0,
+            success=proc.returncode == 0 and not stderr_msg,
             command=[str(c) for c in cmd],
             returncode=proc.returncode,
-            stdout="".join(stdout_lines),
-            stderr="",  # merged into stdout
+            stdout=full_output,
+            stderr=stderr_msg,
             duration_s=round(duration, 2),
             output_dir=str(output_dir),
             output_ply=str(ply_path) if ply_path.exists() else "",

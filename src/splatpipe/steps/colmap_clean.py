@@ -15,6 +15,8 @@ from ..colmap.filters import (
     clean_points2d_refs,
     load_kept_point_ids,
 )
+from ..colmap.parsers import detect_colmap_format
+from ..colmap.parsers_bin import convert_colmap_bin_to_txt
 from .base import PipelineStep
 
 
@@ -26,9 +28,25 @@ class ColmapCleanStep(PipelineStep):
         colmap_dir = self.project.colmap_dir()
         clean_config = self.config.get("colmap_clean", {})
 
-        cameras_in = colmap_dir / "cameras.txt"
-        images_in = colmap_dir / "images.txt"
-        points3d_in = colmap_dir / "points3D.txt"
+        fmt = detect_colmap_format(colmap_dir)
+        converted_dir = None
+
+        if fmt == "binary":
+            # Convert binary → text into a temp subdir so *_in != *_out
+            converted_dir = output_dir / "_converted"
+            converted_dir.mkdir(exist_ok=True)
+            convert_colmap_bin_to_txt(colmap_dir, converted_dir)
+            cameras_in = converted_dir / "cameras.txt"
+            images_in = converted_dir / "images.txt"
+            points3d_in = converted_dir / "points3D.txt"
+        elif fmt == "text":
+            cameras_in = colmap_dir / "cameras.txt"
+            images_in = colmap_dir / "images.txt"
+            points3d_in = colmap_dir / "points3D.txt"
+        else:
+            raise FileNotFoundError(
+                f"No COLMAP data (cameras/images/points3D as .txt or .bin) in {colmap_dir}"
+            )
 
         cameras_out = output_dir / "cameras.txt"
         images_out = output_dir / "images.txt"
@@ -131,6 +149,10 @@ class ColmapCleanStep(PipelineStep):
             "points2d_kept": pts2d_result["kept_refs"],
             "points2d_cleaned": pts2d_result["cleaned_refs"],
         }
+
+        # Clean up temp conversion directory
+        if converted_dir and converted_dir.exists():
+            shutil.rmtree(converted_dir)
 
         return result
 

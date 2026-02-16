@@ -100,6 +100,22 @@ _VIEWER_TEMPLATE = """\
       position: absolute; bottom: 60px; left: 20px; z-index: 10;
       color: rgba(255,255,255,0.4); font-size: 11px; pointer-events: none;
     }}
+    #lod-sliders input[type="range"] {{ cursor: pointer; }}
+    #annotation-markers {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 15; }}
+    .ann-marker {{ position: absolute; transform: translate(-50%, -100%); pointer-events: auto; cursor: pointer; transition: opacity 0.2s; }}
+    .ann-dot {{
+      width: 28px; height: 28px; border-radius: 50%; background: #ff6b35; color: white;
+      display: flex; align-items: center; justify-content: center; font-size: 13px;
+      font-weight: 700; border: 2px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+    }}
+    .ann-tooltip {{
+      display: none; position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
+      background: rgba(0,0,0,0.9); color: white; padding: 8px 12px; border-radius: 8px;
+      white-space: nowrap; font-size: 12px; line-height: 1.4; max-width: 200px; pointer-events: none;
+    }}
+    .ann-tooltip h4 {{ font-weight: 600; margin: 0 0 2px; }}
+    .ann-tooltip p {{ margin: 0; opacity: 0.8; white-space: normal; }}
+    .ann-marker:hover .ann-tooltip {{ display: block; }}
   </style>
 </head>
 <body>
@@ -115,6 +131,7 @@ _VIEWER_TEMPLATE = """\
       <button class="quality-btn" data-preset="medium">Medium</button>
       <button class="quality-btn" data-preset="high">High</button>
       <button class="quality-btn" data-preset="ultra">Ultra</button>
+      <button class="quality-btn" data-preset="custom">Custom</button>
       <select id="splat-budget" class="quality-btn" style="appearance:auto">
         <option value="0">No limit</option>
         <option value="1000000">1M</option>
@@ -124,6 +141,11 @@ _VIEWER_TEMPLATE = """\
         <option value="6000000">6M</option>
       </select>
     </div>
+  </div>
+
+  <div id="lod-sliders" style="display:none; position:absolute; top:60px; left:20px; z-index:10;
+       background:rgba(0,0,0,0.8); border-radius:8px; padding:12px 16px; color:#ccc; font-size:12px;">
+    <div style="font-weight:600; margin-bottom:8px;">LOD Distances</div>
   </div>
 
   <div id="debug-panel">
@@ -143,6 +165,8 @@ _VIEWER_TEMPLATE = """\
     <div class="spinner"></div>
     <p>Loading splats...</p>
   </div>
+
+  <div id="annotation-markers"></div>
 
   <script type="importmap">
   {{
@@ -190,11 +214,12 @@ _VIEWER_TEMPLATE = """\
   createOptions.componentSystems = [
     pc.RenderComponentSystem, pc.CameraComponentSystem,
     pc.LightComponentSystem, pc.ScriptComponentSystem,
-    pc.GSplatComponentSystem
+    pc.GSplatComponentSystem,
+    pc.SoundComponentSystem, pc.AudioListenerComponentSystem
   ];
   createOptions.resourceHandlers = [
     pc.TextureHandler, pc.ContainerHandler,
-    pc.ScriptHandler, pc.GSplatHandler
+    pc.ScriptHandler, pc.GSplatHandler, pc.AudioHandler
   ];
 
   const app = new pc.AppBase(canvas);
@@ -217,9 +242,34 @@ _VIEWER_TEMPLATE = """\
     app.assets.load(splatAsset);
   }});
 
+  // --- Load viewer config ---
+  const _DEFAULTS = {{
+    camera: {{ pitch_min: -89, pitch_max: 89, zoom_min: 1, zoom_max: 200,
+              ground_height: 0.3, bounds_radius: 150 }},
+    splat_budget: 0,
+    annotations: [],
+    background: {{ type: 'color', color: '#1a1a1a' }},
+    postprocessing: {{ tonemapping: 'neutral', exposure: 1.5,
+                      bloom: false, vignette: false }},
+    audio: []
+  }};
+  let viewerConfig = _DEFAULTS;
+  try {{
+    const cfgResp = await fetch('viewer-config.json');
+    if (cfgResp.ok) viewerConfig = {{ ..._DEFAULTS, ...await cfgResp.json() }};
+  }} catch (e) {{ /* use defaults */ }}
+
   app.start();
 
-  app.scene.exposure = 1.5;
+  // --- Apply post-processing from config ---
+  const pp = viewerConfig.postprocessing || _DEFAULTS.postprocessing;
+  app.scene.exposure = pp.exposure ?? 1.5;
+
+  const TONEMAP = {{
+    linear: pc.TONEMAP_LINEAR, neutral: pc.TONEMAP_NEUTRAL,
+    aces: pc.TONEMAP_ACES, aces2: pc.TONEMAP_ACES2, filmic: pc.TONEMAP_FILMIC
+  }};
+
   app.scene.gsplat.lodUpdateAngle = 90;
   app.scene.gsplat.lodBehindPenalty = 2;
   app.scene.gsplat.radialSorting = true;
@@ -241,11 +291,20 @@ _VIEWER_TEMPLATE = """\
   camera.addComponent('camera', {{
     clearColor: new pc.Color(0.15, 0.15, 0.15),
     fov: 75,
-    toneMapping: pc.TONEMAP_LINEAR
+    toneMapping: TONEMAP[pp.tonemapping] ?? pc.TONEMAP_NEUTRAL
   }});
+
+  // --- Apply background from config ---
+  const bg = viewerConfig.background || _DEFAULTS.background;
+  if (bg.type === 'color' && bg.color) {{
+    camera.camera.clearColor = new pc.Color().fromString(bg.color);
+    document.body.style.background = bg.color;
+  }}
+
   camera.setLocalPosition(0, 2, -10);
   app.root.addChild(camera);
   camera.addComponent('script');
+  camera.addComponent('audiolistener');
   const cc = camera.script.create(CameraControls);
   Object.assign(cc, {{
     sceneSize: 500,
@@ -256,18 +315,66 @@ _VIEWER_TEMPLATE = """\
     focusPoint: focusPoint
   }});
 
+  // --- Apply camera constraints from config ---
+  const cam = viewerConfig.camera || _DEFAULTS.camera;
+  cc.pitchRange = new pc.Vec2(cam.pitch_min, cam.pitch_max);
+  cc.zoomRange = new pc.Vec2(cam.zoom_min, cam.zoom_max);
+
   // Quality preset buttons
   const buttons = document.querySelectorAll('.quality-btn');
   const isMobile = pc.platform.mobile;
   let currentPreset = isMobile ? 'medium' : 'high';
 
+  // --- Custom LOD distance sliders ---
+  // Colors match PlayCanvas engine's colorizeLod exactly (gsplat-manager.js _lodColorsRaw)
+  const LOD_COLORS = [
+    'rgb(255,0,0)', 'rgb(0,255,0)', 'rgb(0,0,255)', 'rgb(255,255,0)',
+    'rgb(255,0,255)', 'rgb(0,255,255)', 'rgb(255,128,0)', 'rgb(128,0,255)'
+  ];
+  const LOD_NAMES = ['Highest', 'High', 'Medium', 'Low', 'Lower', 'Lowest', 'Min', 'Tiny'];
+  const sliderPanel = document.getElementById('lod-sliders');
+  const customDistances = [...lodDistances];
+
+  for (let i = 0; i < numLods; i++) {{
+    const color = LOD_COLORS[i % LOD_COLORS.length];
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex; align-items:center; gap:8px; margin:4px 0;';
+    const dot = document.createElement('span');
+    dot.style.cssText = 'width:8px; height:8px; border-radius:50%; flex-shrink:0; background:' + color;
+    const label = document.createElement('span');
+    label.textContent = (LOD_NAMES[i] || 'LOD ' + i);
+    label.style.cssText = 'width:52px; font-size:11px; color:' + color + '; font-weight:600;';
+    const slider = document.createElement('input');
+    slider.type = 'range'; slider.min = '1'; slider.max = '300';
+    slider.value = String(lodDistances[i]);
+    slider.style.cssText = 'flex:1; height:4px; accent-color:' + color + ';';
+    const val = document.createElement('span');
+    val.textContent = lodDistances[i] + 'm';
+    val.style.cssText = 'width:44px; text-align:right; font-size:11px; font-family:monospace; color:' + color + ';';
+    slider.addEventListener('input', () => {{
+      customDistances[i] = parseInt(slider.value);
+      val.textContent = slider.value + 'm';
+      gs.lodDistances = customDistances;
+    }});
+    row.append(dot, label, slider, val);
+    sliderPanel.appendChild(row);
+  }}
+
   function applyPreset(name) {{
-    const preset = LOD_PRESETS[name];
-    if (!preset) return;
     currentPreset = name;
-    app.scene.gsplat.lodRangeMin = preset.range[0];
-    app.scene.gsplat.lodRangeMax = preset.range[1];
-    gs.lodDistances = preset.lodDistances;
+    if (name === 'custom') {{
+      sliderPanel.style.display = 'block';
+      app.scene.gsplat.lodRangeMin = 0;
+      app.scene.gsplat.lodRangeMax = numLods - 1;
+      gs.lodDistances = customDistances;
+    }} else {{
+      const preset = LOD_PRESETS[name];
+      if (!preset) return;
+      sliderPanel.style.display = 'none';
+      app.scene.gsplat.lodRangeMin = preset.range[0];
+      app.scene.gsplat.lodRangeMax = preset.range[1];
+      gs.lodDistances = preset.lodDistances;
+    }}
     buttons.forEach(btn => {{
       btn.classList.toggle('active', btn.dataset.preset === name);
     }});
@@ -278,9 +385,20 @@ _VIEWER_TEMPLATE = """\
   }});
   applyPreset(currentPreset);
 
-  // Splat budget control
+  // --- Splat budget from config ---
   const budgetEl = document.getElementById('splat-budget');
-  budgetEl.value = isMobile ? '1000000' : '4000000';
+  const cfgBudget = viewerConfig.splat_budget || 0;
+  if (cfgBudget > 0) {{
+    if (!budgetEl.querySelector('option[value="' + cfgBudget + '"]')) {{
+      const opt = document.createElement('option');
+      opt.value = String(cfgBudget);
+      opt.textContent = (cfgBudget / 1_000_000).toFixed(1) + 'M';
+      budgetEl.appendChild(opt);
+    }}
+    budgetEl.value = String(cfgBudget);
+  }} else {{
+    budgetEl.value = isMobile ? '1000000' : '4000000';
+  }}
   app.scene.gsplat.splatBudget = parseInt(budgetEl.value);
   budgetEl.addEventListener('change', () => {{
     app.scene.gsplat.splatBudget = parseInt(budgetEl.value);
@@ -296,12 +414,68 @@ _VIEWER_TEMPLATE = """\
 
   document.getElementById('loading').classList.add('hidden');
 
-  // Live splat count
+  // --- Annotation markers ---
+  const annotationsData = viewerConfig.annotations || [];
+  const markersContainer = document.getElementById('annotation-markers');
+  const markerEls = [];
+  annotationsData.forEach((ann, i) => {{
+    const marker = document.createElement('div');
+    marker.className = 'ann-marker';
+    const label = (ann.label || String(i + 1)).replace(/</g, '&lt;');
+    const title = (ann.title || '').replace(/</g, '&lt;');
+    const text = (ann.text || '').replace(/</g, '&lt;');
+    marker.innerHTML = '<div class="ann-dot">' + label + '</div><div class="ann-tooltip">' +
+      (title ? '<h4>' + title + '</h4>' : '') + (text ? '<p>' + text + '</p>' : '') + '</div>';
+    markersContainer.appendChild(marker);
+    markerEls.push({{ el: marker, pos: new pc.Vec3(ann.pos[0], ann.pos[1], ann.pos[2]) }});
+  }});
+
+  // Live splat count + camera constraints + annotation markers
   const splatCountEl = document.getElementById('splat-count');
   app.on('update', () => {{
     const displayed = app.stats.frame.gsplats || 0;
     const displayedM = (displayed / 1_000_000).toFixed(2);
     splatCountEl.textContent = 'Splats: ' + displayedM + 'M';
+    // Clamp camera position: ground + bounds
+    const pos = camera.getLocalPosition();
+    const cx = pc.math.clamp(pos.x, -cam.bounds_radius, cam.bounds_radius);
+    const cy = Math.max(pos.y, cam.ground_height);
+    const cz = pc.math.clamp(pos.z, -cam.bounds_radius, cam.bounds_radius);
+    if (cx !== pos.x || cy !== pos.y || cz !== pos.z) {{
+      camera.setLocalPosition(cx, cy, cz);
+    }}
+    // Update annotation marker screen positions
+    const _sp = new pc.Vec3();
+    markerEls.forEach(m => {{
+      camera.camera.worldToScreen(m.pos, _sp);
+      const _tp = new pc.Vec3().sub2(m.pos, camera.getPosition());
+      if (_tp.dot(camera.forward) < 0) {{
+        m.el.style.display = 'none';
+      }} else {{
+        m.el.style.display = '';
+        m.el.style.left = _sp.x + 'px';
+        m.el.style.top = _sp.y + 'px';
+      }}
+    }});
+  }});
+
+  // --- Audio sources from config ---
+  (viewerConfig.audio || []).forEach(src => {{
+    const audioAsset = new pc.Asset('audio', 'audio', {{ url: src.file }});
+    app.assets.add(audioAsset);
+    app.assets.load(audioAsset);
+    audioAsset.on('load', () => {{
+      const ent = new pc.Entity('audio-source');
+      ent.addComponent('sound', {{
+        positional: src.positional ?? false,
+        volume: src.volume ?? 0.5,
+        refDistance: 5, maxDistance: 100
+      }});
+      ent.sound.addSlot('main', {{ asset: audioAsset, loop: src.loop ?? true, autoPlay: true }});
+      if (src.pos) ent.setLocalPosition(src.pos[0], src.pos[1], src.pos[2]);
+      app.root.addChild(ent);
+      ent.sound.play('main');
+    }});
   }});
   </script>
 </body>
@@ -318,6 +492,24 @@ def _write_viewer_html(
         lod_distances_json=json.dumps(lod_distances),
     )
     (output_dir / "index.html").write_text(html, encoding="utf-8")
+
+
+def _write_viewer_config(output_dir: Path, scene_config: dict) -> None:
+    """Write viewer-config.json alongside lod-meta.json."""
+    (output_dir / "viewer-config.json").write_text(
+        json.dumps(scene_config, indent=2), encoding="utf-8"
+    )
+
+
+def _copy_project_assets(project_root: Path, output_dir: Path) -> None:
+    """Copy project assets/ folder to output if it exists."""
+    assets_src = project_root / "assets"
+    assets_dst = output_dir / "assets"
+    if assets_src.is_dir():
+        if assets_dst.exists():
+            shutil.rmtree(assets_dst)
+        shutil.copytree(assets_src, assets_dst)
+
 
 # splat-transform defaults: --lod-chunk-count 512 -> binSize = 512 * 1024
 _DEFAULT_BIN_SIZE = 512 * 1024  # 524,288 splats per output chunk
@@ -397,10 +589,12 @@ class LodAssemblyStep(PipelineStep):
             "success": lod_meta_result.get("returncode") == 0,
         }
 
-        # Generate viewer HTML if assembly succeeded
+        # Generate viewer HTML + config if assembly succeeded
         if lod_meta_result.get("returncode") == 0:
             distances = self.project.lod_distances[:len(reviewed_plys)]
             _write_viewer_html(output_dir, self.project.name, distances)
+            _write_viewer_config(output_dir, self.project.scene_config)
+            _copy_project_assets(self.project.root, output_dir)
 
         return result
 
@@ -543,10 +737,12 @@ class LodAssemblyStep(PipelineStep):
         chunk_files = sorted(output_dir.rglob("*.webp"))
         chunk_dirs = [d for d in output_dir.iterdir() if d.is_dir()]
 
-        # Generate viewer HTML if assembly succeeded
+        # Generate viewer HTML + config if assembly succeeded
         if proc.returncode == 0:
             distances = self.project.lod_distances[:len(reviewed_plys)]
             _write_viewer_html(output_dir, self.project.name, distances)
+            _write_viewer_config(output_dir, self.project.scene_config)
+            _copy_project_assets(self.project.root, output_dir)
 
         result = {
             "input_plys": reviewed_plys,

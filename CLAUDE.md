@@ -9,7 +9,7 @@ CLI-first Gaussian splatting pipeline. Takes COLMAP data through: auto-clean →
 ```bash
 cd H:\001_ProjectCache\1000_Coding\Splatpipe
 pip install -e ".[dev]"
-pytest tests/ -v                    # Run tests (259 tests, ~11s)
+pytest tests/ -v                    # Run tests (362 tests, ~16s)
 splatpipe --help                    # CLI commands
 splatpipe web                       # Launch dashboard
 ```
@@ -53,7 +53,8 @@ splatpipe/                    # repo root
       events.py               # ProgressEvent, StepResult dataclasses
     colmap/                   # COLMAP utilities (ported verbatim from v1)
       ply_io.py               # Binary PLY reader (numpy structured arrays)
-      parsers.py              # Streaming generators for cameras/images/points3D.txt
+      parsers.py              # Streaming generators for cameras/images/points3D.txt + format detection
+      parsers_bin.py          # Binary COLMAP parsers + text writers + bin→txt conversion
       filters.py              # Camera outlier, KD-tree, POINTS2D cleaner
     trainers/                 # Abstract + implementations
       base.py                 # Abstract Trainer, TrainResult dataclass
@@ -72,10 +73,12 @@ splatpipe/                    # repo root
       routes/steps.py         # Step execution: SSE progress streaming, cancel
       routes/actions.py       # OS actions: open folder/tool, file browser API
       routes/settings.py      # Config display + edit
+      routes/queue.py         # Global pipeline queue: enqueue, reorder, pause, cancel
       templates/              # Jinja2 templates (DaisyUI + HTMX via CDN)
-      templates/partials/     # Reusable partials (lod_list, browse_modal)
+      templates/partials/     # Reusable partials (lod_list, browse_modal, queue_panel)
+      templates/scene_editor.html  # Visual annotation editor with 3D viewer
       static/browse.js        # File/folder browser dialog
-      static/viewer.html      # SuperSplat viewer embed
+      static/viewer.html      # PlayCanvas LOD streaming viewer
   tests/
     test_data/                # tiny_cameras.txt, tiny_images.txt, etc.
     conftest.py               # Shared fixtures
@@ -283,7 +286,7 @@ Key config sections: `[tools]`, `[colmap_clean]`, `[postshot]`, `[lichtfeld]`, `
 ## Tests
 
 ```bash
-pytest tests/ -v              # All 259 tests
+pytest tests/ -v              # All 362 tests
 pytest tests/ -k colmap       # Just COLMAP tests
 pytest tests/ -k integration  # End-to-end with tiny data
 pytest tests/ -k trainers     # Trainer abstraction tests

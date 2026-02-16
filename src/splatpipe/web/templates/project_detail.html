@@ -98,18 +98,20 @@
                         </form>
                     </div>
 
-                    <!-- COLMAP Source -->
+                    <!-- Source (Postshot, COLMAP, etc.) -->
                     <div class="form-control w-full">
-                        <label class="label py-1"><span class="label-text text-xs opacity-60">COLMAP Source</span></label>
+                        <label class="label py-1"><span class="label-text text-xs opacity-60">Source (Postshot, COLMAP, etc.)</span></label>
                         <form hx-post="/projects/{{ project.path }}/update-colmap-source" hx-swap="none">
                             <div class="join w-full">
                                 <input type="text" name="colmap_source" id="path-colmap"
                                        value="{{ project.colmap_source }}"
-                                       placeholder="Path to COLMAP export folder"
+                                       placeholder="Path to alignment data or .psht file"
                                        class="input input-bordered input-sm join-item w-full font-mono text-xs"
                                        onchange="this.form.requestSubmit()">
                                 <button type="button" class="btn btn-outline btn-sm join-item"
-                                        onclick="openBrowser('path-colmap', 'folder')">Browse</button>
+                                        onclick="openBrowser('path-colmap', 'dir')">Folder</button>
+                                <button type="button" class="btn btn-outline btn-sm join-item"
+                                        onclick="openBrowser('path-colmap', 'file')">File</button>
                             </div>
                         </form>
                     </div>
@@ -515,6 +517,207 @@
                                 {% endfor %}
                             </form>
                             <p class="text-xs opacity-40 mt-3">Camera distance at which each LOD activates in the PlayCanvas viewer.</p>
+
+                            <!-- Camera Constraints -->
+                            <div class="mt-4 pt-4 border-t border-base-300/50">
+                                <span class="text-xs font-bold opacity-60 uppercase tracking-wider">Camera Constraints</span>
+                            </div>
+                            <form hx-post="/projects/{{ project.path }}/update-scene-config"
+                                  hx-vals='{"section": "camera"}' hx-swap="none"
+                                  class="grid grid-cols-2 gap-3 mt-2">
+                                <div class="flex items-center gap-2 text-sm">
+                                    <span class="w-28 text-xs">Pitch Min</span>
+                                    <input type="number" name="pitch_min" step="1" min="-89" max="0"
+                                           value="{{ scene_config.camera.pitch_min }}"
+                                           class="input input-bordered input-xs w-20 font-mono"
+                                           onchange="this.form.requestSubmit()">
+                                    <span class="text-xs opacity-40">&deg;</span>
+                                </div>
+                                <div class="flex items-center gap-2 text-sm">
+                                    <span class="w-28 text-xs">Pitch Max</span>
+                                    <input type="number" name="pitch_max" step="1" min="0" max="89"
+                                           value="{{ scene_config.camera.pitch_max }}"
+                                           class="input input-bordered input-xs w-20 font-mono"
+                                           onchange="this.form.requestSubmit()">
+                                    <span class="text-xs opacity-40">&deg;</span>
+                                </div>
+                                <div class="flex items-center gap-2 text-sm">
+                                    <span class="w-28 text-xs">Zoom Min</span>
+                                    <input type="number" name="zoom_min" step="0.1" min="0.1"
+                                           value="{{ scene_config.camera.zoom_min }}"
+                                           class="input input-bordered input-xs w-20 font-mono"
+                                           onchange="this.form.requestSubmit()">
+                                    <span class="text-xs opacity-40">m</span>
+                                </div>
+                                <div class="flex items-center gap-2 text-sm">
+                                    <span class="w-28 text-xs">Zoom Max</span>
+                                    <input type="number" name="zoom_max" step="1" min="1"
+                                           value="{{ scene_config.camera.zoom_max }}"
+                                           class="input input-bordered input-xs w-20 font-mono"
+                                           onchange="this.form.requestSubmit()">
+                                    <span class="text-xs opacity-40">m</span>
+                                </div>
+                                <div class="flex items-center gap-2 text-sm">
+                                    <span class="w-28 text-xs">Ground Height</span>
+                                    <input type="number" name="ground_height" step="0.1"
+                                           value="{{ scene_config.camera.ground_height }}"
+                                           class="input input-bordered input-xs w-20 font-mono"
+                                           onchange="this.form.requestSubmit()">
+                                    <span class="text-xs opacity-40">m</span>
+                                </div>
+                                <div class="flex items-center gap-2 text-sm">
+                                    <span class="w-28 text-xs">Bounds Radius</span>
+                                    <input type="number" name="bounds_radius" step="1" min="1"
+                                           value="{{ scene_config.camera.bounds_radius }}"
+                                           class="input input-bordered input-xs w-20 font-mono"
+                                           onchange="this.form.requestSubmit()">
+                                    <span class="text-xs opacity-40">m</span>
+                                </div>
+                            </form>
+                            <p class="text-xs opacity-40 mt-2">Limits camera movement in the production viewer. Applied via viewer-config.json.</p>
+
+                            <!-- Splat Budget -->
+                            <div class="form-control mt-3">
+                                <label class="label py-0"><span class="label-text text-xs">Default Splat Budget</span></label>
+                                <form hx-post="/projects/{{ project.path }}/update-scene-config"
+                                      hx-vals='{"section": "splat_budget"}' hx-swap="none">
+                                    <select name="value" class="select select-bordered select-xs w-48"
+                                            onchange="this.form.requestSubmit()">
+                                        <option value="0" {% if scene_config.splat_budget == 0 %}selected{% endif %}>Platform default</option>
+                                        <option value="1000000" {% if scene_config.splat_budget == 1000000 %}selected{% endif %}>1M</option>
+                                        <option value="2000000" {% if scene_config.splat_budget == 2000000 %}selected{% endif %}>2M</option>
+                                        <option value="3000000" {% if scene_config.splat_budget == 3000000 %}selected{% endif %}>3M</option>
+                                        <option value="4000000" {% if scene_config.splat_budget == 4000000 %}selected{% endif %}>4M</option>
+                                        <option value="6000000" {% if scene_config.splat_budget == 6000000 %}selected{% endif %}>6M</option>
+                                    </select>
+                                </form>
+                                <p class="text-xs opacity-40 mt-1">Initial splat budget when viewer opens. Users can still change it at runtime.</p>
+                            </div>
+
+                            <!-- Background -->
+                            <div class="mt-4 pt-4 border-t border-base-300/50">
+                                <span class="text-xs font-bold opacity-60 uppercase tracking-wider">Background</span>
+                            </div>
+                            <form hx-post="/projects/{{ project.path }}/update-scene-config"
+                                  hx-vals='{"section": "background"}' hx-swap="none"
+                                  class="flex items-center gap-3 mt-2">
+                                <span class="text-xs w-28">Color</span>
+                                <input type="color" name="color" value="{{ scene_config.background.color }}"
+                                       class="w-10 h-8 rounded cursor-pointer border border-base-300"
+                                       onchange="this.form.requestSubmit()">
+                                <input type="hidden" name="type" value="color">
+                                <span class="text-xs font-mono opacity-60">{{ scene_config.background.color }}</span>
+                            </form>
+                            <p class="text-xs opacity-40 mt-2">Viewer background color. Applied to both canvas clear color and page body.</p>
+
+                            <!-- Post-Processing -->
+                            <div class="mt-4 pt-4 border-t border-base-300/50">
+                                <span class="text-xs font-bold opacity-60 uppercase tracking-wider">Post-Processing</span>
+                            </div>
+                            <form hx-post="/projects/{{ project.path }}/update-scene-config"
+                                  hx-vals='{"section": "postprocessing"}' hx-swap="none"
+                                  class="space-y-3 mt-2">
+                                <div class="flex items-center gap-3 text-sm">
+                                    <span class="w-28 text-xs">Tonemapping</span>
+                                    <select name="tonemapping" class="select select-bordered select-xs w-36"
+                                            onchange="this.form.requestSubmit()">
+                                        {% for tm in ['linear', 'neutral', 'aces', 'aces2', 'filmic'] %}
+                                        <option value="{{ tm }}" {% if scene_config.postprocessing.tonemapping == tm %}selected{% endif %}>{{ tm|capitalize }}</option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+                                <div class="flex items-center gap-3 text-sm">
+                                    <span class="w-28 text-xs">Exposure</span>
+                                    <input type="number" name="exposure" step="0.1" min="0" max="10"
+                                           value="{{ scene_config.postprocessing.exposure }}"
+                                           class="input input-bordered input-xs w-20 font-mono"
+                                           onchange="this.form.requestSubmit()">
+                                </div>
+                                <div class="flex items-center gap-3 text-sm">
+                                    <span class="w-28 text-xs">Bloom</span>
+                                    <input type="hidden" name="bloom" value="false">
+                                    <input type="checkbox" name="bloom" value="true"
+                                           class="checkbox checkbox-xs checkbox-primary"
+                                           {% if scene_config.postprocessing.bloom %}checked{% endif %}
+                                           onchange="this.form.requestSubmit()">
+                                    <span class="text-xs opacity-40">Intensity:</span>
+                                    <input type="number" name="bloom_intensity" step="0.01" min="0" max="1"
+                                           value="{{ scene_config.postprocessing.bloom_intensity }}"
+                                           class="input input-bordered input-xs w-20 font-mono"
+                                           onchange="this.form.requestSubmit()">
+                                </div>
+                                <div class="flex items-center gap-3 text-sm">
+                                    <span class="w-28 text-xs">Vignette</span>
+                                    <input type="hidden" name="vignette" value="false">
+                                    <input type="checkbox" name="vignette" value="true"
+                                           class="checkbox checkbox-xs checkbox-primary"
+                                           {% if scene_config.postprocessing.vignette %}checked{% endif %}
+                                           onchange="this.form.requestSubmit()">
+                                    <span class="text-xs opacity-40">Intensity:</span>
+                                    <input type="number" name="vignette_intensity" step="0.1" min="0" max="1"
+                                           value="{{ scene_config.postprocessing.vignette_intensity }}"
+                                           class="input input-bordered input-xs w-20 font-mono"
+                                           onchange="this.form.requestSubmit()">
+                                </div>
+                            </form>
+                            <p class="text-xs opacity-40 mt-2">Tonemapping and exposure are applied immediately. Bloom and vignette require PlayCanvas v2.17+.</p>
+
+                            <!-- Audio -->
+                            <div class="mt-4 pt-4 border-t border-base-300/50">
+                                <span class="text-xs font-bold opacity-60 uppercase tracking-wider">Audio</span>
+                            </div>
+                            <div class="mt-2 space-y-2" id="audio-list">
+                                {% for audio in scene_config.audio %}
+                                <div class="flex items-center gap-2 text-xs bg-base-200 rounded-lg px-3 py-2">
+                                    <span class="font-mono truncate flex-1">{{ audio.file }}</span>
+                                    <span class="opacity-40">vol:</span>
+                                    <span class="font-mono">{{ audio.volume }}</span>
+                                    <span class="opacity-40">{% if audio.loop %}loop{% endif %}</span>
+                                    <span class="opacity-40">{% if audio.positional %}3D{% endif %}</span>
+                                    <button type="button" class="btn btn-ghost btn-xs text-error"
+                                            onclick="deleteAudio({{ loop.index0 }})">✕</button>
+                                </div>
+                                {% endfor %}
+                                {% if not scene_config.audio %}
+                                <p class="text-xs opacity-40">No audio sources. Upload an audio file to add ambient or positional audio.</p>
+                                {% endif %}
+                            </div>
+                            <div class="mt-3">
+                                <form id="audio-upload-form" enctype="multipart/form-data" class="flex items-center gap-2">
+                                    <input type="file" name="file" accept="audio/*" class="file-input file-input-bordered file-input-xs w-48">
+                                    <button type="button" class="btn btn-primary btn-xs"
+                                            onclick="uploadAndAddAudio()">Add Audio</button>
+                                </form>
+                            </div>
+                            <p class="text-xs opacity-40 mt-2">Audio files are copied to the project assets/ folder and included in assembly output.</p>
+                            <script>
+                            async function uploadAndAddAudio() {
+                                const form = document.getElementById('audio-upload-form');
+                                const fileInput = form.querySelector('input[type=file]');
+                                if (!fileInput.files.length) return;
+                                const formData = new FormData();
+                                formData.append('file', fileInput.files[0]);
+                                const uploadResp = await fetch('/projects/{{ project.path }}/upload-audio', {
+                                    method: 'POST', body: formData
+                                });
+                                const uploadData = await uploadResp.json();
+                                if (!uploadData.ok) return;
+                                await fetch('/projects/{{ project.path }}/add-audio', {
+                                    method: 'POST',
+                                    headers: {'Content-Type': 'application/json'},
+                                    body: JSON.stringify({
+                                        file: uploadData.path,
+                                        pos: [0, 0, 0], volume: 0.5,
+                                        loop: true, positional: false
+                                    })
+                                });
+                                location.reload();
+                            }
+                            async function deleteAudio(index) {
+                                await fetch('/projects/{{ project.path }}/delete-audio/' + index, {method: 'POST'});
+                                location.reload();
+                            }
+                            </script>
                         </div>
                         {% endif %}
 
@@ -661,10 +864,16 @@
                                     {% endfor %}
                                 </div>
                                 <div class="mt-4" id="review-approve-area">
+                                    <label class="flex items-center gap-2 mb-3 cursor-pointer">
+                                        <input type="checkbox" name="reexport" id="reexport-toggle"
+                                               class="checkbox checkbox-sm" checked>
+                                        <span class="text-sm">Re-export PLYs from edited .psht files</span>
+                                    </label>
                                     <button class="btn btn-success btn-block"
                                             hx-post="/steps/{{ project.path }}/approve-review"
                                             hx-target="#review-approve-area"
-                                            hx-swap="innerHTML">
+                                            hx-swap="innerHTML"
+                                            hx-include="#reexport-toggle">
                                         Approve & Continue
                                     </button>
                                 </div>
@@ -755,6 +964,15 @@
         <div class="card bg-base-100 shadow-xl">
             <div class="card-body py-4">
                 <h2 class="card-title text-lg mb-3">Quick Actions</h2>
+
+                <!-- Scene Editor -->
+                <div class="mb-4">
+                    <a href="/projects/{{ project.path }}/scene-editor"
+                       class="btn btn-primary btn-sm btn-block justify-start gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/></svg>
+                        Scene Editor
+                    </a>
+                </div>
 
                 <!-- Open Tools -->
                 <div class="mb-4">

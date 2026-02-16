@@ -21,6 +21,7 @@ class TrainResult:
     duration_s: float = 0.0
     output_dir: str = ""
     output_ply: str = ""
+    warning: str = ""
 
 
 class Trainer(ABC):

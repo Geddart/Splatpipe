@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ project_name }} — Scene Editor</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #1a1a1a;
+           font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    canvas { width: 100vw; height: 100vh; display: block; }
+
+    #toolbar {
+      position: absolute; top: 12px; left: 12px; z-index: 20;
+      display: flex; gap: 8px; align-items: center;
+    }
+    #toolbar a, #toolbar button {
+      padding: 8px 14px; border-radius: 6px; background: rgba(0,0,0,0.7);
+      color: #ccc; border: 1px solid rgba(255,255,255,0.2); font-size: 13px;
+      cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 6px;
+    }
+    #toolbar a:hover, #toolbar button:hover { background: rgba(255,255,255,0.15); color: #fff; }
+    #toolbar button.active { background: rgba(255,100,50,0.6); color: #fff; border-color: rgba(255,100,50,0.8); }
+
+    #placement-controls {
+      display: none; align-items: center; gap: 6px;
+      background: rgba(0,0,0,0.7); padding: 6px 12px; border-radius: 6px;
+      border: 1px solid rgba(255,255,255,0.2); color: #ccc; font-size: 12px;
+    }
+    #placement-controls.active { display: flex; }
+    #placement-controls input[type="range"] { width: 80px; cursor: pointer; }
+
+    #sidebar {
+      position: absolute; top: 0; right: 0; bottom: 0; width: 320px; z-index: 20;
+      background: rgba(15,15,15,0.95); border-left: 1px solid rgba(255,255,255,0.1);
+      overflow-y: auto; transform: translateX(100%); transition: transform 0.3s;
+    }
+    #sidebar.open { transform: translateX(0); }
+    #sidebar-header {
+      padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,0.1);
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    #sidebar-header h2 { color: #fff; font-size: 16px; font-weight: 600; }
+    #sidebar-close { background: none; border: none; color: #aaa; cursor: pointer; font-size: 18px; padding: 0 4px; }
+    #sidebar-close:hover { color: #fff; }
+
+    #sidebar-toggle {
+      position: absolute; top: 12px; right: 12px; z-index: 21;
+      padding: 8px 14px; border-radius: 6px; background: rgba(0,0,0,0.7);
+      color: #ccc; border: 1px solid rgba(255,255,255,0.2); font-size: 13px; cursor: pointer;
+    }
+    #sidebar-toggle:hover { background: rgba(255,255,255,0.15); color: #fff; }
+
+    .ann-card { padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,0.05); }
+    .ann-card-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .ann-label {
+      width: 28px; height: 28px; border-radius: 50%; background: #ff6b35; color: white;
+      display: flex; align-items: center; justify-content: center; font-size: 13px;
+      font-weight: 700; border: 2px solid white; flex-shrink: 0;
+    }
+    .ann-card input, .ann-card textarea {
+      width: 100%; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 4px; color: #ccc; padding: 4px 8px; font-size: 12px; font-family: inherit;
+    }
+    .ann-card textarea { resize: vertical; min-height: 40px; }
+    .ann-card input:focus, .ann-card textarea:focus { outline: none; border-color: rgba(255,100,50,0.6); }
+    .ann-pos { font-size: 10px; color: rgba(255,255,255,0.3); font-family: monospace; margin-top: 4px; }
+    .ann-delete { background: none; border: none; color: rgba(255,100,100,0.6); cursor: pointer; font-size: 14px; padding: 2px 6px; }
+    .ann-delete:hover { color: #ff4444; }
+
+    .empty-state { padding: 24px 16px; text-align: center; color: rgba(255,255,255,0.3); font-size: 13px; line-height: 1.6; }
+
+    #annotation-markers { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 15; }
+    .ann-marker { position: absolute; transform: translate(-50%, -100%); pointer-events: auto; cursor: pointer; transition: opacity 0.2s; }
+    .ann-dot {
+      width: 28px; height: 28px; border-radius: 50%; background: #ff6b35; color: white;
+      display: flex; align-items: center; justify-content: center; font-size: 13px;
+      font-weight: 700; border: 2px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+    }
+    .ann-dot.highlight { background: #ff3300; box-shadow: 0 0 12px rgba(255,100,50,0.6); }
+    .ann-tooltip {
+      display: none; position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
+      background: rgba(0,0,0,0.9); color: white; padding: 8px 12px; border-radius: 8px;
+      white-space: nowrap; font-size: 12px; line-height: 1.4; max-width: 200px; pointer-events: none;
+    }
+    .ann-tooltip h4 { font-weight: 600; margin: 0 0 2px; }
+    .ann-tooltip p { margin: 0; opacity: 0.8; white-space: normal; }
+    .ann-marker:hover .ann-tooltip { display: block; }
+
+    #no-output {
+      position: absolute; inset: 0; z-index: 100;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      background: #1a1a1a; color: #aaa; text-align: center;
+    }
+    #no-output p { font-size: 16px; margin: 8px 0; }
+    #no-output a { color: #ff6b35; text-decoration: underline; }
+
+    canvas.placing { cursor: crosshair; }
+
+    #loading {
+      position: absolute; inset: 0; z-index: 100;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      background: #1a1a1a; transition: opacity 0.5s;
+    }
+    #loading.hidden { opacity: 0; pointer-events: none; }
+    #loading p { color: #aaa; font-size: 16px; margin-top: 16px; }
+    .spinner {
+      width: 40px; height: 40px;
+      border: 3px solid rgba(255,255,255,0.1); border-top-color: #fff;
+      border-radius: 50%; animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #controls-hint {
+      position: absolute; bottom: 20px; left: 20px; z-index: 10;
+      color: rgba(255,255,255,0.4); font-size: 11px; pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="app-canvas"></canvas>
+
+  <div id="toolbar">
+    <a href="/projects/{{ project_path }}/detail">&#8592; Back</a>
+    <button id="add-btn" onclick="togglePlacementMode()">+ Add Annotation</button>
+    <div id="placement-controls">
+      <span>Distance:</span>
+      <input type="range" id="place-dist" min="1" max="50" value="10">
+      <span id="place-dist-val">10m</span>
+      <span style="opacity:0.5">| Click to place</span>
+    </div>
+  </div>
+
+  <button id="sidebar-toggle" onclick="toggleSidebar()">Annotations ({{ annotations|length }})</button>
+
+  <div id="sidebar" class="open">
+    <div id="sidebar-header">
+      <h2>Annotations</h2>
+      <button id="sidebar-close" onclick="toggleSidebar()">&#10005;</button>
+    </div>
+    <div id="annotation-list"></div>
+  </div>
+
+  <div id="annotation-markers"></div>
+
+  {% if not has_output %}
+  <div id="no-output">
+    <p>No assembled output found.</p>
+    <p>Run the <b>Assemble</b> step first, then return here.</p>
+    <a href="/projects/{{ project_path }}/detail">&#8592; Back to project</a>
+  </div>
+  {% else %}
+  <div id="loading">
+    <div class="spinner"></div>
+    <p>Loading splats...</p>
+  </div>
+  {% endif %}
+
+  <div id="controls-hint">
+    WASD / Arrow keys to move &middot; Mouse drag to look &middot; Scroll to zoom &middot; Shift for fast
+  </div>
+
+  {% if has_output %}
+  <script type="importmap">
+  {
+    "imports": {
+      "playcanvas": "https://cdn.jsdelivr.net/npm/playcanvas@2.16/+esm"
+    }
+  }
+  </script>
+  <script type="module">
+  import * as pc from 'playcanvas';
+
+  const CAMERA_CONTROLS_URL =
+    'https://cdn.jsdelivr.net/npm/playcanvas/scripts/esm/camera-controls.mjs';
+  const { CameraControls } = await import(CAMERA_CONTROLS_URL);
+
+  const PROJECT_PATH = {{ project_path | tojson }};
+  const PROJECT_NAME = {{ project_name | tojson }};
+  const SPLAT_URL = '/projects/' + PROJECT_PATH + '/preview/lod-meta.json';
+
+  const canvas = document.getElementById('app-canvas');
+  window.focus();
+
+  const gfxOptions = { deviceTypes: ['webgpu', 'webgl2'], antialias: false };
+  const device = await pc.createGraphicsDevice(canvas, gfxOptions);
+  const createOptions = new pc.AppOptions();
+  createOptions.graphicsDevice = device;
+  createOptions.mouse = new pc.Mouse(document.body);
+  createOptions.touch = new pc.TouchDevice(document.body);
+  createOptions.keyboard = new pc.Keyboard(document.body);
+  createOptions.componentSystems = [
+    pc.RenderComponentSystem, pc.CameraComponentSystem,
+    pc.LightComponentSystem, pc.ScriptComponentSystem,
+    pc.GSplatComponentSystem
+  ];
+  createOptions.resourceHandlers = [
+    pc.TextureHandler, pc.ContainerHandler,
+    pc.ScriptHandler, pc.GSplatHandler
+  ];
+
+  const app = new pc.AppBase(canvas);
+  app.init(createOptions);
+  app.setCanvasFillMode(pc.FILLMODE_FILL_WINDOW);
+  app.setCanvasResolution(pc.RESOLUTION_AUTO);
+
+  const dpr = window.devicePixelRatio || 1;
+  device.maxPixelRatio = dpr >= 2 ? dpr * 0.5 : dpr;
+
+  const onResize = () => app.resizeCanvas();
+  window.addEventListener('resize', onResize);
+  app.on('destroy', () => window.removeEventListener('resize', onResize));
+
+  const splatAsset = new pc.Asset('gsplat', 'gsplat', { url: SPLAT_URL });
+  app.assets.add(splatAsset);
+  await new Promise((resolve, reject) => {
+    splatAsset.on('load', resolve);
+    splatAsset.on('error', err => reject(new Error(err)));
+    app.assets.load(splatAsset);
+  });
+
+  // Load viewer config from preview
+  const _DEFAULTS = {
+    camera: { pitch_min: -89, pitch_max: 89, zoom_min: 1, zoom_max: 200,
+              ground_height: 0.3, bounds_radius: 150 },
+    splat_budget: 0,
+    annotations: [],
+  };
+  let viewerConfig = _DEFAULTS;
+  try {
+    const cfgResp = await fetch('/projects/' + PROJECT_PATH + '/preview/viewer-config.json');
+    if (cfgResp.ok) viewerConfig = { ..._DEFAULTS, ...await cfgResp.json() };
+  } catch (e) { /* use defaults */ }
+
+  app.start();
+
+  app.scene.exposure = 1.5;
+  app.scene.gsplat.lodUpdateAngle = 90;
+  app.scene.gsplat.lodBehindPenalty = 2;
+  app.scene.gsplat.radialSorting = true;
+  app.scene.gsplat.lodUpdateDistance = 1;
+  app.scene.gsplat.lodUnderfillLimit = 10;
+  app.scene.gsplat.colorUpdateDistance = 1;
+  app.scene.gsplat.colorUpdateAngle = 4;
+  app.scene.gsplat.colorUpdateDistanceLodScale = 2;
+  app.scene.gsplat.colorUpdateAngleLodScale = 2;
+
+  const splatEntity = new pc.Entity(PROJECT_NAME);
+  splatEntity.addComponent('gsplat', { asset: splatAsset, unified: true });
+  splatEntity.setLocalEulerAngles(180, 0, 0);
+  app.root.addChild(splatEntity);
+
+  const focusPoint = new pc.Vec3(0, 1, 0);
+  const camera = new pc.Entity('camera');
+  camera.addComponent('camera', {
+    clearColor: new pc.Color(0.15, 0.15, 0.15),
+    fov: 75,
+    toneMapping: pc.TONEMAP_LINEAR
+  });
+  camera.setLocalPosition(0, 2, -10);
+  app.root.addChild(camera);
+  camera.addComponent('script');
+  const cc = camera.script.create(CameraControls);
+  Object.assign(cc, {
+    sceneSize: 500, moveSpeed: 4, moveFastSpeed: 15,
+    enableOrbit: true, enablePan: true, focusPoint: focusPoint
+  });
+
+  const cam = viewerConfig.camera || _DEFAULTS.camera;
+  cc.pitchRange = new pc.Vec2(cam.pitch_min, cam.pitch_max);
+  cc.zoomRange = new pc.Vec2(cam.zoom_min, cam.zoom_max);
+
+  // Splat budget
+  const isMobile = pc.platform.mobile;
+  const cfgBudget = viewerConfig.splat_budget || 0;
+  app.scene.gsplat.splatBudget = cfgBudget > 0 ? cfgBudget : (isMobile ? 1000000 : 4000000);
+
+  document.getElementById('loading').classList.add('hidden');
+
+  // --- Annotation system ---
+  let annotations = {{ annotations | tojson }};
+  let placementMode = false;
+  const markersContainer = document.getElementById('annotation-markers');
+  const annotationList = document.getElementById('annotation-list');
+  let markerEls = [];
+
+  function esc(s) { return (s || '').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
+
+  function renderAnnotations() {
+    markersContainer.innerHTML = '';
+    annotationList.innerHTML = '';
+    markerEls = [];
+
+    if (annotations.length === 0) {
+      annotationList.innerHTML = '<div class="empty-state">No annotations yet.<br>Click "+ Add Annotation" to place one.</div>';
+      updateToggleCount();
+      return;
+    }
+
+    annotations.forEach((ann, i) => {
+      const label = ann.label || String(i + 1);
+
+      // 3D marker
+      const marker = document.createElement('div');
+      marker.className = 'ann-marker';
+      marker.innerHTML = '<div class="ann-dot">' + esc(label) + '</div>' +
+        '<div class="ann-tooltip">' +
+        (ann.title ? '<h4>' + esc(ann.title) + '</h4>' : '') +
+        (ann.text ? '<p>' + esc(ann.text) + '</p>' : '') + '</div>';
+      marker.addEventListener('click', () => highlightAnnotation(i));
+      markersContainer.appendChild(marker);
+      markerEls.push({ el: marker, pos: new pc.Vec3(ann.pos[0], ann.pos[1], ann.pos[2]) });
+
+      // Sidebar card
+      const card = document.createElement('div');
+      card.className = 'ann-card';
+      card.id = 'ann-card-' + i;
+      card.innerHTML =
+        '<div class="ann-card-header">' +
+          '<div class="ann-label">' + esc(label) + '</div>' +
+          '<input type="text" value="' + esc(ann.title) + '" placeholder="Title" data-idx="' + i + '" data-field="title">' +
+          '<button class="ann-delete" data-delidx="' + i + '" title="Delete">&#10005;</button>' +
+        '</div>' +
+        '<textarea placeholder="Description" data-idx="' + i + '" data-field="text">' + esc(ann.text) + '</textarea>' +
+        '<div class="ann-pos">pos: [' + ann.pos.map(function(v) { return v.toFixed(2); }).join(', ') + ']</div>';
+      annotationList.appendChild(card);
+    });
+
+    // Attach event listeners
+    annotationList.querySelectorAll('input[data-idx], textarea[data-idx]').forEach(function(el) {
+      el.addEventListener('change', function() {
+        updateAnnotation(parseInt(el.dataset.idx), el.dataset.field, el.value);
+      });
+    });
+    annotationList.querySelectorAll('button[data-delidx]').forEach(function(el) {
+      el.addEventListener('click', function() {
+        deleteAnnotation(parseInt(el.dataset.delidx));
+      });
+    });
+
+    updateToggleCount();
+  }
+
+  function updateToggleCount() {
+    document.getElementById('sidebar-toggle').textContent = 'Annotations (' + annotations.length + ')';
+  }
+
+  function highlightAnnotation(index) {
+    const card = document.getElementById('ann-card-' + index);
+    if (card) {
+      card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      card.style.background = 'rgba(255,100,50,0.1)';
+      setTimeout(function() { card.style.background = ''; }, 1500);
+    }
+    markerEls.forEach(function(m, i) {
+      m.el.querySelector('.ann-dot').classList.toggle('highlight', i === index);
+    });
+    setTimeout(function() {
+      markerEls.forEach(function(m) { m.el.querySelector('.ann-dot').classList.remove('highlight'); });
+    }, 2000);
+    document.getElementById('sidebar').classList.add('open');
+  }
+
+  async function addAnnotationAtPos(pos) {
+    const data = {
+      pos: [pos.x, pos.y, pos.z],
+      title: 'Annotation ' + (annotations.length + 1),
+      text: '',
+      label: String(annotations.length + 1)
+    };
+    const resp = await fetch('/projects/' + PROJECT_PATH + '/add-annotation', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    if (resp.ok) {
+      annotations.push(data);
+      renderAnnotations();
+      document.getElementById('sidebar').classList.add('open');
+    }
+  }
+
+  async function updateAnnotation(index, field, value) {
+    const update = {};
+    update[field] = value;
+    const resp = await fetch('/projects/' + PROJECT_PATH + '/update-annotation/' + index, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(update)
+    });
+    if (resp.ok) {
+      annotations[index][field] = value;
+      // Re-render markers to update tooltips
+      renderAnnotations();
+    }
+  }
+
+  async function deleteAnnotation(index) {
+    const resp = await fetch('/projects/' + PROJECT_PATH + '/delete-annotation/' + index, {
+      method: 'POST'
+    });
+    if (resp.ok) {
+      const result = await resp.json();
+      annotations = result.annotations || [];
+      renderAnnotations();
+    }
+  }
+
+  // --- Placement mode ---
+  window.togglePlacementMode = function() {
+    placementMode = !placementMode;
+    document.getElementById('add-btn').classList.toggle('active', placementMode);
+    document.getElementById('placement-controls').classList.toggle('active', placementMode);
+    canvas.classList.toggle('placing', placementMode);
+  };
+
+  const placeDist = document.getElementById('place-dist');
+  const placeDistVal = document.getElementById('place-dist-val');
+  placeDist.addEventListener('input', function() {
+    placeDistVal.textContent = placeDist.value + 'm';
+  });
+
+  canvas.addEventListener('click', function(e) {
+    if (!placementMode) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    // Cast ray from camera through click point
+    const near = new pc.Vec3();
+    const far = new pc.Vec3();
+    camera.camera.screenToWorld(x, y, camera.camera.nearClip, near);
+    camera.camera.screenToWorld(x, y, camera.camera.farClip, far);
+    const dir = new pc.Vec3().sub2(far, near).normalize();
+
+    // Try ground plane intersection
+    const groundY = cam.ground_height || 0.3;
+    let pos = null;
+    if (Math.abs(dir.y) > 1e-6) {
+      const t = (groundY - near.y) / dir.y;
+      if (t > 0) {
+        pos = new pc.Vec3(near.x + dir.x * t, groundY, near.z + dir.z * t);
+      }
+    }
+
+    // Fallback: place at configurable distance along ray
+    if (!pos) {
+      const dist = parseFloat(placeDist.value);
+      pos = new pc.Vec3().add2(near, new pc.Vec3().copy(dir).mulScalar(dist));
+    }
+
+    addAnnotationAtPos(pos);
+    // Exit placement mode after placing
+    togglePlacementMode();
+  });
+
+  // --- Sidebar toggle ---
+  window.toggleSidebar = function() {
+    document.getElementById('sidebar').classList.toggle('open');
+  };
+
+  // Initial render
+  renderAnnotations();
+
+  // --- Per-frame update ---
+  // Pre-allocate reusable vectors outside the frame loop to avoid GC stutter
+  const _sp = new pc.Vec3();
+  const _tp = new pc.Vec3();
+  const _camPos = new pc.Vec3();
+  app.on('update', function() {
+    // Clamp camera position
+    const pos = camera.getLocalPosition();
+    const cx = pc.math.clamp(pos.x, -cam.bounds_radius, cam.bounds_radius);
+    const cy = Math.max(pos.y, cam.ground_height);
+    const cz = pc.math.clamp(pos.z, -cam.bounds_radius, cam.bounds_radius);
+    if (cx !== pos.x || cy !== pos.y || cz !== pos.z) {
+      camera.setLocalPosition(cx, cy, cz);
+    }
+
+    // Update annotation marker positions
+    _camPos.copy(camera.getPosition());
+    markerEls.forEach(function(m) {
+      camera.camera.worldToScreen(m.pos, _sp);
+      _tp.sub2(m.pos, _camPos);
+      if (_tp.dot(camera.forward) < 0) {
+        m.el.style.display = 'none';
+      } else {
+        m.el.style.display = '';
+        m.el.style.left = _sp.x + 'px';
+        m.el.style.top = _sp.y + 'px';
+      }
+    });
+  });
+  </script>
+  {% endif %}
+</body>
+</html>

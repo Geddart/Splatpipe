@@ -7,7 +7,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .routes import actions, projects, settings, steps
+from .routes import actions, projects, queue, settings, steps
 from ..core.config import load_defaults
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -24,6 +24,7 @@ if STATIC_DIR.exists():
 # Include route modules
 app.include_router(actions.router)
 app.include_router(projects.router)
+app.include_router(queue.router)
 app.include_router(settings.router)
 app.include_router(steps.router)
 

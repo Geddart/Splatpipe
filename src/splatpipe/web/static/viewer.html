@@ -65,6 +65,21 @@
       position: absolute; bottom: 60px; left: 20px; z-index: 10;
       color: rgba(255,255,255,0.4); font-size: 11px; pointer-events: none;
     }
+    #annotation-markers { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 15; }
+    .ann-marker { position: absolute; transform: translate(-50%, -100%); pointer-events: auto; cursor: pointer; transition: opacity 0.2s; }
+    .ann-dot {
+      width: 28px; height: 28px; border-radius: 50%; background: #ff6b35; color: white;
+      display: flex; align-items: center; justify-content: center; font-size: 13px;
+      font-weight: 700; border: 2px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+    }
+    .ann-tooltip {
+      display: none; position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
+      background: rgba(0,0,0,0.9); color: white; padding: 8px 12px; border-radius: 8px;
+      white-space: nowrap; font-size: 12px; line-height: 1.4; max-width: 200px; pointer-events: none;
+    }
+    .ann-tooltip h4 { font-weight: 600; margin: 0 0 2px; }
+    .ann-tooltip p { margin: 0; opacity: 0.8; white-space: normal; }
+    .ann-marker:hover .ann-tooltip { display: block; }
   </style>
 </head>
 <body>
@@ -109,6 +124,8 @@
     <p>Loading splats...</p>
   </div>
 
+  <div id="annotation-markers"></div>
+
   <script type="importmap">
   {
     "imports": {
@@ -138,11 +155,12 @@
   createOptions.componentSystems = [
     pc.RenderComponentSystem, pc.CameraComponentSystem,
     pc.LightComponentSystem, pc.ScriptComponentSystem,
-    pc.GSplatComponentSystem
+    pc.GSplatComponentSystem,
+    pc.SoundComponentSystem, pc.AudioListenerComponentSystem
   ];
   createOptions.resourceHandlers = [
     pc.TextureHandler, pc.ContainerHandler,
-    pc.ScriptHandler, pc.GSplatHandler
+    pc.ScriptHandler, pc.GSplatHandler, pc.AudioHandler
   ];
 
   const app = new pc.AppBase(canvas);
@@ -165,9 +183,34 @@
     app.assets.load(splatAsset);
   });
 
+  // --- Load viewer config ---
+  const _DEFAULTS = {
+    camera: { pitch_min: -89, pitch_max: 89, zoom_min: 1, zoom_max: 200,
+              ground_height: 0.3, bounds_radius: 150 },
+    splat_budget: 0,
+    annotations: [],
+    background: { type: 'color', color: '#1a1a1a' },
+    postprocessing: { tonemapping: 'neutral', exposure: 1.5,
+                      bloom: false, vignette: false },
+    audio: []
+  };
+  let viewerConfig = _DEFAULTS;
+  try {
+    const cfgResp = await fetch('viewer-config.json');
+    if (cfgResp.ok) viewerConfig = { ..._DEFAULTS, ...await cfgResp.json() };
+  } catch (e) { /* use defaults */ }
+
   app.start();
 
-  app.scene.exposure = 1.5;
+  // --- Apply post-processing from config ---
+  const pp = viewerConfig.postprocessing || _DEFAULTS.postprocessing;
+  app.scene.exposure = pp.exposure ?? 1.5;
+
+  const TONEMAP = {
+    linear: pc.TONEMAP_LINEAR, neutral: pc.TONEMAP_NEUTRAL,
+    aces: pc.TONEMAP_ACES, aces2: pc.TONEMAP_ACES2, filmic: pc.TONEMAP_FILMIC
+  };
+
   app.scene.gsplat.lodUpdateAngle = 90;
   app.scene.gsplat.lodBehindPenalty = 2;
   app.scene.gsplat.radialSorting = true;
@@ -189,11 +232,20 @@
   camera.addComponent('camera', {
     clearColor: new pc.Color(0.15, 0.15, 0.15),
     fov: 75,
-    toneMapping: pc.TONEMAP_LINEAR
+    toneMapping: TONEMAP[pp.tonemapping] ?? pc.TONEMAP_NEUTRAL
   });
+
+  // --- Apply background from config ---
+  const bg = viewerConfig.background || _DEFAULTS.background;
+  if (bg.type === 'color' && bg.color) {
+    camera.camera.clearColor = new pc.Color().fromString(bg.color);
+    document.body.style.background = bg.color;
+  }
+
   camera.setLocalPosition(0, 2, -10);
   app.root.addChild(camera);
   camera.addComponent('script');
+  camera.addComponent('audiolistener');
   const cc = camera.script.create(CameraControls);
   Object.assign(cc, {
     sceneSize: 500,
@@ -203,6 +255,11 @@
     enablePan: true,
     focusPoint: focusPoint
   });
+
+  // --- Apply camera constraints from config ---
+  const cam = viewerConfig.camera || _DEFAULTS.camera;
+  cc.pitchRange = new pc.Vec2(cam.pitch_min, cam.pitch_max);
+  cc.zoomRange = new pc.Vec2(cam.zoom_min, cam.zoom_max);
 
   const buttons = document.querySelectorAll('.quality-btn');
   const isMobile = pc.platform.mobile;
@@ -220,9 +277,20 @@
   });
   applyPreset(currentPreset);
 
-  // Splat budget control
+  // --- Splat budget from config ---
   const budgetEl = document.getElementById('splat-budget');
-  budgetEl.value = isMobile ? '1000000' : '4000000';
+  const cfgBudget = viewerConfig.splat_budget || 0;
+  if (cfgBudget > 0) {
+    if (!budgetEl.querySelector('option[value="' + cfgBudget + '"]')) {
+      const opt = document.createElement('option');
+      opt.value = String(cfgBudget);
+      opt.textContent = (cfgBudget / 1_000_000).toFixed(1) + 'M';
+      budgetEl.appendChild(opt);
+    }
+    budgetEl.value = String(cfgBudget);
+  } else {
+    budgetEl.value = isMobile ? '1000000' : '4000000';
+  }
   app.scene.gsplat.splatBudget = parseInt(budgetEl.value);
   budgetEl.addEventListener('change', () => {
     app.scene.gsplat.splatBudget = parseInt(budgetEl.value);
@@ -237,11 +305,71 @@
 
   document.getElementById('loading').classList.add('hidden');
 
+  // --- Annotation markers ---
+  const annotationsData = viewerConfig.annotations || [];
+  const markersContainer = document.getElementById('annotation-markers');
+  const markerEls = [];
+  annotationsData.forEach((ann, i) => {
+    const marker = document.createElement('div');
+    marker.className = 'ann-marker';
+    const label = (ann.label || String(i + 1)).replace(/</g, '&lt;');
+    const title = (ann.title || '').replace(/</g, '&lt;');
+    const text = (ann.text || '').replace(/</g, '&lt;');
+    marker.innerHTML = '<div class="ann-dot">' + label + '</div><div class="ann-tooltip">' +
+      (title ? '<h4>' + title + '</h4>' : '') + (text ? '<p>' + text + '</p>' : '') + '</div>';
+    markersContainer.appendChild(marker);
+    markerEls.push({ el: marker, pos: new pc.Vec3(ann.pos[0], ann.pos[1], ann.pos[2]) });
+  });
+
   const splatCountEl = document.getElementById('splat-count');
+  // Pre-allocate reusable vectors outside the frame loop to avoid GC stutter
+  const _sp = new pc.Vec3();
+  const _tp = new pc.Vec3();
+  const _camPos = new pc.Vec3();
   app.on('update', () => {
     const displayed = app.stats.frame.gsplats || 0;
     const displayedM = (displayed / 1_000_000).toFixed(2);
     splatCountEl.textContent = 'Splats: ' + displayedM + 'M';
+    // Clamp camera position: ground + bounds
+    const pos = camera.getLocalPosition();
+    const cx = pc.math.clamp(pos.x, -cam.bounds_radius, cam.bounds_radius);
+    const cy = Math.max(pos.y, cam.ground_height);
+    const cz = pc.math.clamp(pos.z, -cam.bounds_radius, cam.bounds_radius);
+    if (cx !== pos.x || cy !== pos.y || cz !== pos.z) {
+      camera.setLocalPosition(cx, cy, cz);
+    }
+    // Update annotation marker screen positions
+    _camPos.copy(camera.getPosition());
+    markerEls.forEach(m => {
+      camera.camera.worldToScreen(m.pos, _sp);
+      _tp.sub2(m.pos, _camPos);
+      if (_tp.dot(camera.forward) < 0) {
+        m.el.style.display = 'none';
+      } else {
+        m.el.style.display = '';
+        m.el.style.left = _sp.x + 'px';
+        m.el.style.top = _sp.y + 'px';
+      }
+    });
+  });
+
+  // --- Audio sources from config ---
+  (viewerConfig.audio || []).forEach(src => {
+    const audioAsset = new pc.Asset('audio', 'audio', { url: src.file });
+    app.assets.add(audioAsset);
+    app.assets.load(audioAsset);
+    audioAsset.on('load', () => {
+      const ent = new pc.Entity('audio-source');
+      ent.addComponent('sound', {
+        positional: src.positional ?? false,
+        volume: src.volume ?? 0.5,
+        refDistance: 5, maxDistance: 100
+      });
+      ent.sound.addSlot('main', { asset: audioAsset, loop: src.loop ?? true, autoPlay: true });
+      if (src.pos) ent.setLocalPosition(src.pos[0], src.pos[1], src.pos[2]);
+      app.root.addChild(ent);
+      ent.sound.play('main');
+    });
   });
   </script>
 </body>

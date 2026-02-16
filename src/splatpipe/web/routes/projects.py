@@ -6,9 +6,10 @@ import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 
+from ...colmap.parsers import detect_alignment_format, detect_source_type, ALIGNMENT_FORMAT_LABELS
 from ...core.config import load_defaults
 from ...core.constants import (
     STEP_CLEAN, STEP_TRAIN, STEP_REVIEW, STEP_ASSEMBLE, STEP_EXPORT,
@@ -170,19 +171,11 @@ async def create_project(request: Request):
 
     name = str(form.get("name", "")).strip()
     colmap_dir_str = str(form.get("colmap_dir", "")).strip()
-    trainer = str(form.get("trainer", "postshot"))
-    lods_str = str(form.get("lods", "25M,10M,5M,2M,1M,500K"))
 
     values = {
         "name": name,
         "colmap_dir": colmap_dir_str,
-        "trainer": trainer,
-        "lods": lods_str,
     }
-
-    # Collect enabled steps from checkboxes
-    for step in ALL_STEPS:
-        values[f"step_{step}"] = f"step_{step}" in form
 
     # Validation
     if not name:
@@ -191,34 +184,25 @@ async def create_project(request: Request):
             "error": "Project name is required.",
         })
 
-    colmap_dir = Path(colmap_dir_str)
-    if not colmap_dir.exists():
+    source_path = Path(colmap_dir_str)
+    if not source_path.exists():
         return templates.TemplateResponse("create_project.html", {
             "request": request, "values": values,
-            "error": f"COLMAP directory does not exist: {colmap_dir}",
+            "error": f"Path does not exist: {source_path}",
         })
 
-    required_files = ["cameras.txt", "images.txt", "points3D.txt"]
-    missing = [f for f in required_files if not (colmap_dir / f).exists()]
-    if missing:
-        return templates.TemplateResponse("create_project.html", {
-            "request": request, "values": values,
-            "error": f"Missing COLMAP files: {', '.join(missing)}",
-        })
+    # Detect source type (file or directory)
+    if source_path.is_file():
+        if source_path.suffix.lower() != ".psht":
+            return templates.TemplateResponse("create_project.html", {
+                "request": request, "values": values,
+                "error": "Only .psht files are supported as file input.",
+            })
+        fmt = "postshot"
+    else:
+        fmt = detect_alignment_format(source_path)
 
-    # Parse LODs
-    try:
-        lod_levels = _parse_lods(lods_str)
-    except (ValueError, IndexError):
-        return templates.TemplateResponse("create_project.html", {
-            "request": request, "values": values,
-            "error": "Invalid LOD format. Use comma-separated values like '20M,10M,5M'.",
-        })
-
-    # Build enabled_steps
-    enabled_steps = {step: f"step_{step}" in form for step in ALL_STEPS}
-
-    # Create project
+    # Create project (uses defaults for trainer, LODs, enabled_steps)
     config = load_defaults()
     projects_root = config.get("paths", {}).get("projects_root", "")
     if not projects_root:
@@ -238,17 +222,20 @@ async def create_project(request: Request):
     project = Project.create(
         project_dir,
         name,
-        trainer=trainer,
-        lod_levels=lod_levels,
-        colmap_source=str(colmap_dir),
-        enabled_steps=enabled_steps,
+        colmap_source=str(source_path),
+        source_type=fmt,
     )
 
-    # Create symlink/junction from 01_colmap_source to COLMAP data
-    source_link = project.get_folder("01_colmap_source")
-    if source_link.exists() and not any(source_link.iterdir()):
-        source_link.rmdir()
-        _create_link(source_link, colmap_dir)
+    if fmt == "postshot":
+        # Copy .psht file into project (never modify the original)
+        dest = project.get_folder("01_colmap_source") / "source.psht"
+        shutil.copy2(source_path, dest)
+    else:
+        # Create symlink/junction from 01_colmap_source to data directory
+        source_link = project.get_folder("01_colmap_source")
+        if source_link.exists() and not any(source_link.iterdir()):
+            source_link.rmdir()
+            _create_link(source_link, source_path)
 
     return RedirectResponse(f"/projects/{project.root}/detail", status_code=303)
 
@@ -492,6 +479,8 @@ async def project_list(request: Request):
 async def project_detail(request: Request, project_path: str):
     """Show project detail view."""
     proj = Project(Path(project_path))
+    if not proj.state_path.exists():
+        return HTMLResponse("Project not found", status_code=404)
     state = proj.state
     enabled = proj.enabled_steps
     config = load_defaults()
@@ -676,6 +665,7 @@ async def project_detail(request: Request, project_path: str):
         "review_lods": review_lods,
         "history": proj.get_history(),
         "step_labels": step_labels,
+        "scene_config": _Obj({k: _Obj(v) if isinstance(v, dict) else v for k, v in proj.scene_config.items()}),
     })
 
 
@@ -791,6 +781,156 @@ async def update_lod_distances(request: Request, project_path: str):
             distances.append(0.0)
     proj.set_lod_distances(distances)
     return _toast("LOD distances updated")
+
+
+# --- Scene config ---
+
+@router.post("/{project_path:path}/update-scene-config")
+async def update_scene_config(request: Request, project_path: str):
+    form = await request.form()
+    section = str(form.get("section", ""))
+    if not section:
+        return _toast("Missing section", "error")
+
+    # Scalar sections (int/float, not dict) — stored as single value
+    scalar_sections = {"splat_budget"}
+    if section in scalar_sections:
+        try:
+            data = int(form.get("value", "0"))
+        except ValueError:
+            data = 0
+    else:
+        # Dict sections — parse all form fields except "section"
+        data = {}
+        for key, value in form.items():
+            if key == "section":
+                continue
+            if value in ("true", "false"):
+                data[key] = value == "true"
+            else:
+                try:
+                    data[key] = float(value)
+                except ValueError:
+                    data[key] = value
+
+    proj = Project(Path(project_path))
+    proj.set_scene_config_section(section, data)
+    return _toast(f"Scene {section} updated")
+
+
+# --- Annotations ---
+
+@router.get("/{project_path:path}/annotations")
+async def get_annotations(project_path: str):
+    """Return current annotations as JSON."""
+    proj = Project(Path(project_path))
+    return JSONResponse(proj.scene_config.get("annotations", []))
+
+
+@router.post("/{project_path:path}/add-annotation")
+async def add_annotation(request: Request, project_path: str):
+    """Add an annotation to the project's scene_config."""
+    body = await request.json()
+    proj = Project(Path(project_path))
+    saved = proj.state.get("scene_config", {}).get("annotations", [])
+    saved.append(body)
+    proj.set_scene_config_section("annotations", saved)
+    return JSONResponse({"ok": True, "index": len(saved) - 1})
+
+
+@router.post("/{project_path:path}/update-annotation/{index:int}")
+async def update_annotation(request: Request, project_path: str, index: int):
+    """Update fields of an existing annotation."""
+    body = await request.json()
+    proj = Project(Path(project_path))
+    saved = proj.state.get("scene_config", {}).get("annotations", [])
+    if 0 <= index < len(saved):
+        saved[index].update(body)
+        proj.set_scene_config_section("annotations", saved)
+    return JSONResponse({"ok": True})
+
+
+@router.post("/{project_path:path}/delete-annotation/{index:int}")
+async def delete_annotation(request: Request, project_path: str, index: int):
+    """Delete an annotation and re-label remaining ones."""
+    proj = Project(Path(project_path))
+    saved = proj.state.get("scene_config", {}).get("annotations", [])
+    if 0 <= index < len(saved):
+        saved.pop(index)
+        for i, ann in enumerate(saved):
+            ann["label"] = str(i + 1)
+        proj.set_scene_config_section("annotations", saved)
+    return JSONResponse({"ok": True, "annotations": saved})
+
+
+# --- Scene editor ---
+
+@router.get("/{project_path:path}/scene-editor", response_class=HTMLResponse)
+async def scene_editor(request: Request, project_path: str):
+    """Scene editor page with visual annotation placement."""
+    proj = Project(Path(project_path))
+    output_dir = proj.get_folder(FOLDER_OUTPUT)
+    has_output = (output_dir / "lod-meta.json").exists()
+    return templates.TemplateResponse("scene_editor.html", {
+        "request": request,
+        "project_name": proj.name,
+        "project_path": str(proj.root),
+        "annotations": proj.scene_config.get("annotations", []),
+        "has_output": has_output,
+        "scene_config": proj.scene_config,
+    })
+
+
+# --- Audio ---
+
+@router.post("/{project_path:path}/add-audio")
+async def add_audio(request: Request, project_path: str):
+    """Add an audio source to the project's scene_config."""
+    body = await request.json()
+    proj = Project(Path(project_path))
+    saved = proj.state.get("scene_config", {}).get("audio", [])
+    saved.append(body)
+    proj.set_scene_config_section("audio", saved)
+    return JSONResponse({"ok": True, "index": len(saved) - 1})
+
+
+@router.post("/{project_path:path}/update-audio/{index:int}")
+async def update_audio(request: Request, project_path: str, index: int):
+    """Update fields of an existing audio source."""
+    body = await request.json()
+    proj = Project(Path(project_path))
+    saved = proj.state.get("scene_config", {}).get("audio", [])
+    if 0 <= index < len(saved):
+        saved[index].update(body)
+        proj.set_scene_config_section("audio", saved)
+    return JSONResponse({"ok": True})
+
+
+@router.post("/{project_path:path}/delete-audio/{index:int}")
+async def delete_audio(request: Request, project_path: str, index: int):
+    """Delete an audio source."""
+    proj = Project(Path(project_path))
+    saved = proj.state.get("scene_config", {}).get("audio", [])
+    if 0 <= index < len(saved):
+        saved.pop(index)
+        proj.set_scene_config_section("audio", saved)
+    return JSONResponse({"ok": True, "audio": saved})
+
+
+@router.post("/{project_path:path}/upload-audio")
+async def upload_audio(request: Request, project_path: str):
+    """Upload an audio file to the project's assets/audio/ folder."""
+    form = await request.form()
+    upload = form.get("file")
+    if not upload or not hasattr(upload, "filename"):
+        return _toast("No file uploaded", "error")
+    proj = Project(Path(project_path))
+    audio_dir = proj.root / "assets" / "audio"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    dest = audio_dir / upload.filename
+    content = await upload.read()
+    dest.write_bytes(content)
+    return JSONResponse({"ok": True, "path": f"assets/audio/{upload.filename}"})
 
 
 # --- Export settings ---

@@ -1,0 +1,55 @@
+{% if queue.current or queue.pending %}
+<div class="card bg-base-100 shadow mb-6">
+    <div class="card-body py-3">
+        <div class="flex items-center justify-between mb-2">
+            <h3 class="font-bold text-sm">Pipeline Queue</h3>
+            <button class="btn btn-xs btn-outline"
+                    hx-post="/queue/toggle-pause"
+                    hx-target="#queue-panel" hx-swap="innerHTML">
+                {{ "Resume" if queue.paused else "Pause" }}
+            </button>
+        </div>
+
+        {% if queue.current %}
+        <div class="flex items-center gap-3 p-2 bg-base-200 rounded mb-2">
+            <span class="loading loading-spinner loading-xs"></span>
+            <a href="/projects/{{ queue.current.project_path }}/detail"
+               class="font-bold flex-1 hover:underline">{{ queue.current.project_name }}</a>
+            <span class="text-xs opacity-60">{{ queue.current_step_label }}</span>
+            <progress class="progress progress-primary w-24 h-2"
+                      value="{{ (queue.current_progress * 100)|int }}" max="100"></progress>
+            <span class="text-xs font-mono w-8 text-right">{{ (queue.current_progress * 100)|int }}%</span>
+            <button class="btn btn-error btn-xs btn-outline"
+                    hx-post="/queue/cancel-current"
+                    hx-target="#queue-panel" hx-swap="innerHTML">Cancel</button>
+        </div>
+        {% endif %}
+
+        {% if queue.paused and not queue.current %}
+        <div class="text-xs opacity-60 mb-2">Queue paused</div>
+        {% endif %}
+
+        {% for entry in queue.pending %}
+        <div class="flex items-center gap-3 p-1 rounded hover:bg-base-200">
+            <span class="badge badge-sm badge-ghost w-6 justify-center">#{{ loop.index }}</span>
+            <span class="flex-1 text-sm">{{ entry.project_name }}</span>
+            <div class="flex gap-1">
+                {% if not loop.first %}
+                <button class="btn btn-ghost btn-xs px-1"
+                        hx-post="/queue/{{ entry.id }}/move-up"
+                        hx-target="#queue-panel" hx-swap="innerHTML">&#9650;</button>
+                {% endif %}
+                {% if not loop.last %}
+                <button class="btn btn-ghost btn-xs px-1"
+                        hx-post="/queue/{{ entry.id }}/move-down"
+                        hx-target="#queue-panel" hx-swap="innerHTML">&#9660;</button>
+                {% endif %}
+                <button class="btn btn-ghost btn-xs px-1 text-error"
+                        hx-post="/queue/{{ entry.id }}/remove"
+                        hx-target="#queue-panel" hx-swap="innerHTML">&#10005;</button>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}

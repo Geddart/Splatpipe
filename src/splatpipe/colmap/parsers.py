@@ -164,3 +164,78 @@ def stream_comment_lines(path: str | Path) -> list[str]:
             else:
                 break
     return comments
+
+
+# ── Format detection ─────────────────────────────────────────────
+
+
+def detect_colmap_format(colmap_dir: Path) -> str:
+    """Detect COLMAP data format in a directory.
+
+    Returns: "text" | "binary" | "unknown"
+    """
+    txt_files = {"cameras.txt", "images.txt", "points3D.txt"}
+    bin_files = {"cameras.bin", "images.bin", "points3D.bin"}
+
+    if all((colmap_dir / f).exists() for f in txt_files):
+        return "text"
+    if all((colmap_dir / f).exists() for f in bin_files):
+        return "binary"
+    return "unknown"
+
+
+def detect_alignment_format(data_dir: Path) -> str:
+    """Detect alignment/pose format in a directory.
+
+    Checks all formats Postshot supports:
+    - "colmap_text": cameras.txt + images.txt + points3D.txt
+    - "colmap_binary": cameras.bin + images.bin + points3D.bin
+    - "bundler": *.out + *.ply
+    - "realityscan": *.csv + *.ply
+    - "blocksexchange": *.xml (BlocksExchange format)
+    - "unknown": none of the above
+    """
+    colmap_fmt = detect_colmap_format(data_dir)
+    if colmap_fmt == "text":
+        return "colmap_text"
+    if colmap_fmt == "binary":
+        return "colmap_binary"
+
+    exts = {f.suffix.lower() for f in data_dir.iterdir() if f.is_file()}
+
+    if ".out" in exts and ".ply" in exts:
+        return "bundler"
+
+    if ".csv" in exts and ".ply" in exts:
+        return "realityscan"
+
+    if ".xml" in exts:
+        return "blocksexchange"
+
+    return "unknown"
+
+
+def detect_source_type(path: Path) -> str:
+    """Detect source type from a path (file or directory).
+
+    Returns one of: "postshot", "colmap_text", "colmap_binary",
+    "bundler", "realityscan", "blocksexchange", "unknown"
+    """
+    if path.is_file():
+        if path.suffix.lower() == ".psht":
+            return "postshot"
+        return "unknown"
+    if path.is_dir():
+        return detect_alignment_format(path)
+    return "unknown"
+
+
+ALIGNMENT_FORMAT_LABELS = {
+    "postshot": "Postshot (.psht)",
+    "colmap_text": "COLMAP (text)",
+    "colmap_binary": "COLMAP (binary)",
+    "bundler": "Bundler",
+    "realityscan": "RealityScan",
+    "blocksexchange": "BlocksExchange XML",
+    "unknown": "Unknown",
+}

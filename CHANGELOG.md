@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-02-15
+
+### Added
+- Postshot `.psht` file as direct input source: create projects from `.psht` files, Splatpipe copies the file and trains each LOD from it
+- Splat count warning: after each LOD training, compares exported PLY vertex count to target and warns if over budget
+- Review re-export: checkbox on "Approve & Continue" to re-export PLYs from edited `.psht` files via `postshot-cli export`
+- `detect_source_type()` in parsers: handles both files (`.psht`) and directories (COLMAP, Bundler, etc.)
+- `source_type` and `source_file()` on Project model for .psht source tracking
+- CLI `splatpipe init` accepts `.psht` files as input (copies to project, never modifies original)
+- CLI `splatpipe train` handles `.psht` source projects
+- Scene authoring: `viewer-config.json` carries camera constraints, splat budget, and future scene settings from dashboard to viewer
+- Camera constraints in production viewer: configurable pitch limits, zoom range, ground height, and bounds radius
+- Per-project default splat budget: set initial budget in dashboard, viewer reads from config at startup
+- Custom LOD distance sliders: color-coded sliders matching PlayCanvas engine's colorizeLod debug view
+- Dashboard UI: Camera Constraints and Default Splat Budget controls in Assemble settings
+- `splatpipe serve` auto-generates `viewer-config.json` fallback if missing
+- Assembly copies project `assets/` folder to output (for future audio/media support)
+- Scene editor: visual click-to-place annotation tool with full 3D viewer, annotation sidebar, and ray-based ground-plane placement
+- Annotation markers in production and preview viewers: numbered orange pins with hover tooltips, projected from 3D world positions
+- Annotation CRUD routes: add, update, delete annotations with automatic re-labeling
+- Audio support in viewer: ambient and positional audio from `viewer-config.json` with PlayCanvas SoundComponent
+- Audio management in dashboard: upload audio files, configure volume/loop/positional per track
+- Audio CRUD routes: add, update, delete audio sources with file upload to project assets
+- Global pipeline queue: enqueue runs for multiple projects from the dashboard, see pending jobs, reorder, pause, and cancel
+- Queue panel on projects page with live progress for the current job and management controls for pending jobs
+- Background color setting in dashboard and viewer: configurable clear color applied to canvas and page body
+- Post-processing settings: tonemapping (linear/neutral/aces/aces2/filmic), exposure, bloom, and vignette controls in dashboard
+- Multi-format alignment import: detect COLMAP (.txt/.bin), Bundler, RealityScan, and BlocksExchange formats
+- Binary COLMAP support: clean step auto-converts `.bin` files to text before filtering
+- Format detection on project creation: shows detected format, never blocks (unknown formats allowed)
+
+### Changed
+- "COLMAP Source" label renamed to "Source (Postshot, COLMAP, etc.)" in dashboard
+- "Alignment Data Directory" renamed to "Source (Postshot file, COLMAP folder, etc.)" on project creation form
+- Browse buttons split into "Folder" and "File" for source path selection
+- Clean step auto-skips for `.psht` input projects (no COLMAP data to clean)
+- Project creation form simplified: removed Training and Pipeline Steps sections (configurable on project detail page after creation)
+- `splatpipe init` warns on unknown alignment format instead of blocking
+- `splatpipe clean` accepts binary COLMAP input (converts to text internally)
+
+### Fixed
+- PLY header reader no longer hangs on invalid/truncated PLY files (infinite loop on missing `end_header`)
+
 ## [0.3.1] - 2026-02-14
 
 ### Changed
@@ -95,7 +138,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Windows path normalization for runner lookup (URL forward-slash vs `Path()` backslash)
 - Postshot progress parser matched real v1.0.185 output format
 
-[Unreleased]: https://github.com/Geddart/Splatpipe/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/Geddart/Splatpipe/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Geddart/Splatpipe/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/Geddart/Splatpipe/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Geddart/Splatpipe/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Geddart/Splatpipe/compare/v0.1.5...v0.2.0

@@ -6,24 +6,30 @@ Browser disconnect has zero effect on execution.
 """
 
 import asyncio
+import subprocess
 from pathlib import Path
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 from sse_starlette.sse import EventSourceResponse
 
-from ...core.config import load_project_config
+from ...core.config import load_defaults, load_project_config, get_postshot_cli
 from ...core.constants import (
     STEP_REVIEW,
     FOLDER_REVIEW,
+    FOLDER_TRAINING,
     FOLDER_OUTPUT,
 )
 from ...core.project import Project
 from ..runner import (
     STEP_ORDER,
-    start_run,
+    _normalize_key,
+    enqueue_run,
+    find_queue_entry,
+    get_queue_snapshot,
     get_runner,
     cancel_run,
+    queue_position,
 )
 
 router = APIRouter(prefix="/steps", tags=["steps"])
@@ -56,6 +62,27 @@ def _sse_panel_html(project_path: str) -> str:
         <div sse-swap="progress" hx-swap="innerHTML">{_progress_bar(0)}</div>
         <div class="text-sm font-mono opacity-70" sse-swap="message" hx-swap="innerHTML"></div>
         <div sse-swap="complete" hx-swap="outerHTML"></div>
+    </div>
+    '''
+
+
+def _queued_panel_html(project_path: str, entry) -> str:
+    """Return a polling panel for a queued (not yet running) job."""
+    pos = queue_position(entry.id) or "?"
+    return f'''
+    <div id="progress-panel"
+         hx-get="/steps/queue/{entry.id}/item-status?project_path={project_path}"
+         hx-trigger="every 2s"
+         hx-swap="outerHTML"
+         class="p-4 bg-base-100 rounded-lg shadow">
+        <div class="flex items-center gap-3">
+            <span class="badge badge-info">Queued — #{pos}</span>
+            <span class="text-sm opacity-60">{entry.project_name}</span>
+            <button class="btn btn-error btn-xs btn-outline"
+                    hx-post="/queue/{entry.id}/remove"
+                    hx-target="#progress-panel"
+                    hx-swap="outerHTML">Remove from queue</button>
+        </div>
     </div>
     '''
 
@@ -119,12 +146,44 @@ async def cancel_step(project_path: str):
 
 
 @router.post("/{project_path:path}/approve-review", response_class=HTMLResponse)
-async def approve_review(project_path: str):
+async def approve_review(request: Request, project_path: str):
     """Mark the review step as completed (manual approval gate)."""
+    form = await request.form()
+    reexport = form.get("reexport") == "on"
+
     proj = Project(Path(project_path))
+    review_dir = proj.get_folder(FOLDER_REVIEW)
+    training_dir = proj.get_folder(FOLDER_TRAINING)
+
+    # Re-export PLYs from edited .psht files if requested
+    if reexport and training_dir.exists():
+        try:
+            postshot_cli = get_postshot_cli(load_defaults())
+            for i, lod in enumerate(proj.lod_levels):
+                lod_name = lod["name"]
+                lod_dir = training_dir / lod_name
+                if not lod_dir.is_dir():
+                    continue
+                psht_files = list(lod_dir.glob("*.psht"))
+                if not psht_files:
+                    continue
+                psht = psht_files[0]
+                out_ply = review_dir / f"lod{i}_reviewed.ply"
+                cmd = [
+                    str(postshot_cli), "export",
+                    "-f", str(psht),
+                    "--export-splat", str(out_ply),
+                ]
+                subprocess.run(cmd, check=True, capture_output=True)
+        except Exception as e:
+            return HTMLResponse(
+                f'<div class="alert alert-error shadow-lg">'
+                f'<span>Re-export failed: {e}</span>'
+                f'</div>',
+                status_code=500,
+            )
 
     # Count reviewed PLYs and read vertex counts from headers
-    review_dir = proj.get_folder(FOLDER_REVIEW)
     lod_count = 0
     total_vertices = 0
     if review_dir.exists():
@@ -157,33 +216,47 @@ async def approve_review(project_path: str):
 
 @router.post("/{project_path:path}/run/{step_name}", response_class=HTMLResponse)
 async def run_step(project_path: str, step_name: str):
-    """Start a single step and return SSE panel."""
+    """Start a single step (or queue it if something is already running)."""
     proj = Project(Path(project_path))
 
-    # Guard: already running
-    runner = get_runner(project_path)
-    if runner and runner.snapshot.status == "running":
+    # Guard: already running or queued for this project
+    snap = get_queue_snapshot()
+    norm = _normalize_key(project_path)
+    if snap.current and _normalize_key(snap.current.project_path) == norm:
         return HTMLResponse(
-            '<div class="alert alert-warning">A step is already running.</div>'
+            '<div class="alert alert-warning">Already running.</div>'
         )
+    for p in snap.pending:
+        if _normalize_key(p.project_path) == norm:
+            return HTMLResponse(
+                '<div class="alert alert-warning">Already in queue.</div>'
+            )
 
     config = load_project_config(proj.config_path)
-    start_run(project_path, [step_name], config)
+    entry, started = enqueue_run(project_path, [step_name], config)
 
-    return HTMLResponse(_sse_panel_html(project_path))
+    if started:
+        return HTMLResponse(_sse_panel_html(project_path))
+    return HTMLResponse(_queued_panel_html(project_path, entry))
 
 
 @router.post("/{project_path:path}/run-all", response_class=HTMLResponse)
 async def run_all(project_path: str):
-    """Start all enabled steps sequentially. Returns SSE panel."""
+    """Start all enabled steps (or queue if something is already running)."""
     proj = Project(Path(project_path))
 
-    # Guard: already running
-    runner = get_runner(project_path)
-    if runner and runner.snapshot.status == "running":
+    # Guard: already running or queued for this project
+    snap = get_queue_snapshot()
+    norm = _normalize_key(project_path)
+    if snap.current and _normalize_key(snap.current.project_path) == norm:
         return HTMLResponse(
-            '<div class="alert alert-warning">Pipeline is already running.</div>'
+            '<div class="alert alert-warning">Already running.</div>'
         )
+    for p in snap.pending:
+        if _normalize_key(p.project_path) == norm:
+            return HTMLResponse(
+                '<div class="alert alert-warning">Already in queue.</div>'
+            )
 
     enabled = proj.enabled_steps
     enabled_steps = [s for s in STEP_ORDER if enabled.get(s, True)]
@@ -194,9 +267,11 @@ async def run_all(project_path: str):
         )
 
     config = load_project_config(proj.config_path)
-    start_run(project_path, enabled_steps, config)
+    entry, started = enqueue_run(project_path, enabled_steps, config)
 
-    return HTMLResponse(_sse_panel_html(project_path))
+    if started:
+        return HTMLResponse(_sse_panel_html(project_path))
+    return HTMLResponse(_queued_panel_html(project_path, entry))
 
 
 @router.get("/{project_path:path}/progress")
@@ -243,3 +318,54 @@ async def progress_stream(request: Request, project_path: str):
             await asyncio.sleep(0.3)
 
     return EventSourceResponse(event_generator())
+
+
+@router.get("/queue/{entry_id}/item-status", response_class=HTMLResponse)
+async def queue_item_status(entry_id: str, project_path: str = ""):
+    """Polling endpoint for queued jobs — transitions to SSE panel when running."""
+    snap = get_queue_snapshot()
+
+    # Currently running? → switch to SSE panel
+    if snap.current and snap.current.id == entry_id:
+        return HTMLResponse(_sse_panel_html(project_path))
+
+    # Still queued? → keep polling
+    pos = queue_position(entry_id)
+    if pos is not None:
+        entry = find_queue_entry(entry_id)
+        return HTMLResponse(_queued_panel_html(project_path, entry))
+
+    # Gone (completed or removed) — check runner for final status
+    if project_path:
+        runner = get_runner(project_path)
+        if runner and runner.snapshot.status != "running":
+            proj = Project(Path(project_path))
+            s = runner.snapshot
+            if s.status == "completed":
+                extra = ""
+                export_summary = proj.get_step_summary("export")
+                if export_summary:
+                    viewer_url = export_summary.get("viewer_url", "")
+                    if viewer_url:
+                        extra = f'<a href="{viewer_url}" target="_blank" class="btn btn-sm btn-ghost">Open Viewer</a>'
+                return HTMLResponse(
+                    f'<div class="alert alert-success shadow-lg">'
+                    f'<span>Pipeline completed.</span>{extra}'
+                    f'<a href="/projects/{project_path}/detail" class="btn btn-sm btn-ghost">Refresh</a>'
+                    f'</div>'
+                )
+            elif s.status == "cancelled":
+                return HTMLResponse(
+                    f'<div class="alert alert-warning shadow-lg">'
+                    f'<span>Cancelled.</span>'
+                    f'<a href="/projects/{project_path}/detail" class="btn btn-sm btn-ghost">Refresh</a>'
+                    f'</div>'
+                )
+            else:
+                return HTMLResponse(
+                    f'<div class="alert alert-error shadow-lg">'
+                    f'<span>Failed: {s.error or "Unknown error"}</span>'
+                    f'</div>'
+                )
+
+    return HTMLResponse('<div></div>')

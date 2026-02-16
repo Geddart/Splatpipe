@@ -5,6 +5,7 @@ from pathlib import Path
 import typer
 from rich.console import Console
 
+from ..colmap.parsers import detect_colmap_format
 from ..core.config import load_project_config
 from ..core.constants import STEP_CLEAN
 from ..core.project import Project
@@ -24,13 +25,12 @@ def clean(
     proj = _resolve_project(project)
     config = load_project_config(proj.config_path)
 
-    # Check prerequisites
+    # Check prerequisites — clean requires COLMAP format (.txt or .bin)
     colmap_dir = proj.colmap_dir()
-    required = ["cameras.txt", "images.txt", "points3D.txt"]
-    missing = [f for f in required if not (colmap_dir / f).exists()]
-    if missing:
-        console.print(f"[red]Missing COLMAP files:[/red] {', '.join(missing)}")
-        console.print(f"Expected in: {colmap_dir}")
+    fmt = detect_colmap_format(colmap_dir)
+    if fmt == "unknown":
+        console.print(f"[red]Clean requires COLMAP data (.txt or .bin) in:[/red] {colmap_dir}")
+        console.print("[dim]Other alignment formats (Bundler, RealityScan, XML) don't need cleaning.[/dim]")
         raise typer.Exit(1)
 
     # Check if already run

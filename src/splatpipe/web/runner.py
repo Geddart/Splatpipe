@@ -13,6 +13,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 from ..core.config import DEFAULTS_PATH
 from ..core.constants import (
@@ -52,6 +53,28 @@ class RunnerSnapshot:
     message: str       # e.g. "LOD lod2 (1/3): Training — Step 234/500 kSteps"
     error: str | None
     updated_at: float  # time.monotonic()
+
+
+@dataclass
+class QueueEntry:
+    """A pending or active pipeline job in the global queue."""
+    id: str
+    project_path: str
+    project_name: str
+    steps: list[str]
+    config: dict
+    added_at: float
+
+
+@dataclass(frozen=True)
+class QueueSnapshot:
+    """Immutable snapshot of the global queue state."""
+    current: QueueEntry | None
+    current_progress: float
+    current_message: str
+    current_step_label: str
+    pending: list[QueueEntry]
+    paused: bool
 
 
 class _CancelledError(Exception):
@@ -177,6 +200,13 @@ class PipelineRunner:
     # ── Step executors ────────────────────────────────────────────
 
     def _execute_clean(self, proj: Project, base_pct: float, step_range: float) -> None:
+        if proj.source_type == "postshot":
+            proj.record_step(STEP_CLEAN, "completed",
+                             summary={"skipped": True, "reason": "Not applicable for .psht input"},
+                             started_at=self._step_started_at)
+            self._update(progress=base_pct + step_range, message="Clean skipped (.psht input)")
+            return
+
         step = ColmapCleanStep(proj, self._config)
         result = step.execute()
         # execute() records "completed" internally, but record again to be safe
@@ -214,19 +244,26 @@ class PipelineRunner:
         trainer_instance = get_trainer(trainer_name, self._config)
         self._active_trainer = trainer_instance
 
-        # Determine source directory
-        clean_dir = proj.get_folder(FOLDER_COLMAP_CLEAN)
-        if proj.is_step_enabled(STEP_CLEAN) and (clean_dir / "cameras.txt").exists():
-            source_dir = clean_dir
+        # Determine source input (file or directory)
+        if proj.source_type == "postshot":
+            source_dir = proj.source_file()
+            if not source_dir or not source_dir.exists():
+                raise Exception("Postshot source file not found in project")
+            num_images = 0  # Postshot knows image count internally from .psht
         else:
-            source_dir = proj.colmap_dir()
+            clean_dir = proj.get_folder(FOLDER_COLMAP_CLEAN)
+            clean_has_data = (clean_dir / "cameras.txt").exists() or (clean_dir / "cameras.bin").exists()
+            if proj.is_step_enabled(STEP_CLEAN) and clean_has_data:
+                source_dir = clean_dir
+            else:
+                source_dir = proj.colmap_dir()
 
-        # Count images for adaptive training steps
-        _IMG_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
-        num_images = sum(
-            1 for f in source_dir.iterdir()
-            if f.is_file() and f.suffix.lower() in _IMG_EXTS
-        ) if source_dir.is_dir() else 0
+            # Count images for adaptive training steps
+            _IMG_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
+            num_images = sum(
+                1 for f in source_dir.iterdir()
+                if f.is_file() and f.suffix.lower() in _IMG_EXTS
+            ) if source_dir.is_dir() else 0
 
         # Build train options
         postshot_cfg = self._config.get("postshot", {})
@@ -302,6 +339,22 @@ class PipelineRunner:
                     if ret.output_ply and Path(ret.output_ply).exists():
                         review_ply = review_dir / f"lod{orig_i}_reviewed.ply"
                         shutil.copy2(ret.output_ply, review_ply)
+                        # Splat count warning: compare actual vs target
+                        try:
+                            from ..colmap.ply_io import read_ply_header
+                            with open(ret.output_ply, "rb") as f:
+                                actual_splats, _ = read_ply_header(f)
+                            if actual_splats > max_splats:
+                                ratio = actual_splats / max_splats
+                                warning = (
+                                    f"WARNING: LOD {lod_name} exported {actual_splats:,} splats "
+                                    f"but target was {max_splats:,} ({ratio:.1f}x over). "
+                                    f"Increase train_steps for this LOD to allow more pruning."
+                                )
+                                self._update(message=warning)
+                                ret.warning = warning
+                        except Exception:
+                            pass  # Don't fail the step over a warning
                     trained_count += 1
                     self._update(
                         message=f"LOD {lod_name} complete ({ret.duration_s:.1f}s)",
@@ -435,6 +488,180 @@ def cancel_run(project_path: str) -> bool:
         runner.cancel()
         return True
     return False
+
+
+# ── Global Pipeline Queue ─────────────────────────────────────────
+
+_queue: list[QueueEntry] = []
+_queue_lock = threading.Lock()
+_queue_paused = False
+_queue_current: QueueEntry | None = None
+_queue_worker: threading.Thread | None = None
+_queue_wake = threading.Event()
+
+
+def enqueue_run(
+    project_path: str, steps: list[str], config: dict
+) -> tuple[QueueEntry, bool]:
+    """Add a pipeline run to the global queue.
+
+    Returns (entry, started_immediately). If nothing is currently running
+    and the queue isn't paused, the run starts synchronously under the lock
+    to avoid race conditions. Otherwise it's appended to the pending list.
+    """
+    proj = Project(Path(project_path))
+    entry = QueueEntry(
+        id=uuid4().hex[:8],
+        project_path=project_path,
+        project_name=proj.name,
+        steps=steps,
+        config=config,
+        added_at=time.monotonic(),
+    )
+    global _queue_current
+    with _queue_lock:
+        if _queue_current is None and not _queue_paused:
+            _queue_current = entry
+            start_run(entry.project_path, entry.steps, entry.config)
+            _ensure_worker()
+            return entry, True
+        else:
+            _queue.append(entry)
+            _ensure_worker()
+            return entry, False
+
+
+def get_queue_snapshot() -> QueueSnapshot:
+    """Thread-safe snapshot of queue state."""
+    with _queue_lock:
+        current = _queue_current
+        pending = list(_queue)
+        paused = _queue_paused
+    progress = 0.0
+    message = ""
+    step_label = ""
+    if current:
+        runner = get_runner(current.project_path)
+        if runner:
+            snap = runner.snapshot
+            progress = snap.progress
+            message = snap.message
+            step_label = snap.step_label
+    return QueueSnapshot(
+        current=current,
+        current_progress=progress,
+        current_message=message,
+        current_step_label=step_label,
+        pending=pending,
+        paused=paused,
+    )
+
+
+def remove_from_queue(entry_id: str) -> bool:
+    """Remove a pending entry by ID. Returns True if found."""
+    with _queue_lock:
+        for i, e in enumerate(_queue):
+            if e.id == entry_id:
+                _queue.pop(i)
+                return True
+    return False
+
+
+def move_in_queue(entry_id: str, direction: int) -> bool:
+    """Move a pending entry up (-1) or down (+1). Returns True if moved."""
+    with _queue_lock:
+        for i, e in enumerate(_queue):
+            if e.id == entry_id:
+                j = i + direction
+                if 0 <= j < len(_queue):
+                    _queue[i], _queue[j] = _queue[j], _queue[i]
+                    return True
+                return False
+    return False
+
+
+def pause_queue() -> None:
+    """Pause the queue — current job finishes, next won't start."""
+    global _queue_paused
+    with _queue_lock:
+        _queue_paused = True
+
+
+def resume_queue() -> None:
+    """Resume the queue — worker picks next job."""
+    global _queue_paused
+    with _queue_lock:
+        _queue_paused = False
+    _queue_wake.set()
+
+
+def cancel_current() -> bool:
+    """Cancel the currently running queue job. Returns True if there was one."""
+    with _queue_lock:
+        current = _queue_current
+    if current:
+        cancel_run(current.project_path)
+        _queue_wake.set()
+        return True
+    return False
+
+
+def find_queue_entry(entry_id: str) -> QueueEntry | None:
+    """Find an entry in current or pending by ID."""
+    with _queue_lock:
+        if _queue_current and _queue_current.id == entry_id:
+            return _queue_current
+        for e in _queue:
+            if e.id == entry_id:
+                return e
+    return None
+
+
+def queue_position(entry_id: str) -> int | None:
+    """Return 1-based position in pending list, or None if not found."""
+    with _queue_lock:
+        for i, e in enumerate(_queue):
+            if e.id == entry_id:
+                return i + 1
+    return None
+
+
+def _queue_worker_loop() -> None:
+    """Worker thread: monitors current job, picks next when done."""
+    global _queue_current
+    while True:
+        _queue_wake.wait(timeout=2)
+        _queue_wake.clear()
+
+        if _queue_paused:
+            continue
+
+        # Check if current job is still running
+        if _queue_current:
+            runner = get_runner(_queue_current.project_path)
+            if runner and runner.snapshot.status == "running":
+                continue
+            # Job finished — clear slot
+            with _queue_lock:
+                _queue_current = None
+
+        # Pick next from queue
+        with _queue_lock:
+            if not _queue or _queue_current is not None:
+                continue
+            entry = _queue.pop(0)
+            _queue_current = entry
+
+        start_run(entry.project_path, entry.steps, entry.config)
+        _queue_wake.set()
+
+
+def _ensure_worker() -> None:
+    """Lazily start the queue worker thread."""
+    global _queue_worker
+    if _queue_worker is None or not _queue_worker.is_alive():
+        _queue_worker = threading.Thread(target=_queue_worker_loop, daemon=True)
+        _queue_worker.start()
 
 
 # ── Helpers (moved from steps.py) ─────────────────────────────────
