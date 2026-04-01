@@ -9,7 +9,7 @@ CLI-first Gaussian splatting pipeline. Takes COLMAP data through: auto-clean →
 ```bash
 cd H:\001_ProjectCache\1000_Coding\Splatpipe
 pip install -e ".[dev]"
-pytest tests/ -v                    # Run tests (362 tests, ~16s)
+pytest tests/ -v                    # Run tests (375 tests, ~17s)
 splatpipe --help                    # CLI commands
 splatpipe web                       # Launch dashboard
 ```
@@ -272,8 +272,8 @@ for line in f:
 
 | Tool | Path | Purpose |
 |------|------|---------|
-| Postshot CLI | `C:\Program Files\Jawset Postshot\bin\postshot-cli.exe` | `train --import <folder> --max-num-splats N` (kSplats) |
-| LichtFeld Studio | (configure in defaults.toml) | `-d <data> -o <out> --strategy mcmc --max-cap <N>` (actual count) |
+| Postshot CLI (v1.0.287) | `C:\Program Files\Jawset Postshot\bin\postshot-cli.exe` | `train --import <folder> -p "Splat3" --max-num-splats N` (kSplats for MCMC/Splat3, `--splat-density` for ADC) |
+| LichtFeld Studio (v0.5.1) | `C:\Program Files\LichtFeld-Studio\bin\LichtFeld-Studio.exe` | `-d <data> -o <out> --strategy mcmc --max-cap <N> --headless --train [--ppisp]` (actual count) |
 | splat-transform | `npx @playcanvas/splat-transform` | LOD assembly + SOG compression |
 | SuperSplat | Browser: superspl.at/editor | Manual floater cleanup |
 
@@ -281,7 +281,7 @@ for line in f:
 
 `config/defaults.toml` has global tool paths and settings. Each project can override with `project.toml`. Config is loaded with `load_project_config(project.config_path)` which deep-merges project overrides over defaults.
 
-Key config sections: `[tools]`, `[colmap_clean]`, `[postshot]`, `[lichtfeld]`, `[paths]`
+Key config sections: `[tools]`, `[colmap_clean]`, `[postshot]` (profile, gpu, max_sh_degree, splat_density, image_select), `[lichtfeld]` (strategy, iterations, ppisp, ppisp_controller, sh_degree, enable_mip, bilateral_grid, max_width, tile_mode, enable_sparsity, undistort), `[paths]`
 
 ## Tests
 
@@ -314,12 +314,14 @@ The photogrammetry projects live at:
 - Local: `H:\001_ProjectCache\660 Drone\_Photogrammetry`
 - Sync target: `Z:\Projekte\660 Drone\_Photogrammetry` (via Resilio Sync)
 
-## LichtFeld Studio Details
+## LichtFeld Studio Details (v0.5.1)
 - Free, GPL-3.0, open-source (by Janusch Patas / MrNeRF)
-- CLI: `LichtFeld-Studio -d <data> -o <output> --strategy mcmc --max-cap <N> -i <iters>`
+- CLI: `LichtFeld-Studio -d <data> -o <output> --strategy mcmc --max-cap <N> -i <iters> --headless --train [--ppisp]`
 - Accepts COLMAP input, outputs PLY + SOG + SPZ
 - Native SOG export could skip splat-transform in future
-- Headless mode uncertain — document as limitation
+- Headless mode: `--headless --train` (always used in pipeline)
+- PPISP: `--ppisp` for per-camera appearance modeling (exposure, vignetting, WB, CRF correction)
+- PPISP controller: `--ppisp-controller` trains a network to predict ISP params for novel views
 - CUDA 12.8+ / driver 570+ required
 
 ## Known Limitations / TODO
@@ -327,5 +329,4 @@ The photogrammetry projects live at:
 - Settings page is read-only (edit defaults.toml directly)
 - Auto-threshold doesn't work with <10 cameras (use fixed threshold in project.toml)
 - `splat-transform` CLI args may need updating when PlayCanvas updates the tool
-- LichtFeld headless mode uncertain (may need display)
 - LichtFeld Studio stdout format not yet verified — run it once and check before trusting the parser

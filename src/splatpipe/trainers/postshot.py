@@ -1,7 +1,8 @@
-"""Postshot trainer: Gaussian splatting via postshot-cli.exe.
+"""Postshot trainer: Gaussian splatting via postshot-cli.exe (v1.0.287+).
 
 Uses Popen for real-time stdout parsing and progress reporting.
-CLI expects kSplats (3000 = 3M splats).
+CLI expects kSplats (3000 = 3M splats) for Splat MCMC/Splat3 profiles.
+Splat ADC profile uses --splat-density instead of --max-num-splats.
 
 Stdout is read in a background thread via a queue so the generator
 never blocks — it yields a heartbeat with elapsed time every ~2s
@@ -52,6 +53,7 @@ class PostshotTrainer(Trainer):
         ksplats = max_splats // 1000
 
         # Profile: kwargs override > config > default
+        # Profiles: "Splat ADC", "Splat MCMC", "Splat3"
         profile = kwargs.get("profile", postshot_cfg.get("profile", "Splat3"))
 
         cmd = [
@@ -59,12 +61,25 @@ class PostshotTrainer(Trainer):
             "train",
             "--import", str(source_dir),
             "-p", profile,
-            "--max-num-splats", str(ksplats),
             "--store-training-context",
             "--show-train-error",
             "-o", str(output_dir / f"{lod_name}.psht"),
             "--export-splat", str(output_dir / f"{lod_name}.ply"),
         ]
+
+        # Splat count / density depends on profile
+        if profile == "Splat ADC":
+            # ADC uses --splat-density instead of --max-num-splats
+            density = float(kwargs.get("splat_density", postshot_cfg.get("splat_density", 1.0)))
+            cmd.extend(["--splat-density", str(density)])
+        else:
+            # MCMC and Splat3 use --max-num-splats (kSplats)
+            cmd.extend(["--max-num-splats", str(ksplats)])
+
+        # GPU selection (-1 = auto/omit)
+        gpu = int(kwargs.get("gpu", postshot_cfg.get("gpu", -1)))
+        if gpu >= 0:
+            cmd.extend(["--gpu", str(gpu)])
 
         # Downsample images (--max-image-size, default 3840, 0 = disabled)
         downsample = kwargs.get("downsample", postshot_cfg.get("downsample", True))
@@ -74,6 +89,11 @@ class PostshotTrainer(Trainer):
         elif not downsample:
             cmd.extend(["--max-image-size", "0"])
 
+        # Max SH degree (0-3, default 3)
+        max_sh_degree = int(kwargs.get("max_sh_degree", postshot_cfg.get("max_sh_degree", 3)))
+        if max_sh_degree != 3:  # only pass if non-default
+            cmd.extend(["--max-sh-degree", str(max_sh_degree)])
+
         # Anti-aliasing (boolean flag)
         if kwargs.get("anti_aliasing", postshot_cfg.get("anti_aliasing", False)):
             cmd.extend(["--anti-aliasing", "true"])
@@ -81,6 +101,18 @@ class PostshotTrainer(Trainer):
         # Sky model (presence flag)
         if kwargs.get("create_sky_model", postshot_cfg.get("create_sky_model", False)):
             cmd.append("--create-sky-model")
+
+        # No recenter points
+        if kwargs.get("no_recenter_points", postshot_cfg.get("no_recenter_points", False)):
+            cmd.append("--no-recenter-points")
+
+        # Image selection mode
+        image_select = kwargs.get("image_select", postshot_cfg.get("image_select", "all"))
+        if image_select != "all":
+            cmd.extend(["--image-select", image_select])
+            num_train = int(kwargs.get("num_train_images", postshot_cfg.get("num_train_images", 0)))
+            if num_train > 0:
+                cmd.extend(["--num-train-images", str(num_train)])
 
         # Train steps limit (kSteps, 0 = auto based on image count)
         train_steps = int(kwargs.get("train_steps_limit", postshot_cfg.get("train_steps_limit", 0)))

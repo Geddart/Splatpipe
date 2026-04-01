@@ -23,18 +23,32 @@ coordinate_transform = [
 ]
 
 [postshot]
-profile = "Splat3"
+profile = "Splat3"              # Splat ADC, Splat MCMC, Splat3
+gpu = -1                        # -1 = auto, 0+ = specific GPU index
 downsample = true
 max_image_size = 3840
+max_sh_degree = 3               # 0-3
 anti_aliasing = false
 create_sky_model = false
+no_recenter_points = false
+splat_density = 1.0             # Splat ADC profile only (0.125-8)
+image_select = "all"            # all, best
 train_steps_limit = 0           # 0 = auto (Postshot computes from image count)
 login = ""
 password = ""
 
 [lichtfeld]
-strategy = "mcmc"
+strategy = "mcmc"               # mcmc, adc
 iterations = 30000
+ppisp = false                   # PPISP per-camera appearance modeling
+ppisp_controller = false        # PPISP controller for novel views
+sh_degree = 3                   # 0-3
+enable_mip = false              # Anti-aliasing (mip filter)
+bilateral_grid = false          # Bilateral grid filtering
+max_width = 3840                # Max image width in px
+tile_mode = 1                   # 1, 2, or 4 tiles for VRAM management
+enable_sparsity = false         # Sparsity optimization
+undistort = false               # Undistort images on-the-fly
 
 [bunny]
 storage_zone = "splatpipe"

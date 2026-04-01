@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "lichtfeld": {
+      "command": "python",
+      "args": ["C:\\Program Files\\LichtFeld-Studio\\bin\\lichtfeld_mcp_bridge.py"],
+      "env": {
+        "LICHTFELD_EXECUTABLE": "C:\\Program Files\\LichtFeld-Studio\\bin\\LichtFeld-Studio.exe"
+      }
+    }
+  }
+}

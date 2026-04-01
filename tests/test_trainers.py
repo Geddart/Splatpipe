@@ -367,6 +367,147 @@ class TestPostshotTrainer:
         assert "--create-sky-model" not in cmd
         # Train steps limit should NOT be in cmd (0 = auto)
         assert "-s" not in cmd
+        # v1.0.287 flags not present by default
+        assert "--gpu" not in cmd
+        assert "--max-sh-degree" not in cmd
+        assert "--no-recenter-points" not in cmd
+        assert "--image-select" not in cmd
+
+    def test_profile_splat_adc(self, tmp_path):
+        """Splat ADC profile uses --splat-density instead of --max-num-splats."""
+        config = _postshot_config(tmp_path)
+        trainer = PostshotTrainer(config)
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = io.StringIO("")
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = None
+        mock_proc.poll.return_value = 0
+
+        with patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
+            gen = trainer.train_lod(
+                tmp_path / "colmap", tmp_path / "output",
+                "lod0", 3_000_000,
+                profile="Splat ADC", splat_density=2.5,
+            )
+            try:
+                while True:
+                    next(gen)
+            except StopIteration:
+                pass
+
+        cmd = mock_popen.call_args[0][0]
+        assert "--max-num-splats" not in cmd
+        idx = cmd.index("--splat-density")
+        assert cmd[idx + 1] == "2.5"
+        idx = cmd.index("-p")
+        assert cmd[idx + 1] == "Splat ADC"
+
+    def test_gpu_selection(self, tmp_path):
+        """GPU index passed when >= 0."""
+        config = _postshot_config(tmp_path)
+        trainer = PostshotTrainer(config)
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = io.StringIO("")
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = None
+        mock_proc.poll.return_value = 0
+
+        with patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
+            gen = trainer.train_lod(
+                tmp_path / "colmap", tmp_path / "output",
+                "lod0", 3_000_000, gpu=1,
+            )
+            try:
+                while True:
+                    next(gen)
+            except StopIteration:
+                pass
+
+        cmd = mock_popen.call_args[0][0]
+        idx = cmd.index("--gpu")
+        assert cmd[idx + 1] == "1"
+
+    def test_max_sh_degree(self, tmp_path):
+        """Max SH degree passed when non-default."""
+        config = _postshot_config(tmp_path)
+        trainer = PostshotTrainer(config)
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = io.StringIO("")
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = None
+        mock_proc.poll.return_value = 0
+
+        with patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
+            gen = trainer.train_lod(
+                tmp_path / "colmap", tmp_path / "output",
+                "lod0", 3_000_000, max_sh_degree=1,
+            )
+            try:
+                while True:
+                    next(gen)
+            except StopIteration:
+                pass
+
+        cmd = mock_popen.call_args[0][0]
+        idx = cmd.index("--max-sh-degree")
+        assert cmd[idx + 1] == "1"
+
+    def test_no_recenter_points(self, tmp_path):
+        """--no-recenter-points flag added when enabled."""
+        config = _postshot_config(tmp_path)
+        trainer = PostshotTrainer(config)
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = io.StringIO("")
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = None
+        mock_proc.poll.return_value = 0
+
+        with patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
+            gen = trainer.train_lod(
+                tmp_path / "colmap", tmp_path / "output",
+                "lod0", 3_000_000, no_recenter_points=True,
+            )
+            try:
+                while True:
+                    next(gen)
+            except StopIteration:
+                pass
+
+        cmd = mock_popen.call_args[0][0]
+        assert "--no-recenter-points" in cmd
+
+    def test_image_select_best(self, tmp_path):
+        """--image-select best with --num-train-images."""
+        config = _postshot_config(tmp_path)
+        trainer = PostshotTrainer(config)
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = io.StringIO("")
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = None
+        mock_proc.poll.return_value = 0
+
+        with patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
+            gen = trainer.train_lod(
+                tmp_path / "colmap", tmp_path / "output",
+                "lod0", 3_000_000,
+                image_select="best", num_train_images=200,
+            )
+            try:
+                while True:
+                    next(gen)
+            except StopIteration:
+                pass
+
+        cmd = mock_popen.call_args[0][0]
+        idx = cmd.index("--image-select")
+        assert cmd[idx + 1] == "best"
+        idx = cmd.index("--num-train-images")
+        assert cmd[idx + 1] == "200"
 
     def test_train_downsample_off(self, tmp_path):
         """Verify downsample=False passes --max-image-size 0."""
@@ -478,3 +619,267 @@ class TestLichtfeldTrainer:
         assert cmd[idx + 1] == "3dgs"
         idx = cmd.index("-i")
         assert cmd[idx + 1] == "50000"
+
+    def test_headless_and_train_flags(self, tmp_path):
+        """--headless and --train always present in CLI command."""
+        fake_root = tmp_path / "lichtfeld"
+        fake_exe = fake_root / "bin" / "LichtFeld-Studio.exe"
+        fake_exe.parent.mkdir(parents=True)
+        fake_exe.write_text("")
+        config = {"tools": {"lichtfeld_studio": str(fake_root)}}
+        trainer = LichtfeldTrainer(config)
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = io.StringIO("")
+        mock_proc.stderr = MagicMock()
+        mock_proc.stderr.read.return_value = ""
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = None
+
+        with patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
+            gen = trainer.train_lod(
+                tmp_path / "colmap", tmp_path / "output",
+                "lod0", 3_000_000,
+            )
+            try:
+                while True:
+                    next(gen)
+            except StopIteration:
+                pass
+
+        cmd = mock_popen.call_args[0][0]
+        assert "--headless" in cmd
+        assert "--train" in cmd
+
+    def test_ppisp_enabled(self, tmp_path):
+        """--ppisp flag added when config is true."""
+        fake_root = tmp_path / "lichtfeld"
+        fake_exe = fake_root / "bin" / "LichtFeld-Studio.exe"
+        fake_exe.parent.mkdir(parents=True)
+        fake_exe.write_text("")
+        config = {
+            "tools": {"lichtfeld_studio": str(fake_root)},
+            "lichtfeld": {"ppisp": True},
+        }
+        trainer = LichtfeldTrainer(config)
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = io.StringIO("")
+        mock_proc.stderr = MagicMock()
+        mock_proc.stderr.read.return_value = ""
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = None
+
+        with patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
+            gen = trainer.train_lod(
+                tmp_path / "colmap", tmp_path / "output",
+                "lod0", 3_000_000,
+            )
+            try:
+                while True:
+                    next(gen)
+            except StopIteration:
+                pass
+
+        cmd = mock_popen.call_args[0][0]
+        assert "--ppisp" in cmd
+
+    def test_ppisp_controller(self, tmp_path):
+        """--ppisp-controller flag added when config is true."""
+        fake_root = tmp_path / "lichtfeld"
+        fake_exe = fake_root / "bin" / "LichtFeld-Studio.exe"
+        fake_exe.parent.mkdir(parents=True)
+        fake_exe.write_text("")
+        config = {
+            "tools": {"lichtfeld_studio": str(fake_root)},
+            "lichtfeld": {"ppisp": True, "ppisp_controller": True},
+        }
+        trainer = LichtfeldTrainer(config)
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = io.StringIO("")
+        mock_proc.stderr = MagicMock()
+        mock_proc.stderr.read.return_value = ""
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = None
+
+        with patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
+            gen = trainer.train_lod(
+                tmp_path / "colmap", tmp_path / "output",
+                "lod0", 3_000_000,
+            )
+            try:
+                while True:
+                    next(gen)
+            except StopIteration:
+                pass
+
+        cmd = mock_popen.call_args[0][0]
+        assert "--ppisp" in cmd
+        assert "--ppisp-controller" in cmd
+
+    def test_ppisp_disabled_by_default(self, tmp_path):
+        """PPISP flags not present when not configured."""
+        fake_root = tmp_path / "lichtfeld"
+        fake_exe = fake_root / "bin" / "LichtFeld-Studio.exe"
+        fake_exe.parent.mkdir(parents=True)
+        fake_exe.write_text("")
+        config = {"tools": {"lichtfeld_studio": str(fake_root)}}
+        trainer = LichtfeldTrainer(config)
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = io.StringIO("")
+        mock_proc.stderr = MagicMock()
+        mock_proc.stderr.read.return_value = ""
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = None
+
+        with patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
+            gen = trainer.train_lod(
+                tmp_path / "colmap", tmp_path / "output",
+                "lod0", 3_000_000,
+            )
+            try:
+                while True:
+                    next(gen)
+            except StopIteration:
+                pass
+
+        cmd = mock_popen.call_args[0][0]
+        assert "--ppisp" not in cmd
+        assert "--ppisp-controller" not in cmd
+
+    def test_sh_degree(self, tmp_path):
+        """--sh-degree passed when non-default."""
+        fake_root = tmp_path / "lichtfeld"
+        fake_exe = fake_root / "bin" / "LichtFeld-Studio.exe"
+        fake_exe.parent.mkdir(parents=True)
+        fake_exe.write_text("")
+        config = {
+            "tools": {"lichtfeld_studio": str(fake_root)},
+            "lichtfeld": {"sh_degree": 1},
+        }
+        trainer = LichtfeldTrainer(config)
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = io.StringIO("")
+        mock_proc.stderr = MagicMock()
+        mock_proc.stderr.read.return_value = ""
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = None
+
+        with patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
+            gen = trainer.train_lod(
+                tmp_path / "colmap", tmp_path / "output",
+                "lod0", 3_000_000,
+            )
+            try:
+                while True:
+                    next(gen)
+            except StopIteration:
+                pass
+
+        cmd = mock_popen.call_args[0][0]
+        idx = cmd.index("--sh-degree")
+        assert cmd[idx + 1] == "1"
+
+    def test_enable_mip(self, tmp_path):
+        """--enable-mip flag added when configured."""
+        fake_root = tmp_path / "lichtfeld"
+        fake_exe = fake_root / "bin" / "LichtFeld-Studio.exe"
+        fake_exe.parent.mkdir(parents=True)
+        fake_exe.write_text("")
+        config = {
+            "tools": {"lichtfeld_studio": str(fake_root)},
+            "lichtfeld": {"enable_mip": True},
+        }
+        trainer = LichtfeldTrainer(config)
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = io.StringIO("")
+        mock_proc.stderr = MagicMock()
+        mock_proc.stderr.read.return_value = ""
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = None
+
+        with patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
+            gen = trainer.train_lod(
+                tmp_path / "colmap", tmp_path / "output",
+                "lod0", 3_000_000,
+            )
+            try:
+                while True:
+                    next(gen)
+            except StopIteration:
+                pass
+
+        cmd = mock_popen.call_args[0][0]
+        assert "--enable-mip" in cmd
+
+    def test_tile_mode(self, tmp_path):
+        """--tile-mode passed when non-default."""
+        fake_root = tmp_path / "lichtfeld"
+        fake_exe = fake_root / "bin" / "LichtFeld-Studio.exe"
+        fake_exe.parent.mkdir(parents=True)
+        fake_exe.write_text("")
+        config = {
+            "tools": {"lichtfeld_studio": str(fake_root)},
+            "lichtfeld": {"tile_mode": 4},
+        }
+        trainer = LichtfeldTrainer(config)
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = io.StringIO("")
+        mock_proc.stderr = MagicMock()
+        mock_proc.stderr.read.return_value = ""
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = None
+
+        with patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
+            gen = trainer.train_lod(
+                tmp_path / "colmap", tmp_path / "output",
+                "lod0", 3_000_000,
+            )
+            try:
+                while True:
+                    next(gen)
+            except StopIteration:
+                pass
+
+        cmd = mock_popen.call_args[0][0]
+        idx = cmd.index("--tile-mode")
+        assert cmd[idx + 1] == "4"
+
+    def test_max_width(self, tmp_path):
+        """--max-width passed when non-default."""
+        fake_root = tmp_path / "lichtfeld"
+        fake_exe = fake_root / "bin" / "LichtFeld-Studio.exe"
+        fake_exe.parent.mkdir(parents=True)
+        fake_exe.write_text("")
+        config = {
+            "tools": {"lichtfeld_studio": str(fake_root)},
+            "lichtfeld": {"max_width": 1920},
+        }
+        trainer = LichtfeldTrainer(config)
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = io.StringIO("")
+        mock_proc.stderr = MagicMock()
+        mock_proc.stderr.read.return_value = ""
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = None
+
+        with patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
+            gen = trainer.train_lod(
+                tmp_path / "colmap", tmp_path / "output",
+                "lod0", 3_000_000,
+            )
+            try:
+                while True:
+                    next(gen)
+            except StopIteration:
+                pass
+
+        cmd = mock_popen.call_args[0][0]
+        idx = cmd.index("--max-width")
+        assert cmd[idx + 1] == "1920"

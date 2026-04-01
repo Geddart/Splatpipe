@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Postshot 1.0.287 support: Splat ADC/MCMC profiles, GPU selection, SH degree control, no-recenter, image selection mode
+- LichtFeld Studio v0.5.1 support: PPISP per-camera appearance modeling (`--ppisp`, `--ppisp-controller`)
+- LichtFeld headless training mode (`--headless --train` flags, always enabled for CLI/pipeline)
+- LichtFeld quality options: SH degree, mip filter (anti-aliasing), bilateral grid, image downscaling, tile mode for VRAM management
+- LichtFeld sparsity optimization and undistort support
+- New config options for both trainers exposed in web settings page
+
+### Changed
+- LichtFeld CLI command now always includes `--headless` and `--train` for pipeline use
+
+### Removed
+- "Headless mode uncertain" caveat from LichtFeld known limitations
+
 ## [0.4.1] - 2026-02-15
 
 ### Fixed
