@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Bumped minimum `python-multipart` to 0.0.22 (CVE-2026-24486)
+- Bumped minimum `pytest` to 9.0.3 (CVE-2025-71176)
+
 ### Added
+- Postshot 1.0.331 `--pose-quality` support (1=Fast, 4=Best, default 3)
 - Postshot 1.0.287 support: Splat ADC/MCMC profiles, GPU selection, SH degree control, no-recenter, image selection mode
 - LichtFeld Studio v0.5.1 support: PPISP per-camera appearance modeling (`--ppisp`, `--ppisp-controller`)
 - LichtFeld headless training mode (`--headless --train` flags, always enabled for CLI/pipeline)
@@ -17,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - LichtFeld CLI command now always includes `--headless` and `--train` for pipeline use
+- Bumped `@playcanvas/splat-transform` to ^1.10.2 (from ^1.7.0)
 
 ### Removed
 - "Headless mode uncertain" caveat from LichtFeld known limitations

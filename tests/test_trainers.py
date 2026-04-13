@@ -367,9 +367,10 @@ class TestPostshotTrainer:
         assert "--create-sky-model" not in cmd
         # Train steps limit should NOT be in cmd (0 = auto)
         assert "-s" not in cmd
-        # v1.0.287 flags not present by default
+        # v1.0.287+ flags not present by default
         assert "--gpu" not in cmd
         assert "--max-sh-degree" not in cmd
+        assert "--pose-quality" not in cmd
         assert "--no-recenter-points" not in cmd
         assert "--image-select" not in cmd
 
@@ -454,6 +455,32 @@ class TestPostshotTrainer:
         cmd = mock_popen.call_args[0][0]
         idx = cmd.index("--max-sh-degree")
         assert cmd[idx + 1] == "1"
+
+    def test_pose_quality(self, tmp_path):
+        """--pose-quality passed when non-default (Postshot v1.0.331+)."""
+        config = _postshot_config(tmp_path)
+        trainer = PostshotTrainer(config)
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = io.StringIO("")
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = None
+        mock_proc.poll.return_value = 0
+
+        with patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
+            gen = trainer.train_lod(
+                tmp_path / "colmap", tmp_path / "output",
+                "lod0", 3_000_000, pose_quality=4,
+            )
+            try:
+                while True:
+                    next(gen)
+            except StopIteration:
+                pass
+
+        cmd = mock_popen.call_args[0][0]
+        idx = cmd.index("--pose-quality")
+        assert cmd[idx + 1] == "4"
 
     def test_no_recenter_points(self, tmp_path):
         """--no-recenter-points flag added when enabled."""

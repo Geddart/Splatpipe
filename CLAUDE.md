@@ -9,7 +9,7 @@ CLI-first Gaussian splatting pipeline. Takes COLMAP data through: auto-clean →
 ```bash
 cd H:\001_ProjectCache\1000_Coding\Splatpipe
 pip install -e ".[dev]"
-pytest tests/ -v                    # Run tests (375 tests, ~17s)
+pytest tests/ -v                    # Run tests (376 tests, ~18s)
 splatpipe --help                    # CLI commands
 splatpipe web                       # Launch dashboard
 ```
@@ -272,7 +272,7 @@ for line in f:
 
 | Tool | Path | Purpose |
 |------|------|---------|
-| Postshot CLI (v1.0.287) | `C:\Program Files\Jawset Postshot\bin\postshot-cli.exe` | `train --import <folder> -p "Splat3" --max-num-splats N` (kSplats for MCMC/Splat3, `--splat-density` for ADC) |
+| Postshot CLI (v1.0.331) | `C:\Program Files\Jawset Postshot\bin\postshot-cli.exe` | `train --import <folder> -p "Splat3" --max-num-splats N` (kSplats for MCMC/Splat3, `--splat-density` for ADC, `--pose-quality` 1–4) |
 | LichtFeld Studio (v0.5.1) | `C:\Program Files\LichtFeld-Studio\bin\LichtFeld-Studio.exe` | `-d <data> -o <out> --strategy mcmc --max-cap <N> --headless --train [--ppisp]` (actual count) |
 | splat-transform | `npx @playcanvas/splat-transform` | LOD assembly + SOG compression |
 | SuperSplat | Browser: superspl.at/editor | Manual floater cleanup |
@@ -281,7 +281,7 @@ for line in f:
 
 `config/defaults.toml` has global tool paths and settings. Each project can override with `project.toml`. Config is loaded with `load_project_config(project.config_path)` which deep-merges project overrides over defaults.
 
-Key config sections: `[tools]`, `[colmap_clean]`, `[postshot]` (profile, gpu, max_sh_degree, splat_density, image_select), `[lichtfeld]` (strategy, iterations, ppisp, ppisp_controller, sh_degree, enable_mip, bilateral_grid, max_width, tile_mode, enable_sparsity, undistort), `[paths]`
+Key config sections: `[tools]`, `[colmap_clean]`, `[postshot]` (profile, gpu, max_sh_degree, pose_quality, splat_density, image_select), `[lichtfeld]` (strategy, iterations, ppisp, ppisp_controller, sh_degree, enable_mip, bilateral_grid, max_width, tile_mode, enable_sparsity, undistort), `[paths]`
 
 ## Tests
 
@@ -326,6 +326,7 @@ The photogrammetry projects live at:
 
 ## Known Limitations / TODO
 
+- PlayCanvas pinned at 2.16 — 2.17 removes `GSplatComponent.lodDistances` array (replaced with `lodBaseDistance` + `lodMultiplier` geometric progression). Upgrading requires redesigning the per-LOD slider UI in `lod_assembly.py` (3 call sites: lines ~357, 369, 376).
 - Settings page is read-only (edit defaults.toml directly)
 - Auto-threshold doesn't work with <10 cameras (use fixed threshold in project.toml)
 - `splat-transform` CLI args may need updating when PlayCanvas updates the tool

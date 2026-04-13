@@ -28,6 +28,7 @@ gpu = -1                        # -1 = auto, 0+ = specific GPU index
 downsample = true
 max_image_size = 3840
 max_sh_degree = 3               # 0-3
+pose_quality = 3                # 1=Fast, 2, 3=Default, 4=Best (Postshot v1.0.331+)
 anti_aliasing = false
 create_sky_model = false
 no_recenter_points = false

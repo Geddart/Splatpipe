@@ -38,6 +38,7 @@ CONFIG_SCHEMA: dict[str, dict[str, str]] = {
         "profile": "str",
         "gpu": "int",
         "max_sh_degree": "int",
+        "pose_quality": "int",
         "no_recenter_points": "bool",
         "splat_density": "float",
         "image_select": "str",

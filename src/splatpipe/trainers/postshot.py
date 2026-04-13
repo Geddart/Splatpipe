@@ -94,6 +94,11 @@ class PostshotTrainer(Trainer):
         if max_sh_degree != 3:  # only pass if non-default
             cmd.extend(["--max-sh-degree", str(max_sh_degree)])
 
+        # Pose quality (1=Fast, 4=Best, default 3) — Postshot v1.0.331+
+        pose_quality = int(kwargs.get("pose_quality", postshot_cfg.get("pose_quality", 3)))
+        if pose_quality != 3:  # only pass if non-default
+            cmd.extend(["--pose-quality", str(pose_quality)])
+
         # Anti-aliasing (boolean flag)
         if kwargs.get("anti_aliasing", postshot_cfg.get("anti_aliasing", False)):
             cmd.extend(["--anti-aliasing", "true"])
