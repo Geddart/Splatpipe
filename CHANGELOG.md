@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - LichtFeld CLI command now always includes `--headless` and `--train` for pipeline use
 - Bumped `@playcanvas/splat-transform` to ^1.10.2 (from ^1.7.0)
+- Bumped PlayCanvas CDN from 2.16 to 2.17 (viewer, scene_editor, and assembled LOD viewer)
+- Migrated LOD distance API from `lodDistances` array to `lodBaseDistance` + `lodMultiplier` (geometric progression; required by PlayCanvas 2.17)
+- Replaced per-LOD distance sliders in assembled viewer with base + multiplier sliders plus live per-LOD distance preview
 
 ### Removed
 - "Headless mode uncertain" caveat from LichtFeld known limitations

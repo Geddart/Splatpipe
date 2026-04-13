@@ -171,7 +171,7 @@ _VIEWER_TEMPLATE = """\
   <script type="importmap">
   {{
     "imports": {{
-      "playcanvas": "https://cdn.jsdelivr.net/npm/playcanvas@2.16/+esm"
+      "playcanvas": "https://cdn.jsdelivr.net/npm/playcanvas@2.17/+esm"
     }}
   }}
   </script>
@@ -192,16 +192,23 @@ _VIEWER_TEMPLATE = """\
   const lodDistances = {lod_distances_json};
   const numLods = lodDistances.length;
 
-  // Build LOD presets from project distances
+  // PlayCanvas 2.17+ uses geometric progression: distance[i] = baseDistance * multiplier^i
+  // Derive from project distances: base = distances[0], mult = geometric mean of ratios
+  const projectBaseDistance = Math.max(1, lodDistances[0] || 5);
+  const projectMultiplier = numLods > 1
+    ? Math.pow(lodDistances[numLods - 1] / projectBaseDistance, 1 / (numLods - 1))
+    : 3;
+
+  // Build LOD presets using base+multiplier
   const LOD_PRESETS = {{
     ultra: {{ range: [0, Math.min(numLods - 1, Math.floor(numLods * 0.7))],
-              lodDistances: lodDistances }},
+              baseDistance: projectBaseDistance, multiplier: projectMultiplier }},
     high:  {{ range: [0, numLods - 1],
-              lodDistances: lodDistances }},
+              baseDistance: projectBaseDistance, multiplier: projectMultiplier }},
     medium: {{ range: [Math.min(1, numLods - 1), numLods - 1],
-               lodDistances: lodDistances }},
+               baseDistance: projectBaseDistance, multiplier: projectMultiplier }},
     low:    {{ range: [Math.max(0, numLods - 2), numLods - 1],
-               lodDistances: lodDistances }}
+               baseDistance: projectBaseDistance, multiplier: projectMultiplier }}
   }};
 
   const gfxOptions = {{ deviceTypes: ['webgpu', 'webgl2'], antialias: false }};
@@ -325,7 +332,7 @@ _VIEWER_TEMPLATE = """\
   const isMobile = pc.platform.mobile;
   let currentPreset = isMobile ? 'medium' : 'high';
 
-  // --- Custom LOD distance sliders ---
+  // --- Custom LOD distance controls (PlayCanvas 2.17+ base+multiplier) ---
   // Colors match PlayCanvas engine's colorizeLod exactly (gsplat-manager.js _lodColorsRaw)
   const LOD_COLORS = [
     'rgb(255,0,0)', 'rgb(0,255,0)', 'rgb(0,0,255)', 'rgb(255,255,0)',
@@ -333,32 +340,82 @@ _VIEWER_TEMPLATE = """\
   ];
   const LOD_NAMES = ['Highest', 'High', 'Medium', 'Low', 'Lower', 'Lowest', 'Min', 'Tiny'];
   const sliderPanel = document.getElementById('lod-sliders');
-  const customDistances = [...lodDistances];
+  let customBase = projectBaseDistance;
+  let customMultiplier = projectMultiplier;
 
-  for (let i = 0; i < numLods; i++) {{
-    const color = LOD_COLORS[i % LOD_COLORS.length];
-    const row = document.createElement('div');
-    row.style.cssText = 'display:flex; align-items:center; gap:8px; margin:4px 0;';
-    const dot = document.createElement('span');
-    dot.style.cssText = 'width:8px; height:8px; border-radius:50%; flex-shrink:0; background:' + color;
-    const label = document.createElement('span');
-    label.textContent = (LOD_NAMES[i] || 'LOD ' + i);
-    label.style.cssText = 'width:52px; font-size:11px; color:' + color + '; font-weight:600;';
-    const slider = document.createElement('input');
-    slider.type = 'range'; slider.min = '1'; slider.max = '300';
-    slider.value = String(lodDistances[i]);
-    slider.style.cssText = 'flex:1; height:4px; accent-color:' + color + ';';
-    const val = document.createElement('span');
-    val.textContent = lodDistances[i] + 'm';
-    val.style.cssText = 'width:44px; text-align:right; font-size:11px; font-family:monospace; color:' + color + ';';
-    slider.addEventListener('input', () => {{
-      customDistances[i] = parseInt(slider.value);
-      val.textContent = slider.value + 'm';
-      gs.lodDistances = customDistances;
+  function buildSliderPanel() {{
+    // Base distance slider (first LOD transition)
+    const baseRow = document.createElement('div');
+    baseRow.style.cssText = 'display:flex; align-items:center; gap:8px; margin:4px 0;';
+    const baseLabel = document.createElement('span');
+    baseLabel.textContent = 'Base';
+    baseLabel.style.cssText = 'width:52px; font-size:11px; color:#ccc; font-weight:600;';
+    const baseSlider = document.createElement('input');
+    baseSlider.type = 'range'; baseSlider.min = '1'; baseSlider.max = '50'; baseSlider.step = '0.5';
+    baseSlider.value = String(customBase);
+    baseSlider.style.cssText = 'flex:1; height:4px;';
+    const baseVal = document.createElement('span');
+    baseVal.textContent = customBase.toFixed(1) + 'm';
+    baseVal.style.cssText = 'width:44px; text-align:right; font-size:11px; font-family:monospace; color:#ccc;';
+    baseRow.append(baseLabel, baseSlider, baseVal);
+    sliderPanel.appendChild(baseRow);
+
+    // Multiplier slider (geometric ratio between LODs)
+    const multRow = document.createElement('div');
+    multRow.style.cssText = 'display:flex; align-items:center; gap:8px; margin:4px 0;';
+    const multLabel = document.createElement('span');
+    multLabel.textContent = 'Mult';
+    multLabel.style.cssText = 'width:52px; font-size:11px; color:#ccc; font-weight:600;';
+    const multSlider = document.createElement('input');
+    multSlider.type = 'range'; multSlider.min = '1.2'; multSlider.max = '5'; multSlider.step = '0.1';
+    multSlider.value = String(customMultiplier);
+    multSlider.style.cssText = 'flex:1; height:4px;';
+    const multVal = document.createElement('span');
+    multVal.textContent = customMultiplier.toFixed(2) + 'x';
+    multVal.style.cssText = 'width:44px; text-align:right; font-size:11px; font-family:monospace; color:#ccc;';
+    multRow.append(multLabel, multSlider, multVal);
+    sliderPanel.appendChild(multRow);
+
+    // Read-only computed per-LOD distance preview
+    const previewRows = [];
+    for (let i = 0; i < numLods; i++) {{
+      const color = LOD_COLORS[i % LOD_COLORS.length];
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex; align-items:center; gap:8px; margin:2px 0; padding-left:8px;';
+      const dot = document.createElement('span');
+      dot.style.cssText = 'width:6px; height:6px; border-radius:50%; flex-shrink:0; background:' + color;
+      const name = document.createElement('span');
+      name.textContent = (LOD_NAMES[i] || 'LOD ' + i);
+      name.style.cssText = 'width:52px; font-size:10px; color:' + color + ';';
+      const dist = document.createElement('span');
+      dist.style.cssText = 'flex:1; font-size:10px; font-family:monospace; color:' + color + ';';
+      row.append(dot, name, dist);
+      sliderPanel.appendChild(row);
+      previewRows.push(dist);
+    }}
+
+    function updatePreview() {{
+      for (let i = 0; i < numLods; i++) {{
+        const d = customBase * Math.pow(customMultiplier, i);
+        previewRows[i].textContent = d.toFixed(1) + 'm';
+      }}
+    }}
+    updatePreview();
+
+    baseSlider.addEventListener('input', () => {{
+      customBase = parseFloat(baseSlider.value);
+      baseVal.textContent = customBase.toFixed(1) + 'm';
+      gs.lodBaseDistance = customBase;
+      updatePreview();
     }});
-    row.append(dot, label, slider, val);
-    sliderPanel.appendChild(row);
+    multSlider.addEventListener('input', () => {{
+      customMultiplier = parseFloat(multSlider.value);
+      multVal.textContent = customMultiplier.toFixed(2) + 'x';
+      gs.lodMultiplier = customMultiplier;
+      updatePreview();
+    }});
   }}
+  buildSliderPanel();
 
   function applyPreset(name) {{
     currentPreset = name;
@@ -366,14 +423,16 @@ _VIEWER_TEMPLATE = """\
       sliderPanel.style.display = 'block';
       app.scene.gsplat.lodRangeMin = 0;
       app.scene.gsplat.lodRangeMax = numLods - 1;
-      gs.lodDistances = customDistances;
+      gs.lodBaseDistance = customBase;
+      gs.lodMultiplier = customMultiplier;
     }} else {{
       const preset = LOD_PRESETS[name];
       if (!preset) return;
       sliderPanel.style.display = 'none';
       app.scene.gsplat.lodRangeMin = preset.range[0];
       app.scene.gsplat.lodRangeMax = preset.range[1];
-      gs.lodDistances = preset.lodDistances;
+      gs.lodBaseDistance = preset.baseDistance;
+      gs.lodMultiplier = preset.multiplier;
     }}
     buttons.forEach(btn => {{
       btn.classList.toggle('active', btn.dataset.preset === name);

@@ -326,7 +326,6 @@ The photogrammetry projects live at:
 
 ## Known Limitations / TODO
 
-- PlayCanvas pinned at 2.16 — 2.17 removes `GSplatComponent.lodDistances` array (replaced with `lodBaseDistance` + `lodMultiplier` geometric progression). Upgrading requires redesigning the per-LOD slider UI in `lod_assembly.py` (3 call sites: lines ~357, 369, 376).
 - Settings page is read-only (edit defaults.toml directly)
 - Auto-threshold doesn't work with <10 cameras (use fixed threshold in project.toml)
 - `splat-transform` CLI args may need updating when PlayCanvas updates the tool
