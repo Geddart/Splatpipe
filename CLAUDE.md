@@ -9,7 +9,7 @@ CLI-first Gaussian splatting pipeline. Takes COLMAP data through: auto-clean →
 ```bash
 cd H:\001_ProjectCache\1000_Coding\Splatpipe
 pip install -e ".[dev]"
-pytest tests/ -v                    # Run tests (376 tests, ~18s)
+pytest tests/ -v                    # Run tests (377 tests, ~17s)
 splatpipe --help                    # CLI commands
 splatpipe web                       # Launch dashboard
 ```

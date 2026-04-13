@@ -195,9 +195,11 @@ _VIEWER_TEMPLATE = """\
   // PlayCanvas 2.17+ uses geometric progression: distance[i] = baseDistance * multiplier^i
   // Derive from project distances: base = distances[0], mult = geometric mean of ratios
   const projectBaseDistance = Math.max(1, lodDistances[0] || 5);
-  const projectMultiplier = numLods > 1
+  const rawMultiplier = numLods > 1
     ? Math.pow(lodDistances[numLods - 1] / projectBaseDistance, 1 / (numLods - 1))
     : 3;
+  // Clamp to the slider's valid range so the UI stays consistent with what's applied
+  const projectMultiplier = Math.min(5, Math.max(1.2, rawMultiplier));
 
   // Build LOD presets using base+multiplier
   const LOD_PRESETS = {{
