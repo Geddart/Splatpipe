@@ -108,7 +108,36 @@ class Project:
     def state(self) -> dict:
         if self._state is None:
             self._state = self._load_state()
+            if self._migrate_state(self._state):
+                self._save_state()
         return self._state
+
+    @staticmethod
+    def _migrate_state(state: dict) -> bool:
+        """Run idempotent in-place migrations on a freshly loaded state dict.
+
+        Returns True if any field was added/modified (caller should persist).
+        """
+        changed = False
+
+        scene_config = state.get("scene_config") or {}
+        annotations = scene_config.get("annotations")
+        if isinstance(annotations, list):
+            used_ids = {a["id"] for a in annotations if isinstance(a, dict) and a.get("id")}
+            next_n = 1
+            for ann in annotations:
+                if not isinstance(ann, dict) or ann.get("id"):
+                    continue
+                while f"a{next_n}" in used_ids:
+                    next_n += 1
+                ann["id"] = f"a{next_n}"
+                used_ids.add(ann["id"])
+                next_n += 1
+                changed = True
+            if changed:
+                state.setdefault("scene_config", {})["annotations"] = annotations
+
+        return changed
 
     @property
     def name(self) -> str:
@@ -117,6 +146,17 @@ class Project:
     @property
     def trainer(self) -> str:
         return self.state.get("trainer", "postshot")
+
+    @property
+    def renderer(self) -> str:
+        """Output viewer renderer: 'playcanvas' (default) or 'spark'."""
+        return self.state.get("renderer", "playcanvas")
+
+    def set_renderer(self, renderer: str) -> None:
+        if renderer not in ("playcanvas", "spark"):
+            raise ValueError(f"renderer must be 'playcanvas' or 'spark', got {renderer!r}")
+        self.state["renderer"] = renderer
+        self._save_state()
 
     @property
     def lod_levels(self) -> list[dict]:
@@ -288,6 +328,20 @@ class Project:
             "vignette": False, "vignette_intensity": 0.5,
         },
         "audio": [],
+        "camera_paths": [],
+        "default_path_id": None,
+        "spark_render": {
+            "lod_splat_scale": 1.0,
+            "lod_render_scale": 1.0,
+            "foveation": {
+                "enabled": False,
+                "cone_fov0": 30.0,
+                "cone_fov": 90.0,
+                "cone_foveate": 2.0,
+                "behind_foveate": 4.0,
+            },
+            "ondemand_lod_fallback": True,
+        },
     }
 
     @property

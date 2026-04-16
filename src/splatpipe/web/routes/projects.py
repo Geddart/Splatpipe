@@ -875,12 +875,234 @@ async def delete_annotation(request: Request, project_path: str, index: int):
     """Delete an annotation and re-label remaining ones."""
     proj = Project(Path(project_path))
     saved = proj.state.get("scene_config", {}).get("annotations", [])
+    deleted_id = None
     if 0 <= index < len(saved):
+        deleted_id = saved[index].get("id")
         saved.pop(index)
         for i, ann in enumerate(saved):
             ann["label"] = str(i + 1)
         proj.set_scene_config_section("annotations", saved)
+
+    # Cascade: any keyframes referencing the deleted annotation drop the link.
+    if deleted_id:
+        from ...core.path_io import mutate_paths
+        def _cascade(paths):
+            for p in paths:
+                for kf in p.get("keyframes") or []:
+                    if kf.get("annotation_id") == deleted_id:
+                        kf["annotation_id"] = None
+            return paths
+        mutate_paths(proj, _cascade)
+
     return JSONResponse({"ok": True, "annotations": saved})
+
+
+# --- Camera paths ---
+
+@router.get("/{project_path:path}/paths")
+async def get_paths(project_path: str):
+    """Return all camera paths and the default-path id."""
+    proj = Project(Path(project_path))
+    return JSONResponse({
+        "paths": proj.scene_config.get("camera_paths") or [],
+        "default_path_id": proj.scene_config.get("default_path_id"),
+    })
+
+
+@router.post("/{project_path:path}/add-path")
+async def add_path(request: Request, project_path: str):
+    """Create a new camera path."""
+    body = await request.json()
+    proj = Project(Path(project_path))
+    from ...core.path_io import mutate_paths, new_path
+    created = {"id": ""}
+    def _add(paths):
+        path = new_path(
+            name=body.get("name") or f"Path {len(paths) + 1}",
+            loop=bool(body.get("loop", False)),
+            interpolation=body.get("interpolation", "catmull"),
+        )
+        created["id"] = path["id"]
+        paths.append(path)
+        return paths
+    mutate_paths(proj, _add)
+    return JSONResponse({"ok": True, "id": created["id"]})
+
+
+@router.post("/{project_path:path}/update-path/{path_id}")
+async def update_path(request: Request, project_path: str, path_id: str):
+    """Patch path metadata (name, loop, interpolation)."""
+    body = await request.json()
+    proj = Project(Path(project_path))
+    from ...core.path_io import mutate_paths
+    allowed = {"name", "loop", "interpolation", "smoothness", "play_speed"}
+    def _patch(paths):
+        for p in paths:
+            if p.get("id") == path_id:
+                for k, v in body.items():
+                    if k in allowed:
+                        p[k] = v
+                break
+        return paths
+    mutate_paths(proj, _patch)
+    return JSONResponse({"ok": True})
+
+
+@router.post("/{project_path:path}/delete-path/{path_id}")
+async def delete_path(project_path: str, path_id: str):
+    """Delete a camera path. Clears default_path_id if it pointed here."""
+    proj = Project(Path(project_path))
+    from ...core.path_io import mutate_paths, remove_path
+    mutate_paths(proj, lambda paths: remove_path(paths, path_id))
+    if proj.scene_config.get("default_path_id") == path_id:
+        proj.set_scene_config_section("default_path_id", None)
+    return JSONResponse({"ok": True})
+
+
+@router.post("/{project_path:path}/set-default-path")
+async def set_default_path(request: Request, project_path: str):
+    """Set or clear `default_path_id` (autoplay). Body: {id: str | null}."""
+    body = await request.json()
+    proj = Project(Path(project_path))
+    proj.set_scene_config_section("default_path_id", body.get("id"))
+    return JSONResponse({"ok": True})
+
+
+@router.post("/{project_path:path}/add-keyframe/{path_id}")
+async def add_keyframe(request: Request, project_path: str, path_id: str):
+    """Append a keyframe to a path. Body: {t?, pos, quat?, look_at?, fov, ...}."""
+    body = await request.json()
+    proj = Project(Path(project_path))
+    from ...core.path_io import mutate_paths
+    appended = {"index": -1}
+    def _append(paths):
+        for p in paths:
+            if p.get("id") == path_id:
+                kfs = p.setdefault("keyframes", [])
+                # Default t = last_t + 2.0 if not provided
+                if "t" not in body:
+                    body["t"] = (kfs[-1]["t"] + 2.0) if kfs else 0.0
+                body.setdefault("easing_out", "easeInOutCubic")
+                body.setdefault("hold_s", 0.0)
+                body.setdefault("annotation_id", None)
+                kfs.append(body)
+                appended["index"] = len(kfs) - 1
+                break
+        return paths
+    mutate_paths(proj, _append)
+    return JSONResponse({"ok": True, "index": appended["index"]})
+
+
+@router.post("/{project_path:path}/update-keyframe/{path_id}/{index:int}")
+async def update_keyframe(
+    request: Request, project_path: str, path_id: str, index: int
+):
+    """Patch fields of a keyframe."""
+    body = await request.json()
+    proj = Project(Path(project_path))
+    from ...core.path_io import mutate_paths
+    allowed = {"t", "pos", "quat", "look_at", "fov", "easing_out",
+               "hold_s", "annotation_id"}
+    def _patch(paths):
+        for p in paths:
+            if p.get("id") == path_id:
+                kfs = p.get("keyframes") or []
+                if 0 <= index < len(kfs):
+                    for k, v in body.items():
+                        if k in allowed:
+                            kfs[index][k] = v
+                break
+        return paths
+    mutate_paths(proj, _patch)
+    return JSONResponse({"ok": True})
+
+
+@router.post("/{project_path:path}/delete-keyframe/{path_id}/{index:int}")
+async def delete_keyframe(project_path: str, path_id: str, index: int):
+    """Delete a keyframe by index."""
+    proj = Project(Path(project_path))
+    from ...core.path_io import mutate_paths
+    def _del(paths):
+        for p in paths:
+            if p.get("id") == path_id:
+                kfs = p.get("keyframes") or []
+                if 0 <= index < len(kfs):
+                    kfs.pop(index)
+                break
+        return paths
+    mutate_paths(proj, _del)
+    return JSONResponse({"ok": True})
+
+
+@router.post("/{project_path:path}/import-gltf-path")
+async def import_gltf_path(request: Request, project_path: str):
+    """Import a camera animation from an uploaded .glb / .gltf file.
+
+    Multipart upload with field `file`. Optional query string: ?name=...&sample_hz=24
+    """
+    proj = Project(Path(project_path))
+    from ...core.path_io import from_gltf, mutate_paths
+    import tempfile
+
+    form = await request.form()
+    upload = form.get("file")
+    if upload is None:
+        return JSONResponse({"ok": False, "error": "missing 'file' field"}, status_code=400)
+
+    suffix = ".glb" if upload.filename.lower().endswith(".glb") else ".gltf"
+    name = request.query_params.get("name") or Path(upload.filename).stem
+    sample_hz = request.query_params.get("sample_hz")
+    sample_hz_f = float(sample_hz) if sample_hz else None
+
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(await upload.read())
+        tmp_path = tmp.name
+    try:
+        path = from_gltf(tmp_path, name=name, sample_hz=sample_hz_f)
+    finally:
+        try:
+            import os
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+    created = {"id": path["id"]}
+    def _append(paths):
+        paths.append(path)
+        return paths
+    mutate_paths(proj, _append)
+    return JSONResponse({"ok": True, "id": created["id"], "keyframe_count": len(path["keyframes"])})
+
+
+@router.post("/{project_path:path}/import-colmap-path")
+async def import_colmap_path(request: Request, project_path: str):
+    """Import the original capture cameras from the project's COLMAP source.
+
+    Body: {name?, every_nth?, fps?}. Returns 404 if the project has no COLMAP source.
+    """
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    proj = Project(Path(project_path))
+    from ...core.path_io import from_colmap, mutate_paths
+
+    try:
+        path = from_colmap(
+            proj.colmap_dir(),
+            name=body.get("name") or "Capture Path",
+            every_nth=int(body.get("every_nth", 1)),
+            fps=float(body.get("fps", 24.0)),
+        )
+    except FileNotFoundError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=404)
+
+    def _append(paths):
+        paths.append(path)
+        return paths
+    mutate_paths(proj, _append)
+    return JSONResponse({"ok": True, "id": path["id"], "keyframe_count": len(path["keyframes"])})
 
 
 # --- Scene editor ---
