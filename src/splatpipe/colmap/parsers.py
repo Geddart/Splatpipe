@@ -218,12 +218,15 @@ def detect_alignment_format(data_dir: Path) -> str:
 def detect_source_type(path: Path) -> str:
     """Detect source type from a path (file or directory).
 
-    Returns one of: "postshot", "colmap_text", "colmap_binary",
+    Returns one of: "postshot", "ply", "colmap_text", "colmap_binary",
     "bundler", "realityscan", "blocksexchange", "unknown"
     """
     if path.is_file():
-        if path.suffix.lower() == ".psht":
+        ext = path.suffix.lower()
+        if ext == ".psht":
             return "postshot"
+        if ext == ".ply":
+            return "ply"
         return "unknown"
     if path.is_dir():
         return detect_alignment_format(path)
@@ -232,6 +235,7 @@ def detect_source_type(path: Path) -> str:
 
 ALIGNMENT_FORMAT_LABELS = {
     "postshot": "Postshot (.psht)",
+    "ply": "PLY (single splat file)",
     "colmap_text": "COLMAP (text)",
     "colmap_binary": "COLMAP (binary)",
     "bundler": "Bundler",

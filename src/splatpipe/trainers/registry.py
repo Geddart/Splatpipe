@@ -3,10 +3,12 @@
 from .base import Trainer
 from .postshot import PostshotTrainer
 from .lichtfeld import LichtfeldTrainer
+from .passthrough import PassthroughTrainer
 
 TRAINERS: dict[str, type[Trainer]] = {
     "postshot": PostshotTrainer,
     "lichtfeld": LichtfeldTrainer,
+    "passthrough": PassthroughTrainer,
 }
 
 

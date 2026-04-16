@@ -32,3 +32,30 @@ STEP_TRAIN = "train"
 STEP_REVIEW = "review"
 STEP_ASSEMBLE = "assemble"
 STEP_EXPORT = "export"
+
+# Plain-language explanations shown as tooltips next to each step in the UI.
+STEP_DESCRIPTIONS = {
+    STEP_CLEAN: (
+        "Filter the COLMAP source: remove camera outliers and prune stray "
+        "points using a KD-tree against the cleaned mesh. Skipped "
+        "automatically for .psht / .ply input."
+    ),
+    STEP_TRAIN: (
+        "Train Gaussian splats with the selected trainer. Postshot and "
+        "LichtFeld retrain from scratch; Passthrough extracts the PLY from "
+        "a finished .psht or copies an existing .ply (no retraining)."
+    ),
+    STEP_REVIEW: (
+        "Manual cleanup gate — open each LOD's .psht in Postshot to remove "
+        "floaters, then approve. Auto-approved when trainer is Passthrough."
+    ),
+    STEP_ASSEMBLE: (
+        "Run splat-transform: convert reviewed PLYs into the PlayCanvas "
+        "streaming format (lod-meta.json + SOG webp chunks) and generate "
+        "the index.html viewer."
+    ),
+    STEP_EXPORT: (
+        "Copy 05_output/ to a local folder OR upload it to Bunny CDN. "
+        "CDN mode prints a viewer URL on completion."
+    ),
+}

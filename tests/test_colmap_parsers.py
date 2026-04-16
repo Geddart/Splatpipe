@@ -289,7 +289,8 @@ def test_detect_alignment_format_unknown(tmp_path):
 
 def test_alignment_format_labels_complete():
     """All format strings have labels."""
-    for fmt in ("colmap_text", "colmap_binary", "bundler", "realityscan", "blocksexchange", "unknown"):
+    for fmt in ("postshot", "ply", "colmap_text", "colmap_binary", "bundler",
+                "realityscan", "blocksexchange", "unknown"):
         assert fmt in ALIGNMENT_FORMAT_LABELS
 
 
@@ -312,7 +313,20 @@ def test_detect_source_type_directory(tmp_path):
 
 
 def test_detect_source_type_unknown_file(tmp_path):
-    """detect_source_type returns 'unknown' for non-.psht files."""
+    """detect_source_type returns 'unknown' for unsupported file extensions."""
     f = tmp_path / "data.xyz"
     f.write_bytes(b"data")
     assert detect_source_type(f) == "unknown"
+
+
+def test_detect_source_type_ply_file(tmp_path):
+    """detect_source_type returns 'ply' for standalone .ply files."""
+    ply = tmp_path / "scene.ply"
+    ply.write_bytes(b"ply\nformat ascii 1.0\nend_header\n")
+    assert detect_source_type(ply) == "ply"
+
+
+def test_alignment_format_labels_includes_ply():
+    """PLY label is registered for UI display."""
+    assert "ply" in ALIGNMENT_FORMAT_LABELS
+    assert "PLY" in ALIGNMENT_FORMAT_LABELS["ply"]

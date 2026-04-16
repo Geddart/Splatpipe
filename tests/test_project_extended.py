@@ -348,6 +348,25 @@ class TestSceneConfig:
         assert cfg["camera"]["pitch_min"] == -89
         assert cfg["camera"]["zoom_max"] == 200
 
+    def test_camera_constraints_default_disabled(self, tmp_path):
+        """Camera constraints are off by default — viewer lets the user fly free."""
+        proj = Project.create(tmp_path / "p", "T")
+        assert proj.scene_config["camera"]["enabled"] is False
+
+    def test_camera_partial_save_preserves_enabled_flag(self, tmp_path):
+        """Saving pitch_min via the numbers form must NOT clobber the enabled toggle.
+
+        The constraints toggle and the constraint-value form post separately;
+        both go to set_scene_config_section('camera', ...). The merge behavior
+        protects the enabled flag from being wiped by a partial number update.
+        """
+        proj = Project.create(tmp_path / "p", "T")
+        proj.set_scene_config_section("camera", {"enabled": True})
+        proj.set_scene_config_section("camera", {"pitch_min": -45})
+        cfg = Project(proj.root).scene_config
+        assert cfg["camera"]["enabled"] is True
+        assert cfg["camera"]["pitch_min"] == -45
+
     def test_annotations_replace_not_merge(self, tmp_path):
         """Annotations list replaces default empty list wholesale."""
         proj = Project.create(tmp_path / "p", "T")

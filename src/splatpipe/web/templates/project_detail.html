@@ -149,6 +149,22 @@
         <!-- Pipeline Steps -->
         <div>
             {% set any_running = steps|selectattr('is_actively_running')|list|length > 0 %}
+
+            {% if project.trainer == 'passthrough' %}
+            <div class="alert alert-info shadow-sm mb-4">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 stroke-current shrink-0" fill="none" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                <div>
+                    <h3 class="font-bold">Passthrough mode</h3>
+                    <div class="text-xs">
+                        Source splat is extracted (.psht) or copied (.ply) straight to assemble — no training, no manual review.
+                        Single LOD only. Configure CDN below and click <span class="font-bold">Run Enabled</span>.
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+
             <div class="flex items-center justify-between mb-4">
                 <h2 class="text-2xl font-bold">Pipeline Steps</h2>
                 {% if not any_running %}
@@ -209,8 +225,8 @@
                                     </button>
                                 </form>
 
-                                <!-- Name + status -->
-                                <div>
+                                <!-- Name + info icon + status -->
+                                <div class="flex items-center gap-2">
                                     <span class="font-bold text-lg">
                                         {% if step.name == 'clean' %}Clean COLMAP
                                         {% elif step.name == 'train' %}Train Splats
@@ -220,20 +236,35 @@
                                         {% else %}{{ step.name }}
                                         {% endif %}
                                     </span>
+                                    {% if step_descriptions.get(step.name) %}
+                                    <div class="tooltip tooltip-right" data-tip="{{ step_descriptions[step.name] }}">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 opacity-40 hover:opacity-100 transition-opacity" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+                                        </svg>
+                                    </div>
+                                    {% endif %}
                                     {% if not step.enabled %}
-                                        <span class="badge badge-ghost badge-sm ml-2">Skipped</span>
+                                        {% if project.trainer == 'passthrough' and step.name == 'clean' %}
+                                            <span class="badge badge-ghost badge-sm">Auto-skipped (passthrough)</span>
+                                        {% else %}
+                                            <span class="badge badge-ghost badge-sm">Skipped</span>
+                                        {% endif %}
                                     {% elif step.status == 'completed' %}
-                                        <span class="badge badge-success badge-sm ml-2">Completed</span>
+                                        {% if project.trainer == 'passthrough' and step.name == 'review' %}
+                                            <span class="badge badge-success badge-sm">Auto-approved</span>
+                                        {% else %}
+                                            <span class="badge badge-success badge-sm">Completed</span>
+                                        {% endif %}
                                     {% elif step.status == 'failed' %}
-                                        <span class="badge badge-error badge-sm ml-2">Failed</span>
+                                        <span class="badge badge-error badge-sm">Failed</span>
                                     {% elif step.status == 'cancelled' %}
-                                        <span class="badge badge-warning badge-sm ml-2">Cancelled</span>
+                                        <span class="badge badge-warning badge-sm">Cancelled</span>
                                     {% elif step.status == 'waiting' %}
-                                        <span class="badge badge-warning badge-sm ml-2">Awaiting Review</span>
+                                        <span class="badge badge-warning badge-sm">Awaiting Review</span>
                                     {% elif step.status == 'running' %}
-                                        <span class="badge badge-info badge-sm ml-2">Running</span>
+                                        <span class="badge badge-info badge-sm">Running</span>
                                     {% else %}
-                                        <span class="badge badge-ghost badge-sm ml-2">Pending</span>
+                                        <span class="badge badge-ghost badge-sm">Pending</span>
                                     {% endif %}
                                 </div>
 
@@ -382,10 +413,13 @@
                             <div class="flex items-center gap-4 mb-4">
                                 <div class="form-control">
                                     <label class="label py-0"><span class="label-text text-xs">Trainer</span></label>
-                                    <form hx-post="/projects/{{ project.path }}/update-trainer" hx-swap="none">
+                                    <form hx-post="/projects/{{ project.path }}/update-trainer"
+                                          hx-swap="none"
+                                          hx-on::after-request="if (event.detail.successful) location.reload()">
                                         <select name="trainer" class="select select-bordered select-sm" onchange="this.form.requestSubmit()">
-                                            <option value="postshot" {% if project.trainer == 'postshot' %}selected{% endif %}>Postshot</option>
-                                            <option value="lichtfeld" {% if project.trainer == 'lichtfeld' %}selected{% endif %}>LichtFeld Studio</option>
+                                            <option value="postshot"    {% if project.trainer == 'postshot' %}selected{% endif %}>Postshot — full training from COLMAP</option>
+                                            <option value="lichtfeld"   {% if project.trainer == 'lichtfeld' %}selected{% endif %}>LichtFeld Studio — full training from COLMAP</option>
+                                            <option value="passthrough" {% if project.trainer == 'passthrough' %}selected{% endif %}>Passthrough — use existing .psht / .ply (no retrain)</option>
                                         </select>
                                     </form>
                                 </div>
@@ -519,12 +553,29 @@
                             <p class="text-xs opacity-40 mt-3">Camera distance at which each LOD activates in the PlayCanvas viewer.</p>
 
                             <!-- Camera Constraints -->
-                            <div class="mt-4 pt-4 border-t border-base-300/50">
+                            <div class="mt-4 pt-4 border-t border-base-300/50 flex items-center justify-between">
                                 <span class="text-xs font-bold opacity-60 uppercase tracking-wider">Camera Constraints</span>
+                                <form hx-post="/projects/{{ project.path }}/update-scene-config"
+                                      hx-vals='{"section": "camera"}' hx-swap="none"
+                                      class="flex items-center gap-2">
+                                    <!-- Hidden input ensures the "false" case is submitted too
+                                         (unchecked checkboxes are omitted from form data by default). -->
+                                    <input type="hidden" name="enabled" value="false">
+                                    <label class="label cursor-pointer gap-2 py-0">
+                                        <span class="label-text text-xs">Enabled</span>
+                                        <input type="checkbox" name="enabled" value="true"
+                                               class="toggle toggle-primary toggle-sm"
+                                               {% if scene_config.camera.enabled %}checked{% endif %}
+                                               onchange="this.form.requestSubmit()">
+                                    </label>
+                                </form>
                             </div>
+                            <p class="text-xs opacity-40 mt-1 mb-2">
+                                Off (default): the viewer lets the user fly anywhere. On: clamp to the bounds below.
+                            </p>
                             <form hx-post="/projects/{{ project.path }}/update-scene-config"
                                   hx-vals='{"section": "camera"}' hx-swap="none"
-                                  class="grid grid-cols-2 gap-3 mt-2">
+                                  class="grid grid-cols-2 gap-3 mt-2 {% if not scene_config.camera.enabled %}opacity-50{% endif %}">
                                 <div class="flex items-center gap-2 text-sm">
                                     <span class="w-28 text-xs">Pitch Min</span>
                                     <input type="number" name="pitch_min" step="1" min="-89" max="0"

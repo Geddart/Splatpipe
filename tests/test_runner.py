@@ -695,3 +695,164 @@ class TestQueue:
         assert queue_position("b") == 2
         assert queue_position("c") == 3
         assert queue_position("missing") is None
+
+
+class TestPipelineRunnerPassthrough:
+    """Review step auto-completes when trainer is passthrough."""
+
+    def test_review_auto_completes_for_passthrough(self, tmp_path):
+        """Runner short-circuits the manual review gate for passthrough trainer."""
+        # Build a project with passthrough trainer
+        psht = tmp_path / "scene.psht"
+        psht.write_bytes(b"\x00")
+        proj = Project.create(
+            tmp_path / "PassthruProj", "PassthruProj",
+            colmap_source=str(psht),
+            source_type="postshot",
+            # source_type=postshot auto-defaults trainer to passthrough
+        )
+        assert proj.trainer == "passthrough"
+
+        runner = PipelineRunner(str(proj.root), ["review"], _make_config())
+        runner.start()
+        runner._thread.join(timeout=5)
+
+        snap = runner.snapshot
+        assert snap.status == "completed"
+        # Re-read state from disk
+        proj._state = None
+        assert proj.get_step_status("review") == "completed"
+        summary = proj.get_step_summary("review")
+        assert summary.get("auto_approved") is True
+
+    def test_review_passthrough_preserves_existing_completed_summary(self, tmp_path):
+        """Passthrough re-run must not overwrite a previously-completed review's summary.
+
+        A user may have manually approved review when trainer was postshot, then
+        switched to passthrough and re-run. The earlier summary should be kept.
+        """
+        psht = tmp_path / "scene.psht"
+        psht.write_bytes(b"\x00")
+        proj = Project.create(
+            tmp_path / "PrevApproved", "PrevApproved",
+            colmap_source=str(psht),
+            source_type="postshot",
+        )
+        # Simulate earlier manual approval with a specific summary
+        proj.record_step("review", "completed",
+                         summary={"lod_count": 3, "total_vertices": 1234567,
+                                  "approved_by": "human"})
+
+        runner = PipelineRunner(str(proj.root), ["review"], _make_config())
+        runner.start()
+        runner._thread.join(timeout=5)
+
+        proj._state = None
+        summary = proj.get_step_summary("review")
+        # The original manual-approval summary should be intact
+        assert summary.get("approved_by") == "human"
+        assert summary.get("total_vertices") == 1234567
+        # And it should NOT have been replaced by the passthrough auto_approved marker
+        assert "auto_approved" not in summary
+
+    def test_review_race_reread_guard_present(self, runner_project, monkeypatch):
+        """Regression: _execute_review must re-read state one more time right
+        before recording 'waiting', so an approval that lands between the
+        first check and the write short-circuits cleanly rather than getting
+        clobbered. Simulated by having get_step_status flip to 'completed' on
+        its second call — no record_step("waiting") should happen after that.
+        """
+        runner = PipelineRunner(str(runner_project.root), ["review"], _make_config())
+
+        calls = {"get_step_status": 0}
+        real_get = Project.get_step_status
+        real_record = Project.record_step
+        waiting_writes: list = []
+
+        def spy_get(self, step_name):
+            if step_name == "review":
+                calls["get_step_status"] += 1
+                # 1st call: pending (runner's initial check); 2nd+ call: completed
+                # (simulates user approval landing between the two checks).
+                if calls["get_step_status"] == 1:
+                    return "pending"
+                return "completed"
+            return real_get(self, step_name)
+
+        def spy_record(self, step_name, status, **kwargs):
+            if step_name == "review" and status == "waiting":
+                waiting_writes.append(True)
+            return real_record(self, step_name, status, **kwargs)
+
+        monkeypatch.setattr(Project, "get_step_status", spy_get)
+        monkeypatch.setattr(Project, "record_step", spy_record)
+
+        runner.start()
+        runner._thread.join(timeout=5)
+
+        assert waiting_writes == [], (
+            "Runner wrote review=waiting even though the fresh re-read "
+            "showed the user had already approved — the race guard is missing."
+        )
+
+    def test_review_blocks_for_non_passthrough(self, runner_project):
+        """Sanity check: non-passthrough trainer still uses the manual review gate."""
+        runner = PipelineRunner(str(runner_project.root), ["review"], _make_config())
+        runner.start()
+
+        # Give it a moment to enter the waiting loop
+        time.sleep(0.5)
+        snap = runner.snapshot
+        assert snap.status == "running"  # still waiting for approval
+
+        # Approve via state, runner should pick it up
+        runner_project.record_step("review", "completed")
+        runner._thread.join(timeout=5)
+        assert runner.snapshot.status == "completed"
+
+
+class TestPipelineRunnerPlySource:
+    """Train step resolves source.ply correctly for passthrough."""
+
+    def test_train_resolves_ply_source(self, tmp_path):
+        """`source_type='ply'` resolves to 01_colmap_source/source.ply."""
+        ply_input = tmp_path / "scene.ply"
+        ply_input.write_bytes(b"ply\n")
+        proj = Project.create(
+            tmp_path / "PlyProj", "PlyProj",
+            colmap_source=str(ply_input),
+            source_type="ply",
+        )
+        # The init step normally copies the file in — do it manually for the test.
+        import shutil
+        shutil.copy2(ply_input, proj.get_folder("01_colmap_source") / "source.ply")
+        assert proj.trainer == "passthrough"
+
+        runner = PipelineRunner(str(proj.root), ["train"], _make_config())
+
+        captured: dict = {}
+
+        def mock_train_lod(source_dir, output_dir, lod_name, max_splats, **kwargs):
+            captured["source_dir"] = source_dir
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / f"{lod_name}.ply").write_bytes(b"ply\n")
+            yield ProgressEvent(step="train", progress=1.0, message="done", sub_progress=1.0)
+            return TrainResult(
+                lod_name=lod_name, max_splats=max_splats, success=True,
+                command=[], returncode=0, stdout="", stderr="",
+                duration_s=0.0, output_dir=str(output_dir),
+                output_ply=str(output_dir / f"{lod_name}.ply"),
+            )
+
+        with patch("splatpipe.web.runner.get_trainer") as mock_get:
+            mock_trainer = MagicMock()
+            mock_trainer.train_lod = mock_train_lod
+            mock_get.return_value = mock_trainer
+
+            runner.start()
+            runner._thread.join(timeout=5)
+
+        assert runner.snapshot.status == "completed"
+        # Source resolved to the project's source.ply file
+        assert captured["source_dir"].name == "source.ply"
+        assert captured["source_dir"].exists()

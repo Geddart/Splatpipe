@@ -47,26 +47,40 @@ class Project:
         root: Path,
         name: str,
         *,
-        trainer: str = "postshot",
+        trainer: str | None = None,
         lod_levels: list[dict] | None = None,
         colmap_source: str | None = None,
         source_type: str = "",
         enabled_steps: dict[str, bool] | None = None,
     ) -> "Project":
-        """Create a new project with folder scaffolding and initial state."""
+        """Create a new project with folder scaffolding and initial state.
+
+        When trainer is None, defaults to ``passthrough`` for finished-splat
+        sources (.psht / .ply) and ``postshot`` otherwise.
+        """
         root = Path(root)
         root.mkdir(parents=True, exist_ok=True)
 
         for folder in PROJECT_FOLDERS:
             (root / folder).mkdir(exist_ok=True)
 
+        if trainer is None:
+            trainer = "passthrough" if source_type in ("postshot", "ply") else "postshot"
+
         if lod_levels is None:
-            lod_levels = [
-                {"name": n, "max_splats": s} for n, s in DEFAULT_LOD_LEVELS
-            ]
+            if trainer == "passthrough":
+                # Passthrough has nothing to retrain — single LOD only.
+                lod_levels = [{"name": "lod0", "max_splats": 0}]
+            else:
+                lod_levels = [
+                    {"name": n, "max_splats": s} for n, s in DEFAULT_LOD_LEVELS
+                ]
 
         if enabled_steps is None:
             enabled_steps = {s: s != STEP_CLEAN for s in ALL_STEPS}
+            if trainer == "passthrough":
+                # Passthrough doesn't operate on COLMAP data.
+                enabled_steps[STEP_CLEAN] = False
 
         state = {
             "name": name,
@@ -80,6 +94,10 @@ class Project:
             "enabled_steps": enabled_steps,
             "steps": {},
         }
+
+        # Uncapped splat budget by default for passthrough — show full quality.
+        if trainer == "passthrough":
+            state["scene_config"] = {"splat_budget": 0}
 
         project = cls(root)
         project._state = state
@@ -136,7 +154,19 @@ class Project:
         self._save_state()
 
     def set_trainer(self, trainer: str) -> None:
+        """Set the trainer; passthrough also trims LODs and disables clean step."""
         self.state["trainer"] = trainer
+        if trainer == "passthrough":
+            # Single LOD only — passthrough doesn't generate alternate resolutions.
+            levels = self.state.get("lod_levels", [])
+            if len(levels) > 1:
+                self.state["lod_levels"] = [levels[0]]
+            # Clean step doesn't apply to finished-splat sources.
+            es = self.state.setdefault("enabled_steps", {})
+            es[STEP_CLEAN] = False
+            # Uncapped splat budget so the user sees full pretrained quality.
+            sc = self.state.setdefault("scene_config", {})
+            sc["splat_budget"] = 0
         self._save_state()
 
     def set_lod_levels(self, levels: list[dict]) -> None:
@@ -157,14 +187,18 @@ class Project:
 
     @property
     def source_type(self) -> str:
-        """Source type: 'postshot' for .psht files, or alignment format for directories."""
+        """Source type: 'postshot' for .psht, 'ply' for raw PLY, or alignment format for directories."""
         st = self.state.get("source_type", "")
         if st:
             return st
         # Fallback: detect from colmap_source path
         raw = self.colmap_source
-        if raw and Path(raw).suffix.lower() == ".psht":
-            return "postshot"
+        if raw:
+            ext = Path(raw).suffix.lower()
+            if ext == ".psht":
+                return "postshot"
+            if ext == ".ply":
+                return "ply"
         return ""
 
     def set_source_type(self, source_type: str) -> None:
@@ -172,13 +206,15 @@ class Project:
         self._save_state()
 
     def source_file(self) -> Path | None:
-        """Return path to local .psht copy, or None if not a file source."""
-        if self.source_type != "postshot":
+        """Return path to the local copy of a single-file source (.psht or .ply)."""
+        st = self.source_type
+        if st == "postshot":
+            local = self.get_folder(FOLDER_COLMAP_SOURCE) / "source.psht"
+        elif st == "ply":
+            local = self.get_folder(FOLDER_COLMAP_SOURCE) / "source.ply"
+        else:
             return None
-        local = self.get_folder(FOLDER_COLMAP_SOURCE) / "source.psht"
-        if local.exists():
-            return local
-        return None
+        return local if local.exists() else None
 
     @property
     def export_mode(self) -> str:
@@ -238,6 +274,7 @@ class Project:
 
     DEFAULT_SCENE_CONFIG = {
         "camera": {
+            "enabled": False,
             "pitch_min": -89, "pitch_max": 89,
             "zoom_min": 1, "zoom_max": 200,
             "ground_height": 0.3, "bounds_radius": 150,
@@ -268,10 +305,18 @@ class Project:
         return result
 
     def set_scene_config_section(self, section: str, data) -> None:
-        """Update one section of scene_config."""
+        """Update one section of scene_config.
+
+        For dict sections, merges keys (so a partial form submit only changes
+        the fields it sent). For scalar sections, replaces the value.
+        """
         if "scene_config" not in self.state:
             self.state["scene_config"] = {}
-        self.state["scene_config"][section] = data
+        existing = self.state["scene_config"].get(section)
+        if isinstance(data, dict) and isinstance(existing, dict):
+            existing.update(data)
+        else:
+            self.state["scene_config"][section] = data
         self._save_state()
 
     def get_enabled_lods(self) -> list[dict]:
@@ -397,12 +442,27 @@ class Project:
         return step.get("summary")
 
     def _load_state(self) -> dict:
-        with open(self.state_path, "r") as f:
-            return json.load(f)
+        try:
+            with open(self.state_path, "r") as f:
+                return json.load(f)
+        except json.JSONDecodeError as e:
+            # Surface a readable message instead of a bare JSONDecodeError so
+            # the runner's failure path logs something users can act on. Root
+            # causes include partial writes from a prior crash and Resilio/AV
+            # mid-sync interruptions.
+            raise RuntimeError(
+                f"state.json is corrupted at {self.state_path}: {e}"
+            ) from e
 
     def _save_state(self) -> None:
-        with open(self.state_path, "w") as f:
+        # Write atomically: full dump to a sibling .tmp, then os.replace swaps
+        # it into place. Crashing mid-dump leaves the old state.json intact
+        # instead of truncating it and breaking the next load.
+        import os
+        tmp_path = self.state_path.with_suffix(self.state_path.suffix + ".tmp")
+        with open(tmp_path, "w") as f:
             json.dump(self._state, f, indent=2)
+        os.replace(tmp_path, self.state_path)
 
     @classmethod
     def find(cls, start: Path | None = None) -> "Project":

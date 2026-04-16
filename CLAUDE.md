@@ -9,7 +9,7 @@ CLI-first Gaussian splatting pipeline. Takes COLMAP data through: auto-clean →
 ```bash
 cd H:\001_ProjectCache\1000_Coding\Splatpipe
 pip install -e ".[dev]"
-pytest tests/ -v                    # Run tests (377 tests, ~17s)
+pytest tests/ -v                    # Run tests (417 tests, ~22s)
 splatpipe --help                    # CLI commands
 splatpipe web                       # Launch dashboard
 ```
@@ -60,7 +60,8 @@ splatpipe/                    # repo root
       base.py                 # Abstract Trainer, TrainResult dataclass
       postshot.py             # PostshotTrainer (Popen + progress parsing)
       lichtfeld.py            # LichtfeldTrainer (--max-cap uses actual count)
-      registry.py             # {"postshot": PostshotTrainer, "lichtfeld": LichtfeldTrainer}
+      passthrough.py          # PassthroughTrainer (no train; .psht export or .ply copy)
+      registry.py             # {"postshot": ..., "lichtfeld": ..., "passthrough": ...}
     steps/                    # Clean, assemble, deploy
       base.py                 # Abstract PipelineStep (debug JSON, env capture)
       colmap_clean.py         # COLMAP cleaning step (outliers + KD-tree + POINTS2D)
@@ -272,8 +273,9 @@ for line in f:
 
 | Tool | Path | Purpose |
 |------|------|---------|
-| Postshot CLI (v1.0.331) | `C:\Program Files\Jawset Postshot\bin\postshot-cli.exe` | `train --import <folder> -p "Splat3" --max-num-splats N` (kSplats for MCMC/Splat3, `--splat-density` for ADC, `--pose-quality` 1–4) |
+| Postshot CLI (v1.0.331) | `C:\Program Files\Jawset Postshot\bin\postshot-cli.exe` | `train --import <folder> -p "Splat3" --max-num-splats N` (kSplats for MCMC/Splat3, `--splat-density` for ADC, `--pose-quality` 1–4); also `export -f file.psht --export-splat out.ply` (used by passthrough trainer) |
 | LichtFeld Studio (v0.5.1) | `C:\Program Files\LichtFeld-Studio\bin\LichtFeld-Studio.exe` | `-d <data> -o <out> --strategy mcmc --max-cap <N> --headless --train [--ppisp]` (actual count) |
+| Passthrough | n/a | No training; extracts PLY from `.psht` (via Postshot CLI `export`) or copies an existing `.ply` straight to assemble. Auto-skips clean + review steps. |
 | splat-transform | `npx @playcanvas/splat-transform` | LOD assembly + SOG compression |
 | SuperSplat | Browser: superspl.at/editor | Manual floater cleanup |
 
@@ -286,7 +288,7 @@ Key config sections: `[tools]`, `[colmap_clean]`, `[postshot]` (profile, gpu, ma
 ## Tests
 
 ```bash
-pytest tests/ -v              # All 362 tests
+pytest tests/ -v              # All 417 tests
 pytest tests/ -k colmap       # Just COLMAP tests
 pytest tests/ -k integration  # End-to-end with tiny data
 pytest tests/ -k trainers     # Trainer abstraction tests

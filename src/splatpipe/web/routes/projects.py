@@ -193,12 +193,16 @@ async def create_project(request: Request):
 
     # Detect source type (file or directory)
     if source_path.is_file():
-        if source_path.suffix.lower() != ".psht":
+        ext = source_path.suffix.lower()
+        if ext == ".psht":
+            fmt = "postshot"
+        elif ext == ".ply":
+            fmt = "ply"
+        else:
             return templates.TemplateResponse("create_project.html", {
                 "request": request, "values": values,
-                "error": "Only .psht files are supported as file input.",
+                "error": "File input must be .psht or .ply.",
             })
-        fmt = "postshot"
     else:
         fmt = detect_alignment_format(source_path)
 
@@ -229,6 +233,10 @@ async def create_project(request: Request):
     if fmt == "postshot":
         # Copy .psht file into project (never modify the original)
         dest = project.get_folder("01_colmap_source") / "source.psht"
+        shutil.copy2(source_path, dest)
+    elif fmt == "ply":
+        # Copy .ply file into project (never modify the original)
+        dest = project.get_folder("01_colmap_source") / "source.ply"
         shutil.copy2(source_path, dest)
     else:
         # Create symlink/junction from 01_colmap_source to data directory
@@ -341,7 +349,16 @@ async def update_trainer(request: Request, project_path: str):
     trainer = str(form.get("trainer", "postshot"))
     proj = Project(Path(project_path))
     proj.set_trainer(trainer)
-    return _toast(f"Trainer set to {trainer}")
+    label = (
+        f"Trainer set to {trainer} — single LOD, clean step disabled"
+        if trainer == "passthrough"
+        else f"Trainer set to {trainer}"
+    )
+    resp = _toast(label)
+    # set_trainer can change visible state (LOD list, enabled steps, banner) —
+    # tell HTMX to refresh those panels. Listened to via hx-trigger="trainer-changed from:body".
+    resp.headers["HX-Trigger"] = "trainer-changed"
+    return resp
 
 
 @router.post("/{project_path:path}/update-lods")
@@ -643,6 +660,8 @@ async def project_detail(request: Request, project_path: str):
         "export": "Export",
     }
 
+    from ...core.constants import STEP_DESCRIPTIONS
+
     return templates.TemplateResponse("project_detail.html", {
         "request": request,
         "project": {
@@ -665,6 +684,7 @@ async def project_detail(request: Request, project_path: str):
         "review_lods": review_lods,
         "history": proj.get_history(),
         "step_labels": step_labels,
+        "step_descriptions": STEP_DESCRIPTIONS,
         "scene_config": _Obj({k: _Obj(v) if isinstance(v, dict) else v for k, v in proj.scene_config.items()}),
     })
 

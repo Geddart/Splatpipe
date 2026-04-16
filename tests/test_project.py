@@ -178,3 +178,136 @@ def test_set_export_folder(tmp_path):
     # Verify persisted
     project2 = Project(project.root)
     assert project2.export_folder == r"Z:\output\test"
+
+
+# ── Passthrough trainer + .ply source coverage ────────────────────────
+
+
+def test_create_project_psht_defaults_to_passthrough(tmp_path):
+    """Project created from a .psht source auto-defaults to passthrough trainer."""
+    project = Project.create(tmp_path / "proj", "PsTest", source_type="postshot")
+    assert project.trainer == "passthrough"
+    assert len(project.lod_levels) == 1
+    assert project.is_step_enabled("clean") is False
+    assert project.scene_config["splat_budget"] == 0
+
+
+def test_create_project_ply_defaults_to_passthrough(tmp_path):
+    """Project created from a .ply source auto-defaults to passthrough trainer."""
+    project = Project.create(tmp_path / "proj", "PlyTest", source_type="ply")
+    assert project.trainer == "passthrough"
+    assert len(project.lod_levels) == 1
+
+
+def test_create_project_colmap_keeps_postshot_default(tmp_path):
+    """Regression: COLMAP source still defaults to postshot trainer + 6 LODs."""
+    project = Project.create(tmp_path / "proj", "ColTest", source_type="colmap_text")
+    assert project.trainer == "postshot"
+    assert len(project.lod_levels) == 6
+    assert project.is_step_enabled("clean") is False  # default disabled
+
+
+def test_create_project_explicit_trainer_overrides_default(tmp_path):
+    """Explicit trainer arg wins over the source-type smart default."""
+    project = Project.create(
+        tmp_path / "proj", "Override",
+        source_type="postshot",
+        trainer="lichtfeld",
+    )
+    assert project.trainer == "lichtfeld"
+    # No LOD trim because explicit trainer != passthrough
+    assert len(project.lod_levels) == 6
+
+
+def test_set_trainer_to_passthrough_trims_lods(tmp_path):
+    """Switching trainer to passthrough trims multi-LOD config to 1."""
+    project = Project.create(tmp_path / "proj", "Multi", trainer="postshot")
+    assert len(project.lod_levels) == 6
+
+    project.set_trainer("passthrough")
+    assert project.trainer == "passthrough"
+    assert len(project.lod_levels) == 1
+    assert project.lod_levels[0]["name"] == "lod0"
+    assert project.is_step_enabled("clean") is False
+    assert project.scene_config["splat_budget"] == 0
+
+
+def test_set_trainer_passthrough_persists_to_disk(tmp_path):
+    """set_trainer changes are written to state.json."""
+    project = Project.create(tmp_path / "proj", "Disk", trainer="postshot")
+    project.set_trainer("passthrough")
+
+    project2 = Project(project.root)
+    assert project2.trainer == "passthrough"
+    assert len(project2.lod_levels) == 1
+    assert project2.is_step_enabled("clean") is False
+
+
+def test_source_file_returns_psht_path(tmp_path):
+    """source_file() returns the local .psht copy when source_type is postshot."""
+    project = Project.create(tmp_path / "proj", "T", source_type="postshot")
+    psht = project.get_folder("01_colmap_source") / "source.psht"
+    psht.write_bytes(b"\x00")
+    assert project.source_file() == psht
+
+
+def test_source_file_returns_ply_path(tmp_path):
+    """source_file() returns the local .ply copy when source_type is ply."""
+    project = Project.create(tmp_path / "proj", "T", source_type="ply")
+    ply = project.get_folder("01_colmap_source") / "source.ply"
+    ply.write_bytes(b"ply\n")
+    assert project.source_file() == ply
+
+
+def test_source_file_returns_none_for_colmap(tmp_path):
+    """source_file() returns None for directory-based sources."""
+    project = Project.create(tmp_path / "proj", "T", source_type="colmap_text")
+    assert project.source_file() is None
+
+
+def test_load_state_corrupt_json_raises_runtime_error(tmp_path):
+    """A truncated state.json must surface a readable error, not a bare JSONDecodeError."""
+    project = Project.create(tmp_path / "proj", "T")
+    # Simulate partial write — truncate the file
+    project.state_path.write_text('{"name": "T", "trainer":')
+
+    fresh = Project(project.root)
+    with pytest.raises(RuntimeError, match="state.json is corrupted"):
+        _ = fresh.state
+
+
+def test_save_state_is_atomic(tmp_path, monkeypatch):
+    """Regression: state.json is written to a .tmp sibling and os.replace'd in.
+
+    Verifies the atomic-swap contract — no truncated state.json if the write crashes.
+    """
+    project = Project.create(tmp_path / "proj", "T")
+    calls: list = []
+
+    import os as _os
+    real_replace = _os.replace
+
+    def spy_replace(src, dst):
+        calls.append((str(src), str(dst)))
+        real_replace(src, dst)
+
+    monkeypatch.setattr("os.replace", spy_replace)
+    project.set_name("Renamed")
+
+    assert calls, "set_name should trigger an os.replace"
+    src, dst = calls[-1]
+    assert src.endswith(".tmp")
+    assert dst == str(project.state_path)
+    # Final file is still valid JSON with the new name
+    assert Project(project.root).name == "Renamed"
+
+
+def test_source_type_falls_back_to_ply_extension(tmp_path):
+    """source_type fallback detects .ply from colmap_source path."""
+    project = Project.create(tmp_path / "proj", "T",
+                             colmap_source="some/scene.ply")
+    # state.source_type is empty string, but property infers 'ply' from extension
+    project.state["source_type"] = ""
+    project._save_state()
+    project2 = Project(project.root)
+    assert project2.source_type == "ply"

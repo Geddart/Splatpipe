@@ -150,10 +150,52 @@ class TestInitCommand:
         assert "Postshot" in result.output
         state = json.loads((output / "state.json").read_text())
         assert state["source_type"] == "postshot"
+        # .psht auto-defaults to passthrough trainer
+        assert state["trainer"] == "passthrough"
+        assert len(state["lod_levels"]) == 1
         # Verify file was copied
         copied = output / "01_colmap_source" / "source.psht"
         assert copied.exists()
         assert copied.read_bytes() == b"fake psht data"
+
+    def test_init_ply_file(self, tmp_path):
+        """splatpipe init with .ply file copies file and defaults to passthrough."""
+        ply_file = tmp_path / "scene.ply"
+        ply_file.write_bytes(b"ply\nformat ascii 1.0\nend_header\n")
+        output = tmp_path / "proj"
+
+        result = runner.invoke(app, [
+            "init", str(ply_file),
+            "--name", "PlyProject",
+            "--output", str(output),
+        ])
+
+        assert result.exit_code == 0, result.output
+        assert "PLY" in result.output
+        state = json.loads((output / "state.json").read_text())
+        assert state["source_type"] == "ply"
+        assert state["trainer"] == "passthrough"
+        assert len(state["lod_levels"]) == 1
+        copied = output / "01_colmap_source" / "source.ply"
+        assert copied.exists()
+        assert copied.read_bytes() == ply_file.read_bytes()
+
+    def test_init_explicit_trainer_overrides_auto_passthrough(self, tmp_path):
+        """`--trainer postshot` with .psht source overrides the smart default."""
+        psht_file = tmp_path / "scene.psht"
+        psht_file.write_bytes(b"\x00")
+        output = tmp_path / "proj"
+
+        result = runner.invoke(app, [
+            "init", str(psht_file),
+            "--name", "Override",
+            "--trainer", "postshot",
+            "--output", str(output),
+        ])
+
+        assert result.exit_code == 0, result.output
+        state = json.loads((output / "state.json").read_text())
+        assert state["trainer"] == "postshot"
 
 
 class TestExportCommand:

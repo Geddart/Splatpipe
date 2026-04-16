@@ -171,7 +171,7 @@ _VIEWER_TEMPLATE = """\
   <script type="importmap">
   {{
     "imports": {{
-      "playcanvas": "https://cdn.jsdelivr.net/npm/playcanvas@2.17/+esm"
+      "playcanvas": "https://cdn.jsdelivr.net/npm/playcanvas@2.17.0/+esm"
     }}
   }}
   </script>
@@ -179,7 +179,7 @@ _VIEWER_TEMPLATE = """\
   import * as pc from 'playcanvas';
 
   const CAMERA_CONTROLS_URL =
-    'https://cdn.jsdelivr.net/npm/playcanvas/scripts/esm/camera-controls.mjs';
+    'https://cdn.jsdelivr.net/npm/playcanvas@2.17.0/scripts/esm/camera-controls.mjs';
   const {{ CameraControls }} = await import(CAMERA_CONTROLS_URL);
 
   const canvas = document.getElementById('app-canvas');
@@ -253,7 +253,8 @@ _VIEWER_TEMPLATE = """\
 
   // --- Load viewer config ---
   const _DEFAULTS = {{
-    camera: {{ pitch_min: -89, pitch_max: 89, zoom_min: 1, zoom_max: 200,
+    camera: {{ enabled: false, pitch_min: -89, pitch_max: 89,
+              zoom_min: 1, zoom_max: 200,
               ground_height: 0.3, bounds_radius: 150 }},
     splat_budget: 0,
     annotations: [],
@@ -313,7 +314,11 @@ _VIEWER_TEMPLATE = """\
   camera.setLocalPosition(0, 2, -10);
   app.root.addChild(camera);
   camera.addComponent('script');
-  camera.addComponent('audiolistener');
+  // Only attach the audiolistener when the scene actually has audio sources —
+  // saves the engine some idle work when there's nothing to play.
+  if ((viewerConfig.audio || []).length > 0) {{
+    camera.addComponent('audiolistener');
+  }}
   const cc = camera.script.create(CameraControls);
   Object.assign(cc, {{
     sceneSize: 500,
@@ -325,9 +330,13 @@ _VIEWER_TEMPLATE = """\
   }});
 
   // --- Apply camera constraints from config ---
+  // Camera constraints are opt-in (cam.enabled === true). When disabled,
+  // the user can fly anywhere — no pitch/zoom/ground/bounds clamping.
   const cam = viewerConfig.camera || _DEFAULTS.camera;
-  cc.pitchRange = new pc.Vec2(cam.pitch_min, cam.pitch_max);
-  cc.zoomRange = new pc.Vec2(cam.zoom_min, cam.zoom_max);
+  if (cam.enabled === true) {{
+    cc.pitchRange = new pc.Vec2(cam.pitch_min, cam.pitch_max);
+    cc.zoomRange = new pc.Vec2(cam.zoom_min, cam.zoom_max);
+  }}
 
   // Quality preset buttons
   const buttons = document.querySelectorAll('.quality-btn');
@@ -497,13 +506,15 @@ _VIEWER_TEMPLATE = """\
     const displayed = app.stats.frame.gsplats || 0;
     const displayedM = (displayed / 1_000_000).toFixed(2);
     splatCountEl.textContent = 'Splats: ' + displayedM + 'M';
-    // Clamp camera position: ground + bounds
-    const pos = camera.getLocalPosition();
-    const cx = pc.math.clamp(pos.x, -cam.bounds_radius, cam.bounds_radius);
-    const cy = Math.max(pos.y, cam.ground_height);
-    const cz = pc.math.clamp(pos.z, -cam.bounds_radius, cam.bounds_radius);
-    if (cx !== pos.x || cy !== pos.y || cz !== pos.z) {{
-      camera.setLocalPosition(cx, cy, cz);
+    // Clamp camera position: ground + bounds (only when constraints enabled)
+    if (cam.enabled === true) {{
+      const pos = camera.getLocalPosition();
+      const cx = pc.math.clamp(pos.x, -cam.bounds_radius, cam.bounds_radius);
+      const cy = Math.max(pos.y, cam.ground_height);
+      const cz = pc.math.clamp(pos.z, -cam.bounds_radius, cam.bounds_radius);
+      if (cx !== pos.x || cy !== pos.y || cz !== pos.z) {{
+        camera.setLocalPosition(cx, cy, cz);
+      }}
     }}
     // Update annotation marker screen positions
     const _sp = new pc.Vec3();

@@ -1,12 +1,14 @@
 """Tests for trainer abstraction, Postshot, and LichtFeld trainers."""
 
 import io
+import subprocess
 from unittest.mock import patch, MagicMock
 
 import pytest
 
 from splatpipe.trainers.postshot import PostshotTrainer
 from splatpipe.trainers.lichtfeld import LichtfeldTrainer
+from splatpipe.trainers.passthrough import PassthroughTrainer
 from splatpipe.trainers.registry import get_trainer, list_trainers
 
 
@@ -36,6 +38,15 @@ class TestRegistry:
         trainer = get_trainer("lichtfeld", config)
         assert isinstance(trainer, LichtfeldTrainer)
         assert trainer.name == "lichtfeld"
+
+    def test_get_passthrough(self):
+        config = {"tools": {}}
+        trainer = get_trainer("passthrough", config)
+        assert isinstance(trainer, PassthroughTrainer)
+        assert trainer.name == "passthrough"
+
+    def test_list_trainers_includes_passthrough(self):
+        assert "passthrough" in list_trainers()
 
     def test_unknown_trainer(self):
         with pytest.raises(KeyError, match="Unknown trainer"):
@@ -605,6 +616,37 @@ class TestLichtfeldTrainer:
         assert trainer.parse_progress("iteration 15000/30000") == pytest.approx(0.5)
         assert trainer.parse_progress("Other text") is None
 
+    def test_stderr_merged_into_stdout(self, tmp_path):
+        """Regression: stderr must merge into stdout so a full stderr buffer
+        can't deadlock the process while we're only consuming stdout."""
+        fake_root = tmp_path / "lichtfeld"
+        fake_exe = fake_root / "bin" / "LichtFeld-Studio.exe"
+        fake_exe.parent.mkdir(parents=True)
+        fake_exe.write_text("")
+        config = {"tools": {"lichtfeld_studio": str(fake_root)}}
+        trainer = LichtfeldTrainer(config)
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = io.StringIO("")
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = None
+
+        with patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
+            gen = trainer.train_lod(
+                tmp_path / "colmap", tmp_path / "output",
+                "lod0", 1_000_000,
+            )
+            try:
+                while True:
+                    next(gen)
+            except StopIteration:
+                pass
+
+        _args, kwargs = mock_popen.call_args
+        assert kwargs.get("stderr") is subprocess.STDOUT, (
+            "Lichtfeld trainer must merge stderr into stdout to avoid buffer deadlock"
+        )
+
     def test_max_cap_uses_actual_count(self, tmp_path):
         """Verify --max-cap gets actual splat count, not kSplats."""
         fake_root = tmp_path / "lichtfeld"
@@ -937,3 +979,148 @@ class TestLichtfeldTrainer:
         cmd = mock_popen.call_args[0][0]
         idx = cmd.index("--max-width")
         assert cmd[idx + 1] == "1920"
+
+
+class TestPassthroughTrainer:
+    def test_validate_environment_ok(self):
+        """Passthrough defers tool checks to runtime — always returns ok."""
+        trainer = PassthroughTrainer({})
+        ok, msg = trainer.validate_environment()
+        assert ok is True
+
+    def test_parse_progress_returns_none(self):
+        """Passthrough has no parseable progress."""
+        trainer = PassthroughTrainer({})
+        assert trainer.parse_progress("anything") is None
+
+    @staticmethod
+    def _fake_psht_proc(stdout_text="export ok\n", returncode=0):
+        """Build a mock Popen proc that works with the reader-thread pattern.
+
+        The reader thread does `for line in iter(proc.stdout.readline, "")`, so
+        stdout must be a real stream-like object whose readline() eventually
+        returns ''. io.StringIO does exactly that.
+        """
+        proc = MagicMock()
+        proc.stdout = io.StringIO(stdout_text)
+        proc.returncode = returncode
+        proc.poll.return_value = returncode  # process already exited
+        proc.wait.return_value = None
+        return proc
+
+    def test_psht_source_runs_postshot_export(self, tmp_path):
+        """`.psht` input runs `postshot-cli export -f source --export-splat out`."""
+        config = _postshot_config(tmp_path)
+        trainer = PassthroughTrainer(config)
+        psht = tmp_path / "scene.psht"
+        psht.write_bytes(b"\x00")
+        out_dir = tmp_path / "training"
+
+        mock_proc = self._fake_psht_proc()
+
+        # Make the output PLY appear (real Postshot would write it).
+        def fake_popen(cmd, *args, **kwargs):
+            ply_arg = cmd[cmd.index("--export-splat") + 1]
+            from pathlib import Path as _P
+            _P(ply_arg).write_bytes(b"ply\n")
+            return mock_proc
+
+        with patch("splatpipe.trainers.passthrough.subprocess.Popen",
+                   side_effect=fake_popen) as mock_popen, \
+             patch("splatpipe.trainers.passthrough.time.sleep", return_value=None):
+            gen = trainer.train_lod(psht, out_dir, "lod0", 0)
+            try:
+                while True:
+                    next(gen)
+            except StopIteration as e:
+                result = e.value
+
+        cmd = mock_popen.call_args[0][0]
+        assert "export" in cmd
+        assert "-f" in cmd
+        assert str(psht) in cmd
+        assert "--export-splat" in cmd
+        assert result.success is True
+        assert result.output_ply.endswith("lod0.ply")
+        assert result.returncode == 0
+
+    def test_ply_source_copies_file(self, tmp_path):
+        """`.ply` input is copied straight to the output."""
+        trainer = PassthroughTrainer({})
+        ply = tmp_path / "scene.ply"
+        ply.write_bytes(b"ply\nformat ascii 1.0\nend_header\n")
+        out_dir = tmp_path / "training"
+
+        gen = trainer.train_lod(ply, out_dir, "lod0", 0)
+        try:
+            while True:
+                next(gen)
+        except StopIteration as e:
+            result = e.value
+
+        out_ply = out_dir / "lod0.ply"
+        assert out_ply.exists()
+        assert out_ply.read_bytes() == ply.read_bytes()
+        assert result.success is True
+        assert result.output_ply == str(out_ply)
+
+    def test_unknown_extension_returns_failure(self, tmp_path):
+        """Unsupported source extension yields a failure result, no exception."""
+        trainer = PassthroughTrainer({})
+        bogus = tmp_path / "scene.obj"
+        bogus.write_text("# obj")
+        out_dir = tmp_path / "training"
+
+        gen = trainer.train_lod(bogus, out_dir, "lod0", 0)
+        try:
+            while True:
+                next(gen)
+        except StopIteration as e:
+            result = e.value
+
+        assert result.success is False
+        assert ".obj" in result.stderr or "Passthrough requires" in result.stderr
+        assert result.output_ply == ""
+
+    def test_psht_path_does_not_block_on_communicate(self, tmp_path):
+        """Regression: the .psht branch must not call Popen.communicate() —
+        that call blocks the generator and prevents the runner from cancelling
+        during a long Postshot export. Check the source contains the
+        reader-thread pattern instead, not the blocking .communicate() call.
+        """
+        import inspect
+        import re
+        from splatpipe.trainers import passthrough as passthrough_mod
+        src = inspect.getsource(passthrough_mod.PassthroughTrainer.train_lod)
+        # Strip comments first so a comment mentioning communicate() doesn't
+        # fool the check.
+        src_code = re.sub(r"(?m)^\s*#.*$", "", src)
+        assert ".communicate(" not in src_code, (
+            "PassthroughTrainer must not call Popen.communicate() — use a "
+            "reader thread + periodic yields so cancel can fire during extraction."
+        )
+        # And the expected pattern is present:
+        assert "queue.Queue" in src_code
+        assert "threading.Thread" in src_code
+
+    def test_postshot_failure_returns_failure(self, tmp_path):
+        """Non-zero return code from postshot-cli surfaces as failure."""
+        config = _postshot_config(tmp_path)
+        trainer = PassthroughTrainer(config)
+        psht = tmp_path / "scene.psht"
+        psht.write_bytes(b"\x00")
+        out_dir = tmp_path / "training"
+
+        mock_proc = self._fake_psht_proc(stdout_text="error\n", returncode=1)
+        with patch("splatpipe.trainers.passthrough.subprocess.Popen",
+                   return_value=mock_proc), \
+             patch("splatpipe.trainers.passthrough.time.sleep", return_value=None):
+            gen = trainer.train_lod(psht, out_dir, "lod0", 0)
+            try:
+                while True:
+                    next(gen)
+            except StopIteration as e:
+                result = e.value
+
+        assert result.success is False
+        assert result.returncode == 1

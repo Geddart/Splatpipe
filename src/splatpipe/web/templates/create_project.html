@@ -28,7 +28,7 @@
                                class="input input-bordered w-full" required>
                     </div>
                     <div class="form-control w-full">
-                        <label class="label"><span class="label-text">Source (Postshot file, COLMAP folder, etc.)</span></label>
+                        <label class="label"><span class="label-text">Source (Postshot, PLY, COLMAP folder, etc.)</span></label>
                         <div class="join w-full">
                             <input type="text" name="colmap_dir" id="path-colmap_dir" value="{{ values.get('colmap_dir', '') }}"
                                    placeholder="H:\path\to\alignment\data"
@@ -38,7 +38,7 @@
                             <button type="button" class="btn btn-outline join-item"
                                     onclick="openBrowser('path-colmap_dir', 'file')">File</button>
                         </div>
-                        <label class="label"><span class="label-text-alt">Postshot (.psht), COLMAP (.txt/.bin), Bundler, RealityScan, BlocksExchange</span></label>
+                        <label class="label"><span class="label-text-alt">Postshot (.psht), PLY (.ply), COLMAP (.txt/.bin), Bundler, RealityScan, BlocksExchange. Finished splats (.psht / .ply) auto-default to Passthrough trainer.</span></label>
                     </div>
                 </div>
             </div>

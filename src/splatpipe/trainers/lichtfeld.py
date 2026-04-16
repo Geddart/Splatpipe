@@ -102,7 +102,6 @@ class LichtfeldTrainer(Trainer):
 
         t0 = time.time()
         stdout_lines = []
-        stderr_lines = []
 
         yield ProgressEvent(
             step="train", progress=0.0,
@@ -110,8 +109,12 @@ class LichtfeldTrainer(Trainer):
         )
 
         self._proc = None
+        # Merge stderr into stdout so the reader below drains both pipes as one.
+        # Leaving stderr on its own PIPE would let LichtFeld block on a full
+        # stderr buffer (~64KB) while we're only consuming stdout, hanging the
+        # whole process.
         proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, bufsize=1,
         )
         self._proc = proc
@@ -128,7 +131,13 @@ class LichtfeldTrainer(Trainer):
 
         proc.wait()
         self._proc = None
-        stderr_lines = proc.stderr.read().splitlines() if proc.stderr else []
+        full_output = "".join(stdout_lines)
+        # On failure, surface the tail of the merged output as the stderr field
+        # so the debug JSON still points at something useful.
+        stderr_payload = (
+            "" if proc.returncode == 0
+            else "\n".join(full_output.splitlines()[-40:])
+        )
         duration = time.time() - t0
 
         # With --output-name, LichtFeld outputs <name>.ply in the output dir
@@ -148,8 +157,8 @@ class LichtfeldTrainer(Trainer):
             success=proc.returncode == 0,
             command=[str(c) for c in cmd],
             returncode=proc.returncode,
-            stdout="".join(stdout_lines),
-            stderr="\n".join(stderr_lines),
+            stdout=full_output,
+            stderr=stderr_payload,
             duration_s=round(duration, 2),
             output_dir=str(output_dir / lod_name),
             output_ply=str(ply_path) if ply_path.exists() else "",

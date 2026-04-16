@@ -183,7 +183,36 @@ class TestProjectNew:
         assert new_dir.exists()
         state = json.loads((new_dir / "state.json").read_text())
         assert state["source_type"] == "postshot"
+        # .psht auto-defaults to passthrough trainer
+        assert state["trainer"] == "passthrough"
         assert (new_dir / "01_colmap_source" / "source.psht").exists()
+
+    def test_create_project_ply_file(self, web_env):
+        """POST /projects/new with .ply file creates passthrough project."""
+        ply = web_env["tmp_path"] / "scene.ply"
+        ply.write_bytes(b"ply\nformat ascii 1.0\nend_header\n")
+        r = web_env["client"].post("/projects/new", data={
+            "name": "PlyProject",
+            "colmap_dir": str(ply),
+        }, follow_redirects=False)
+        assert r.status_code == 303
+        new_dir = web_env["projects_root"] / "PlyProject"
+        state = json.loads((new_dir / "state.json").read_text())
+        assert state["source_type"] == "ply"
+        assert state["trainer"] == "passthrough"
+        assert len(state["lod_levels"]) == 1
+        assert (new_dir / "01_colmap_source" / "source.ply").exists()
+
+    def test_create_project_unsupported_file_rejected(self, web_env):
+        """POST /projects/new rejects unsupported file extensions."""
+        bogus = web_env["tmp_path"] / "scene.obj"
+        bogus.write_text("# obj")
+        r = web_env["client"].post("/projects/new", data={
+            "name": "Bogus",
+            "colmap_dir": str(bogus),
+        })
+        assert r.status_code == 200
+        assert "psht" in r.text.lower() or "ply" in r.text.lower()
 
 
 class TestProjectDetail:
@@ -221,6 +250,93 @@ class TestUpdateTrainer:
         assert r.status_code == 200
         proj = Project(web_env["project"].root)
         assert proj.trainer == "lichtfeld"
+
+    def test_update_trainer_emits_hx_trigger(self, web_env):
+        """update-trainer sends HX-Trigger so panels refresh."""
+        path = str(web_env["project"].root)
+        r = web_env["client"].post(f"/projects/{path}/update-trainer", data={"trainer": "passthrough"})
+        assert r.status_code == 200
+        assert "trainer-changed" in r.headers.get("hx-trigger", "")
+
+    def test_update_trainer_to_passthrough_trims_lods(self, web_env):
+        """Switching to passthrough trims multi-LOD project to single LOD."""
+        path = str(web_env["project"].root)
+        # Default test project has 2+ LODs
+        proj = Project(web_env["project"].root)
+        original_lods = len(proj.lod_levels)
+        assert original_lods > 1
+
+        r = web_env["client"].post(f"/projects/{path}/update-trainer", data={"trainer": "passthrough"})
+        assert r.status_code == 200
+
+        proj = Project(web_env["project"].root)
+        assert proj.trainer == "passthrough"
+        assert len(proj.lod_levels) == 1
+        assert proj.is_step_enabled("clean") is False
+
+
+class TestCameraConstraintsToggle:
+    """The Enabled toggle in the Camera Constraints panel must persist both on and off states."""
+
+    _FORM_HEADERS = {"Content-Type": "application/x-www-form-urlencoded"}
+
+    def test_toggle_on(self, web_env):
+        """Hidden+checkbox pattern when CHECKED sends both values; last (true) wins."""
+        path = str(web_env["project"].root)
+        r = web_env["client"].post(
+            f"/projects/{path}/update-scene-config",
+            content="section=camera&enabled=false&enabled=true",
+            headers=self._FORM_HEADERS,
+        )
+        assert r.status_code == 200
+        proj = Project(web_env["project"].root)
+        assert proj.scene_config["camera"]["enabled"] is True
+
+    def test_toggle_off(self, web_env):
+        """When the checkbox is UNCHECKED, only the hidden enabled=false reaches the server."""
+        path = str(web_env["project"].root)
+        # First enable
+        web_env["client"].post(
+            f"/projects/{path}/update-scene-config",
+            content="section=camera&enabled=false&enabled=true",
+            headers=self._FORM_HEADERS,
+        )
+        proj = Project(web_env["project"].root)
+        assert proj.scene_config["camera"]["enabled"] is True
+
+        # Then disable — only the hidden input's "false" is sent (unchecked checkbox is omitted).
+        r = web_env["client"].post(
+            f"/projects/{path}/update-scene-config",
+            content="section=camera&enabled=false",
+            headers=self._FORM_HEADERS,
+        )
+        assert r.status_code == 200
+        proj = Project(web_env["project"].root)
+        assert proj.scene_config["camera"]["enabled"] is False
+
+    def test_toggle_off_preserves_constraint_values(self, web_env):
+        """Toggling enabled should not wipe pitch/zoom/bounds fields set earlier."""
+        path = str(web_env["project"].root)
+        # Seed constraint values
+        web_env["client"].post(
+            f"/projects/{path}/update-scene-config",
+            data={
+                "section": "camera",
+                "pitch_min": "-45", "pitch_max": "45",
+                "zoom_min": "2", "zoom_max": "100",
+                "ground_height": "0.5", "bounds_radius": "50",
+            },
+        )
+        # Now toggle off (simulate unchecked checkbox — only hidden input submits)
+        web_env["client"].post(
+            f"/projects/{path}/update-scene-config",
+            data={"section": "camera", "enabled": "false"},
+        )
+        proj = Project(web_env["project"].root)
+        cam = proj.scene_config["camera"]
+        assert cam["enabled"] is False
+        assert cam["pitch_min"] == -45
+        assert cam["bounds_radius"] == 50
 
 
 class TestStepSettings:

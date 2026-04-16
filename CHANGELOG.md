@@ -7,11 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-04-16
+
 ### Security
 - Bumped minimum `python-multipart` to 0.0.22 (CVE-2026-24486)
 - Bumped minimum `pytest` to 9.0.3 (CVE-2025-71176)
 
+### Fixed
+- **LichtFeld Studio no longer risks a buffer-deadlock hang**: the trainer was opening `stderr=subprocess.PIPE` and only reading it after the stdout loop, so a LichtFeld run that emitted more than ~64 KB of stderr could block the subprocess indefinitely. Merged stderr into stdout (same pattern the Postshot trainer already uses); the stderr tail is still surfaced on failure via `TrainResult.stderr`.
+- **`state.json` corruption surfaces a readable error instead of a JSONDecodeError traceback**: `Project._load_state` now raises `RuntimeError("state.json is corrupted at ...")` so the runner's failure path records something the user can act on.
+- **`state.json` writes are now atomic**: `Project._save_state` writes to `state.json.tmp` and then `os.replace`s it into place, so a crash or kill mid-write no longer leaves a truncated state file behind.
+- **Passthrough cancel takes effect during extraction, not after**: `PassthroughTrainer` no longer blocks the generator with `Popen.communicate()` during `.psht` export. It now uses a reader thread + 2s heartbeat yields (same pattern as `PostshotTrainer`), so cancel clicks kill the process within a couple of seconds instead of waiting for the full export to finish.
+- **Manual review approval is preserved under a tight race with the runner**: `_execute_review` now re-reads state one more time right before recording `waiting`, so an approval that lands between the initial check and the write short-circuits cleanly instead of getting clobbered.
+- **Camera Constraints toggle now actually turns off**: the `Enabled` checkbox was missing a hidden `enabled=false` sibling input, so unchecking sent nothing and the merge preserved the previous `enabled=true`. Added the hidden input; also added regression tests for both the on and off transitions.
+- **Passthrough review step preserves existing completed summary**: when a user had already approved the review step (manually or in a prior run), `_execute_review` now short-circuits to the "already approved" branch before the passthrough auto-approve branch, so prior summary data isn't clobbered.
+- **Viewer no longer hangs on PlayCanvas 2.17.x patch releases**: pinned the viewer's PlayCanvas import to `2.17.0` (was `2.17`, which floated to 2.17.2). Patches 2.17.1 and 2.17.2 introduced a regression that fired `Cannot read properties of undefined (reading 'listener')` every frame in the engine update loop and prevented splat rendering (splat count stuck at 0.00M, loading spinner never hides). Camera-controls.mjs is now version-pinned the same way to keep them in lockstep.
+- `audiolistener` component is now only attached when `viewer-config.json` actually has audio sources — saves the engine some idle work in the common no-audio case.
+
 ### Added
+- **Camera constraints toggle**: new `Enabled` checkbox in the Camera Constraints panel. Default is OFF — the viewer lets the user fly anywhere with no pitch/zoom/ground/bounds clamping. Turning it on applies the existing constraint values. Fixed a related state bug where partial scene-config saves (e.g. one number field) wiped sibling fields; `Project.set_scene_config_section()` now merges dict updates instead of replacing them.
+- **Passthrough trainer**: publish a finished `.psht` or `.ply` to Bunny CDN without retraining. Selected from the trainer dropdown — extracts the embedded splat (`.psht` via `postshot-cli export`) or copies the file (`.ply`), then runs assemble + export. Auto-skips `clean` and `review` steps.
+- **Standalone `.ply` source format**: `splatpipe init scene.ply` and the web "+ New Project" form now accept raw `.ply` files. Auto-defaults to passthrough trainer.
+- **Smart trainer default**: projects created from `.psht` or `.ply` sources auto-select the passthrough trainer; COLMAP sources still default to postshot.
+- **Step info tooltips**: every pipeline step in the project detail view now shows a hover info icon explaining what the step does.
+- **Passthrough mode banner** on the project detail page when trainer is passthrough, with a one-line summary of what runs.
 - Postshot 1.0.331 `--pose-quality` support (1=Fast, 4=Best, default 3)
 - Postshot 1.0.287 support: Splat ADC/MCMC profiles, GPU selection, SH degree control, no-recenter, image selection mode
 - LichtFeld Studio v0.5.1 support: PPISP per-camera appearance modeling (`--ppisp`, `--ppisp-controller`)
@@ -166,7 +185,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Windows path normalization for runner lookup (URL forward-slash vs `Path()` backslash)
 - Postshot progress parser matched real v1.0.185 output format
 
-[Unreleased]: https://github.com/Geddart/Splatpipe/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/Geddart/Splatpipe/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Geddart/Splatpipe/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/Geddart/Splatpipe/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/Geddart/Splatpipe/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/Geddart/Splatpipe/compare/v0.3.0...v0.3.1

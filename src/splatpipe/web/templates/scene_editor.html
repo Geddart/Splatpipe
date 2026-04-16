@@ -220,7 +220,8 @@
 
   // Load viewer config from preview
   const _DEFAULTS = {
-    camera: { pitch_min: -89, pitch_max: 89, zoom_min: 1, zoom_max: 200,
+    camera: { enabled: false, pitch_min: -89, pitch_max: 89,
+              zoom_min: 1, zoom_max: 200,
               ground_height: 0.3, bounds_radius: 150 },
     splat_budget: 0,
     annotations: [],
@@ -265,9 +266,12 @@
     enableOrbit: true, enablePan: true, focusPoint: focusPoint
   });
 
+  // Camera constraints are opt-in (cam.enabled === true).
   const cam = viewerConfig.camera || _DEFAULTS.camera;
-  cc.pitchRange = new pc.Vec2(cam.pitch_min, cam.pitch_max);
-  cc.zoomRange = new pc.Vec2(cam.zoom_min, cam.zoom_max);
+  if (cam.enabled === true) {
+    cc.pitchRange = new pc.Vec2(cam.pitch_min, cam.pitch_max);
+    cc.zoomRange = new pc.Vec2(cam.zoom_min, cam.zoom_max);
+  }
 
   // Splat budget
   const isMobile = pc.platform.mobile;
@@ -468,13 +472,15 @@
   const _tp = new pc.Vec3();
   const _camPos = new pc.Vec3();
   app.on('update', function() {
-    // Clamp camera position
-    const pos = camera.getLocalPosition();
-    const cx = pc.math.clamp(pos.x, -cam.bounds_radius, cam.bounds_radius);
-    const cy = Math.max(pos.y, cam.ground_height);
-    const cz = pc.math.clamp(pos.z, -cam.bounds_radius, cam.bounds_radius);
-    if (cx !== pos.x || cy !== pos.y || cz !== pos.z) {
-      camera.setLocalPosition(cx, cy, cz);
+    // Clamp camera position (only when constraints enabled)
+    if (cam.enabled === true) {
+      const pos = camera.getLocalPosition();
+      const cx = pc.math.clamp(pos.x, -cam.bounds_radius, cam.bounds_radius);
+      const cy = Math.max(pos.y, cam.ground_height);
+      const cz = pc.math.clamp(pos.z, -cam.bounds_radius, cam.bounds_radius);
+      if (cx !== pos.x || cy !== pos.y || cz !== pos.z) {
+        camera.setLocalPosition(cx, cy, cz);
+      }
     }
 
     // Update annotation marker positions

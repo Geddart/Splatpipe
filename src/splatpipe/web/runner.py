@@ -218,13 +218,43 @@ class PipelineRunner:
         )
 
     def _execute_review(self, proj: Project, base_pct: float, step_range: float) -> None:
-        """Wait for manual review approval — no automated processing."""
+        """Wait for manual review approval — no automated processing.
+
+        Passthrough trainer skips the manual gate entirely: there's nothing
+        to clean up since we just extracted/copied an already-finished splat.
+        """
         # Re-read state from disk (approval may have been set before run-all started)
         proj._state = None
+
+        # Already approved (manually or from a previous passthrough run) — don't
+        # re-record, which would wipe the existing summary.
         if proj.get_step_status(STEP_REVIEW) == "completed":
             self._update(
                 progress=base_pct + step_range,
                 message="Review already approved",
+            )
+            return
+
+        if proj.trainer == "passthrough":
+            proj.record_step(
+                STEP_REVIEW, "completed",
+                summary={"auto_approved": True, "reason": "passthrough trainer"},
+                started_at=self._step_started_at,
+            )
+            self._update(
+                progress=base_pct + step_range,
+                message="Review auto-approved (passthrough)",
+            )
+            return
+
+        # Close the race window: the user may have clicked Approve during the
+        # ms between the first status check above and this write. Re-read
+        # state one more time — if they beat us to it, keep their approval.
+        proj._state = None
+        if proj.get_step_status(STEP_REVIEW) == "completed":
+            self._update(
+                progress=base_pct + step_range,
+                message="Review approved",
             )
             return
 
@@ -245,11 +275,11 @@ class PipelineRunner:
         self._active_trainer = trainer_instance
 
         # Determine source input (file or directory)
-        if proj.source_type == "postshot":
+        if proj.source_type in ("postshot", "ply"):
             source_dir = proj.source_file()
             if not source_dir or not source_dir.exists():
-                raise Exception("Postshot source file not found in project")
-            num_images = 0  # Postshot knows image count internally from .psht
+                raise Exception(f"Source file not found in project (source_type={proj.source_type})")
+            num_images = 0  # Single-file source has no separate image count
         else:
             clean_dir = proj.get_folder(FOLDER_COLMAP_CLEAN)
             clean_has_data = (clean_dir / "cameras.txt").exists() or (clean_dir / "cameras.bin").exists()
