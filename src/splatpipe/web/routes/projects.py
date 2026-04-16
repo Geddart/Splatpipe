@@ -361,6 +361,19 @@ async def update_trainer(request: Request, project_path: str):
     return resp
 
 
+@router.post("/{project_path:path}/update-renderer")
+async def update_renderer(request: Request, project_path: str):
+    """Switch the project's output viewer renderer (playcanvas | spark)."""
+    form = await request.form()
+    renderer = str(form.get("renderer", "playcanvas"))
+    if renderer not in ("playcanvas", "spark"):
+        return _toast(f"Unknown renderer: {renderer}", "error")
+    proj = Project(Path(project_path))
+    proj.set_renderer(renderer)
+    label = "Renderer: PlayCanvas (chunked SOG)" if renderer == "playcanvas" else "Renderer: Spark 2 (.rad streaming)"
+    return _toast(label)
+
+
 @router.post("/{project_path:path}/update-lods")
 async def update_lods(request: Request, project_path: str):
     form = await request.form()
@@ -668,6 +681,7 @@ async def project_detail(request: Request, project_path: str):
             "name": state["name"],
             "path": str(proj.root),
             "trainer": state.get("trainer", "postshot"),
+            "renderer": proj.renderer,
             "lod_levels": state.get("lod_levels", []),
             "created_at": state.get("created_at", ""),
             "alignment_file": proj.alignment_file,

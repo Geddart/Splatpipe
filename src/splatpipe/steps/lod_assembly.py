@@ -881,6 +881,20 @@ class LodAssemblyStep(PipelineStep):
     output_folder = FOLDER_OUTPUT
 
     def run(self, output_dir: Path) -> dict:
+        # Dispatch on project.renderer (default 'playcanvas' for back-compat).
+        if getattr(self.project, "renderer", "playcanvas") == "spark":
+            from ..viewers.spark.assembler import SparkAssembler
+            return SparkAssembler().assemble(self, output_dir)
+        return self._run_playcanvas(output_dir)
+
+    def run_streaming(self, output_dir: Path):
+        if getattr(self.project, "renderer", "playcanvas") == "spark":
+            from ..viewers.spark.assembler import SparkAssembler
+            yield from SparkAssembler().assemble_streaming(self, output_dir)
+            return
+        yield from self._run_playcanvas_streaming(output_dir)
+
+    def _run_playcanvas(self, output_dir: Path) -> dict:
         review_dir = self.project.get_folder(FOLDER_REVIEW)
         lod_levels = self.project.lod_levels
 
@@ -937,8 +951,8 @@ class LodAssemblyStep(PipelineStep):
 
         return result
 
-    def run_streaming(self, output_dir: Path):
-        """Generator yielding ProgressEvent during assembly, returns result dict.
+    def _run_playcanvas_streaming(self, output_dir: Path):
+        """Generator yielding ProgressEvent during PlayCanvas assembly, returns result dict.
 
         Reads splat-transform stderr line-by-line for per-chunk step progress
         ([1/8] Writing positions, etc.) and counts output files recursively.

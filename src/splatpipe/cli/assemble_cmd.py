@@ -42,8 +42,15 @@ def assemble(
 
     if summary.get("success"):
         console.print("\n[green]Assembly complete[/green]")
+        console.print(f"  Renderer: {summary.get('renderer', 'playcanvas')}")
         console.print(f"  LODs: {summary['lod_count']}")
-        console.print(f"  Chunks: {summary['chunk_count']}")
+        if summary.get('renderer') == 'spark':
+            size_mb = summary.get('rad_size_bytes', 0) / (1 << 20)
+            console.print(f"  scene.rad: {size_mb:.1f} MB")
+            if summary.get('spark_static_fallback'):
+                console.print("  + scene.sog fallback")
+        else:
+            console.print(f"  Chunks: {summary.get('chunk_count', '?')}")
         console.print(f"  Output: {proj.get_folder('05_output')}")
         console.print("\nNext: [cyan]splatpipe deploy --target bunny[/cyan]")
         console.print("  Or: [cyan]splatpipe serve[/cyan] for local preview")
