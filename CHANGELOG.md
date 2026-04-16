@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-04-17
+
+### Added
+- **DCC bridge** for round-trip camera-path authoring in 3ds Max + Blender. Three new HTTP endpoints under `/projects/{p}/dcc/`:
+  - `GET /manifest` — project metadata, splat URLs (full + preview LOD), available LODs, COLMAP detection, frame range, fps, existing paths.
+  - `GET /splat.ply?lod=N` — Range-streamed reviewed PLY for the DCC viewport.
+  - `POST /import-camera` — accepts JSON `{name, fps, coord_frame, frames: [...]}` or a multipart `.glb` upload; appends a new entry to `scene_config.camera_paths`.
+- **Stand-Up Parent** coordinate-system contract documented in `docs/dcc-bridge.md`. Bridge clients wrap the splat in two nested empties (`splatpipe_outer` 180°-X + `splatpipe_inner` +90°-X = net -90°-X). Net effect: splat appears upright in the DCC's Z-up world; on export the camera is composed against `inv(inner.matrix_world)` to land in PlayCanvas-displayed frame. Importer accepts `coord_frame: "playcanvas_displayed"` (already-composed) or `"ply_native"` (applies the 180°-X flip on the way in).
+- **3ds Max plugin** (`tools/dcc-bridge/max/splatpipe_bridge.py`) — pymxs script with a tkinter dialog: paste project URL → Pull splat (creates VRayGaussiansGeom + Stand-Up Parent + camera + frame range) → animate → Send camera. Pure stdlib, no extra deps.
+- **Blender addon** (`tools/dcc-bridge/blender/__init__.py`) — `bl_info` block, two operators (`splatpipe.pull_splat`, `splatpipe.send_camera`), sidebar panel in 3D Viewport. Uses `bpy.ops.wm.ply_import` (Blender 4.0+); recommends optional [3DGS Render addon](https://github.com/ReshotAI/gaussian-splatting-blender-addon) for full Gaussian preview.
+- **"Author in Max / Blender via Claude" button** in the scene editor — opens a modal with a copyable prompt template that drives the same workflow via the `3dsmax-mcp` (and optional community `blender-mcp`) MCP servers. No DCC plugin install required for the Tier 1 path.
+
+### Notes
+- Manual smoke tests of the plugin buttons (D4 / D5 / D8 in the original plan) are user-facing and require live Max + Blender installs with the corresponding MCP servers; not run by CI. The HTTP endpoints + the Stand-Up Parent math are end-to-end verified.
+
 ## [0.6.0] - 2026-04-17
 
 ### Added
