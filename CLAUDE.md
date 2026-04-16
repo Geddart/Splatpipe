@@ -2,14 +2,14 @@
 
 ## What This Is
 
-CLI-first Gaussian splatting pipeline. Takes COLMAP data through: auto-clean → training (Postshot / LichtFeld Studio) → SuperSplat review → PlayCanvas LOD output. Every operation is a CLI command; web dashboard (FastAPI + HTMX) on top.
+CLI-first Gaussian splatting pipeline. Takes COLMAP data through: auto-clean → training (Postshot / LichtFeld Studio) → SuperSplat review → viewer output (PlayCanvas chunked SOG OR Spark 2 streaming `.rad`). Every operation is a CLI command; web dashboard (FastAPI + HTMX) on top. Camera-path tours (record / glTF import / COLMAP capture import) play smoothly in either renderer via a SuperSplat-MIT cubic Hermite spline.
 
 ## Quick Start
 
 ```bash
 cd H:\001_ProjectCache\1000_Coding\Splatpipe
 pip install -e ".[dev]"
-pytest tests/ -v                    # Run tests (417 tests, ~22s)
+pytest tests/ -v                    # Run tests (429 tests, ~22s)
 splatpipe --help                    # CLI commands
 splatpipe web                       # Launch dashboard
 ```
@@ -40,17 +40,27 @@ splatpipe/                    # repo root
       init_cmd.py             # splatpipe init <colmap_dir>
       clean_cmd.py            # splatpipe clean
       train_cmd.py            # splatpipe train [--trainer postshot|lichtfeld]
-      assemble_cmd.py         # splatpipe assemble
+      assemble_cmd.py         # splatpipe assemble (dispatches on project.renderer)
       deploy_cmd.py           # splatpipe export --mode folder|cdn
       serve_cmd.py            # splatpipe serve [--port 8080]
       run_cmd.py              # splatpipe run (full pipeline)
       web_cmd.py              # splatpipe web [--port 8000]
       status_cmd.py           # splatpipe status
+      path_cmd.py             # splatpipe path-import + path-import-colmap (v0.6+)
+      build_lod_cmd.py        # splatpipe build-lod (Spark .rad cache prime, v0.6+)
     core/                     # Project, config, constants, events
-      project.py              # Project class: folder scaffold, state.json CRUD
+      project.py              # Project class: folder scaffold, state.json CRUD, _migrate_state()
       config.py               # TOML config loader (defaults + per-project merge)
       constants.py            # Folder names, LOD defaults, step names
       events.py               # ProgressEvent, StepResult dataclasses
+      path_io.py              # Camera-path schema + glTF/COLMAP importers + mutate_paths helper (v0.6+)
+    viewers/                  # (v0.6+) Output viewer renderers
+      base.py                 # ViewerRenderer Protocol + clear_output_dir helper
+      playcanvas/             # Skeleton; current PC viewer still lives in steps/lod_assembly.py
+      spark/
+        template.py           # Self-contained Spark 2 viewer (THREE + @sparkjsdev/spark)
+        assembler.py          # SparkAssembler: build_lod -> scene.rad + viewer-config + index.html
+        build_lod.py          # Wrapper around the Rust build-lod CLI
     colmap/                   # COLMAP utilities (ported verbatim from v1)
       ply_io.py               # Binary PLY reader (numpy structured arrays)
       parsers.py              # Streaming generators for cameras/images/points3D.txt + format detection
@@ -70,14 +80,15 @@ splatpipe/                    # repo root
     web/                      # FastAPI + HTMX dashboard
       app.py                  # FastAPI app
       runner.py               # Background pipeline runner (daemon thread + RunnerSnapshot)
-      routes/projects.py      # Project list, detail, inline edit, LOD management
+      routes/projects.py      # Project list, detail, inline edit, LOD management, path/keyframe CRUD, glTF/COLMAP importer endpoints, /update-renderer
       routes/steps.py         # Step execution: SSE progress streaming, cancel
       routes/actions.py       # OS actions: open folder/tool, file browser API
       routes/settings.py      # Config display + edit
       routes/queue.py         # Global pipeline queue: enqueue, reorder, pause, cancel
       templates/              # Jinja2 templates (DaisyUI + HTMX via CDN)
       templates/partials/     # Reusable partials (lod_list, browse_modal, queue_panel)
-      templates/scene_editor.html  # Visual annotation editor with 3D viewer
+      templates/scene_editor.html  # Visual annotation editor + camera-path timeline (v0.6+)
+      templates/project_detail.html  # Includes the renderer toggle (PlayCanvas | Spark, v0.6+)
       static/browse.js        # File/folder browser dialog
       static/viewer.html      # PlayCanvas LOD streaming viewer
   tests/
@@ -99,7 +110,26 @@ splatpipe/                    # repo root
     test_events.py            # ProgressEvent + StepResult tests
     test_export.py            # Folder export tests
     test_deploy_extended.py   # CDN deploy + env loading tests
+    test_path_io.py           # Camera-path schema, mutate_paths, COLMAP missing-source, JSON round-trip (v0.6+)
 ```
+
+## Camera path tours (v0.6+)
+
+Per-project camera tours play smoothly in either renderer:
+
+- **Schema** (`core/path_io.py`): `PathDict` with `id` / `name` / `loop` / `smoothness` (0..1, default 1.0 = full Catmull-Rom) / `play_speed` (linear multiplier, default 1.0) / `keyframes`. `KeyframeDict` carries `t` / `pos` / `quat` (or `look_at`) / `fov` / `easing_out` / `hold_s` / optional `annotation_id`.
+- **Importers**: `from_gltf` (pygltflib, walks parent chain, samples KHR_animations), `from_colmap` (cameras.{txt,bin} + images.{txt,bin}, world-from-cam invert + 180°-X flip).
+- **Live editor**: `templates/scene_editor.html` Path tab — record / smoothness slider / speed slider / loop / default / per-keyframe goto+delete. Live spline rebuild on slider drag (`updatePathSilent` avoids DOM destroy mid-drag).
+- **Playback algorithm** (both viewers): SuperSplat MIT cubic Hermite spline ported from `H:/Supersplat/src/anim/spline.ts`. 8-D spline over (pos.xyz, quat.xyzw, fov), quat renormalised per frame, `fromPointsLooping` for loop wrap, C1 (velocity) continuity through every keyframe.
+
+## Spark 2 renderer (v0.6+)
+
+Per-project `renderer: "playcanvas" | "spark"`. PlayCanvas is default; switching to Spark in the project detail page emits a `.rad` streaming viewer.
+
+- **Toolchain**: requires Rust + a sibling clone of [sparkjsdev/spark](https://github.com/sparkjsdev/spark) (default location `H:/001_ProjectCache/1000_Coding/spark`, override with `SPARK_REPO` env var). First-time `cargo build --release` of the workspace takes ~2 min; subsequent runs use the cached `build-lod` binary in `~/.cache/splatpipe/spark/`.
+- **Cache**: built `.rad`s land in `~/.cache/splatpipe/rad/<sha256[:16]>-<rev[:7]>-<flags>.rad`. Re-assemble is instant when the input PLY hasn't changed.
+- **Viewer**: pinned to `@sparkjsdev/spark@2.0.0` on `three@0.180.0`. Splat is rotated 180°-X to match the PlayCanvas viewer's orientation so annotations + camera-paths land consistently across renderers.
+- **Verified end-to-end**: 674 MB Gutsmutstrasse PLY → 191 MB scene.rad in 1m49s (GPU build_lod). Full feature parity with the PC viewer for annotations + camera-path playback.
 
 ## Quality Discipline
 
@@ -288,7 +318,7 @@ Key config sections: `[tools]`, `[colmap_clean]`, `[postshot]` (profile, gpu, ma
 ## Tests
 
 ```bash
-pytest tests/ -v              # All 417 tests
+pytest tests/ -v              # All 429 tests
 pytest tests/ -k colmap       # Just COLMAP tests
 pytest tests/ -k integration  # End-to-end with tiny data
 pytest tests/ -k trainers     # Trainer abstraction tests

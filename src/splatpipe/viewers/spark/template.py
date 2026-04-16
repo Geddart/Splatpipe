@@ -230,7 +230,26 @@ _VIEWER_TEMPLATE = """\
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.01, 1000);
-  camera.position.set(0, 2, 10);
+  // Pick a sensible initial camera position: first kf of the default path,
+  // first kf of any path, first annotation, otherwise (0, 2, 10).
+  (() => {{
+    const dp = (cfg.camera_paths || []).find(p => p.id === cfg.default_path_id);
+    const anyPath = (cfg.camera_paths || [])[0];
+    const kf = (dp && dp.keyframes && dp.keyframes[0]) || (anyPath && anyPath.keyframes && anyPath.keyframes[0]);
+    if (kf && kf.pos) {{
+      camera.position.set(kf.pos[0], kf.pos[1], kf.pos[2]);
+      if (kf.quat) camera.quaternion.set(kf.quat[0], kf.quat[1], kf.quat[2], kf.quat[3]);
+      if (typeof kf.fov === 'number') {{ camera.fov = kf.fov; camera.updateProjectionMatrix(); }}
+      return;
+    }}
+    const ann = (cfg.annotations || [])[0];
+    if (ann && ann.pos) {{
+      camera.position.set(ann.pos[0] - 5, ann.pos[1] + 2, ann.pos[2] + 5);
+      camera.lookAt(ann.pos[0], ann.pos[1], ann.pos[2]);
+      return;
+    }}
+    camera.position.set(0, 2, 10);
+  }})();
 
   const sparkOpts = {{ renderer }};
   const sr = cfg.spark_render || _DEFAULTS.spark_render;
@@ -261,7 +280,11 @@ _VIEWER_TEMPLATE = """\
   const controls = new OrbitControls(camera, canvas);
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
-  controls.target.set(0, 1, 0);
+  // Point the orbit target ~5m in front of the initial camera so dragging feels natural.
+  {{
+    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+    controls.target.copy(camera.position).addScaledVector(fwd, 5);
+  }}
   controls.update();
 
   // CSS2D layer for DOM annotations

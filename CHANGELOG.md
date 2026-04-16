@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-04-17
+
+### Added
+- **Camera path tours** — author smooth fly-through cameras in the scene editor or import them. Per-path keyframes carry `pos`/`quat`/`fov`/`hold_s` plus optional `annotation_id` for highlighting. Per-path `smoothness` slider (0..1, default 1.0 = full Catmull-Rom) and `play_speed` log-scale slider (0.01×..5×) work live during playback.
+- **Smooth-pass-through spline playback** — ported SuperSplat's MIT cubic Hermite (`src/anim/spline.ts`) into both viewers. 8-D spline over `(pos.xyz, quat.xyzw, fov)`, quat renormalised per frame; `fromPointsLooping` for smooth loop wrap. C1 (velocity) continuity through every keyframe — no stop-start at keys. Same algorithm in PlayCanvas + Spark, byte-identical motion.
+- **glTF camera importer** — `splatpipe path-import scene.glb` (or web upload) parses `KHR_animations` channels for the first perspective camera, walks parent transforms, samples to fixed-step keyframes, applies the 180°-X PLY-native → PC-displayed flip, appends as a new path.
+- **COLMAP capture-camera importer** — `splatpipe path-import-colmap` reads `01_colmap_source/cameras.{txt,bin}` + `images.{txt,bin}`, computes camera-in-world from each image's pose, applies the 180°-X flip, emits a path with one keyframe per image (or every-Nth). Friendly error for passthrough projects with no COLMAP source. Algorithm references SuperSplat's `colmap-loader.ts` (MIT).
+- **Spark 2 renderer** — per-project `renderer: "playcanvas" | "spark"` toggle in the Assemble settings panel. PlayCanvas remains default; switching to Spark emits a `.rad` streaming LoD viewer.
+  - `splatpipe build-lod <project>` standalone CLI for warming the cache.
+  - `viewers/spark/build_lod.py` wraps the Rust `build-lod` binary (sparkjsdev/spark MIT) — toolchain detection (cached binary → `$SPARK_REPO` release → `cargo run --manifest-path …` first-run), sha256+rev cache key in `~/.cache/splatpipe/rad/`, subprocess streaming with `ProgressEvent`-style callback, atomic move into the cache.
+  - `viewers/spark/template.py` emits a self-contained THREE.js + `@sparkjsdev/spark@2.0.0` viewer pinned to `three@0.180.0` (peer dep). Loads `scene.rad` with `paged: true` for HTTP-Range streaming. CSS2DRenderer annotation markers, OrbitControls, conditional bounds clamp, conditional `THREE.AudioListener` only when audio sources exist, foveation knobs (`coneFov0`, `coneFov`, `coneFoveate`, `behindFoveate`).
+  - Tone mapping mapped from PC names: `neutral`→Neutral, `aces`/`aces2`→ACESFilmic, `filmic`→AgX, `linear`→Linear.
+  - Splat oriented with the same 180°-X flip as PC so annotations + camera-paths land in the same place across renderers.
+- **Annotation `id` migration** — `Project.__init__` now runs `_migrate_state()` once, idempotently backfilling stable `id`s on existing annotations so `keyframe.annotation_id` references stay valid.
+- **Cascade on annotation delete** — deleting an annotation clears any `keyframe.annotation_id` references to it across all paths.
+
+### Changed
+- `DEFAULT_SCENE_CONFIG` extended with `camera_paths`, `default_path_id`, `spark_render` (lod_splat_scale, lod_render_scale, foveation, ondemand_lod_fallback).
+- New `pygltflib` runtime dependency (camera-path glTF import).
+- `LodAssemblyStep.run() / run_streaming()` dispatch on `project.renderer`. PlayCanvas pipeline path (chunked SOG via `splat-transform`) is unchanged; Spark path delegates to the new `SparkAssembler`.
+- `splatpipe assemble` summary print handles both renderer shapes (PlayCanvas: chunk count; Spark: `.rad` size, optional `.sog` fallback flag).
+
+### Fixed
+- Mid-drag DOM rebuild bug on per-path sliders — `updatePathSilent` saves to the server without triggering `loadPaths()`/re-render so the slider keeps its dragged value.
+- `gotoKeyframe` in the scene editor — direct `camera.setPosition` was overridden by PlayCanvas's `CameraControls` on the next update tick. Now uses `cc.reset(focus, position)` (`camera-controls.mjs:697`) so the new pose sticks AND the user can keep orbiting from there. `stopPath` rebinds the controls the same way so playback ending doesn't snap back.
+
+### Notes
+- Spark output requires the Rust toolchain + a sibling clone of [sparkjsdev/spark](https://github.com/sparkjsdev/spark) (or `SPARK_REPO` env var). First-time `cargo build --release` of the workspace takes ~2 min; subsequent runs use the cached `build-lod` binary.
+- PlayCanvas pin remains `2.17.0` (2.17.1+ has a regression — see 0.5.0 notes). Spark pin is `2.0.0`.
+
 ## [0.5.0] - 2026-04-16
 
 ### Security
