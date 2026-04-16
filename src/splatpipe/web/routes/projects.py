@@ -1126,7 +1126,16 @@ async def scene_editor(request: Request, project_path: str):
     """Scene editor page with visual annotation placement."""
     proj = Project(Path(project_path))
     output_dir = proj.get_folder(FOLDER_OUTPUT)
-    has_output = (output_dir / "lod-meta.json").exists()
+    # Either renderer's output is fine: PlayCanvas (lod-meta.json) or Spark (scene.rad).
+    # The editor's live preview always uses PlayCanvas though, so it really wants
+    # lod-meta.json — but a Spark project with only scene.rad shouldn't fall into
+    # "no output" mode either; the user can still author paths against the splat
+    # via the PC preview if it exists, or use the buttons even without preview.
+    has_output = (
+        (output_dir / "lod-meta.json").exists()
+        or (output_dir / "scene.rad").exists()
+        or (output_dir / "scene.sog").exists()
+    )
     return templates.TemplateResponse("scene_editor.html", {
         "request": request,
         "project_name": proj.name,

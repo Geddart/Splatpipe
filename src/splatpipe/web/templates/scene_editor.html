@@ -314,9 +314,12 @@
 
   const splatAsset = new pc.Asset('gsplat', 'gsplat', { url: SPLAT_URL });
   app.assets.add(splatAsset);
-  await new Promise((resolve, reject) => {
-    splatAsset.on('load', resolve);
-    splatAsset.on('error', err => reject(new Error(err)));
+  // Don't fail the whole module if the PlayCanvas asset isn't there (Spark-only projects).
+  // The path UI + DCC modal still work; the user just doesn't get a 3D preview.
+  let splatLoaded = false;
+  await new Promise((resolve) => {
+    splatAsset.on('load', () => { splatLoaded = true; resolve(); });
+    splatAsset.on('error', () => { console.warn('Splat asset failed to load (expected for Spark-only projects)'); resolve(); });
     app.assets.load(splatAsset);
   });
 
@@ -348,8 +351,10 @@
   app.scene.gsplat.colorUpdateAngleLodScale = 2;
 
   const splatEntity = new pc.Entity(PROJECT_NAME);
-  splatEntity.addComponent('gsplat', { asset: splatAsset, unified: true });
-  splatEntity.setLocalEulerAngles(180, 0, 0);
+  if (splatLoaded) {
+    splatEntity.addComponent('gsplat', { asset: splatAsset, unified: true });
+    splatEntity.setLocalEulerAngles(180, 0, 0);
+  }
   app.root.addChild(splatEntity);
 
   const focusPoint = new pc.Vec3(0, 1, 0);
@@ -1035,7 +1040,9 @@
 
   // ---- DCC bridge prompt ----
   window.showDccPrompt = function() {
-    const projectUrl = location.origin + '/projects/' + PROJECT_PATH;
+    // PROJECT_PATH may contain backslashes on Windows; URLs should use forward slashes only.
+    const normalizedPath = String(PROJECT_PATH).replace(/\\/g, '/');
+    const projectUrl = location.origin + '/projects/' + normalizedPath;
     const prompt = [
       'Author a camera path in <DCC: 3ds Max | Blender> for the Splatpipe project at:',
       '  ' + projectUrl,
