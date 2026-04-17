@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-04-17
+
+### Fixed
+- **Max plugin Stand-Up Parent setup — wrong inner rotation in 3ds Max only.** In Max, assigning `inner.parent = outer` preserves the world transform, so setting `inner.rotation = +90°X` *before* parenting (the previous order) left `inner.world = R_+90X` instead of the documented composed `R_-90X`. Two visible symptoms: (a) the splat appeared upside-down in the Max viewport, (b) the v0.6.2 export math gave wrong PC coords (DCC `(0, 0, 5)` came back as PC `(0, -5, 0)` instead of `(0, 5, 0)`, mirrored on Y). The plugin now sets `inner.parent = outer` first, then `inner.rotation = (eulerangles 90 0 0)` — which Max interprets in local coordsys after parenting, yielding the correct `inner.world = R_-90X`. Blender unaffected (it composes `matrix_world = parent @ local` natively, so order doesn't matter there). Caught via 3dsmax-mcp Tier-1 round-trip test against a known-position keyframe sweep — Max output now matches Blender output to ≤1e-6 unit. Worked example in `docs/dcc-bridge.md`.
+
 ## [0.6.2] - 2026-04-17
 
 ### Fixed

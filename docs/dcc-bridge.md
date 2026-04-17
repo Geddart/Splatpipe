@@ -53,6 +53,8 @@ Why the extra `R_180X`? `inv(inner.matrix_world)` only takes a DCC world point i
 
 > **Fixed in v0.6.2.** Earlier versions (0.6.1) shipped without the `R_180X` flip — the exported camera ended up mirrored on Y (Z=4 in DCC came back as Y=−4 in PC instead of Y=+4). The Tier-1 Blender round-trip caught the bug.
 
+> **Fixed in v0.6.3 — Max-specific parenting order.** In Max, assigning `inner.parent = outer` *preserves the world transform*, so setting `inner.rotation = +90°X` *before* parenting leaves `inner.world = R_+90X` (only one rotation, not the documented composed `R_-90X`). The splat then appears upside-down AND the export math is off. The Max plugin now sets `inner.parent = outer` **first**, then `inner.rotation = (eulerangles 90 0 0)` — which Max interprets in local coordsys after parenting, yielding the correct `inner.world = R_-90X`. Blender is unaffected: it composes `matrix_world = parent @ local` natively, so order doesn't matter there. Caught via 3dsmax-mcp probe during the Tier-1 round-trip test.
+
 **Equivalent shorthand for THIS specific empty configuration only:** since outer is `R_180X` and inner.matrix_world ends up = `R_180X @ R_+90X = R_-90X`, you can also write `cam_in_pc = inner.matrix_world @ cam.matrix_world` (Blender) — but that's a coincidence of the specific rotations chosen. The explicit `R_180X @ inv(inner)` form is portable to any future restructuring of the empty hierarchy.
 
 The bridge sends this in the request payload as `coord_frame: "playcanvas_displayed"`. The importer writes it as-is (no second flip).

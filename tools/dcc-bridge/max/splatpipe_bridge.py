@@ -90,10 +90,14 @@ def setup_stand_up_parent(splat_node) -> tuple[object, object]:
     """Wrap `splat_node` in two empties to make it look right in DCC's Z-up world.
 
     Outer (`splatpipe_outer`):  rotation 180° about world X — undoes COLMAP Y-down.
-    Inner (`splatpipe_inner`):  rotation  90° about world X — converts Y-up to Z-up.
+    Inner (`splatpipe_inner`):  rotation  90° X in **local** coordsys — converts
+                                Y-up to Z-up. Composed with outer this yields
+                                inner.world = R_-90X.
 
-    Net = 270° X = -90° X. Returns (outer, inner) so the export step can
-    compose against `inv(inner.transform)`.
+    Net splat orientation = R_-90X (right-side up in Z-up DCC). Returns
+    (outer, inner). The export step composes
+    `cam.transform * inverse(inner.transform) * rotateXMatrix(180)` to land
+    the camera in PlayCanvas-displayed (Y-up) frame — see send_camera().
     """
     # Remove any prior bridge nodes so re-pulling is idempotent.
     for n in (OUTER_NAME, INNER_NAME):
@@ -106,8 +110,14 @@ def setup_stand_up_parent(splat_node) -> tuple[object, object]:
     outer.isHidden = False  # visible so the user knows the bridge owns these
 
     inner = rt.Dummy(name=INNER_NAME)
-    inner.rotation = rt.eulerangles(90.0, 0.0, 0.0)
+    # IMPORTANT: parent FIRST, then set inner rotation. If we set rotation
+    # before parenting, Max preserves the world transform on parent assignment
+    # — leaving inner.world = R_+90X instead of the documented R_-90X composed
+    # result. That breaks the export math and the splat appears upside-down.
+    # After parenting, `inner.rotation = ...` is interpreted in local coordsys,
+    # which is what we want. Confirmed via 3dsmax-mcp probe (v0.6.3).
     inner.parent = outer
+    inner.rotation = rt.eulerangles(90.0, 0.0, 0.0)
 
     splat_node.parent = inner
     return outer, inner
