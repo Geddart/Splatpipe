@@ -9,10 +9,10 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/python-3.11+-blue?logo=python&logoColor=white" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/python-3.12+-blue?logo=python&logoColor=white" alt="Python 3.12+">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
-  <img src="https://img.shields.io/badge/platform-Windows-0078D4?logo=windows" alt="Windows">
-  <img src="https://img.shields.io/badge/tests-429%20passed-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-0078D4?logo=windows" alt="Windows / Linux">
+  <img src="https://img.shields.io/badge/tests-439%20passed-brightgreen" alt="Tests">
 </p>
 
 ---
@@ -82,6 +82,15 @@ splatpipe path-import-colmap --project /path/to/project --every-nth 5
 
 Paths play identically in both renderers (same `CubicSpline` ported from SuperSplat MIT).
 
+### DCC bridge — round-trip authoring in 3ds Max + Blender (v0.6.1+)
+
+Two ways to drive the splat into your DCC, animate against it, and post the camera back as a new path:
+
+- **Tier 1 — Claude + MCP** (no install). The scene-editor's **Author camera in Max/Blender via Claude** button gives a copyable prompt. With `3dsmax-mcp` (and optionally the community `blender-mcp`) in your MCP config, Claude pulls the splat, sets up the [Stand-Up Parent](docs/dcc-bridge.md), waits for you to animate, then samples + posts.
+- **Tier 2 — In-DCC plugin buttons.** `python tools/dcc-bridge/build.py` produces `splatpipe_bridge.zip` (Blender) and `splatpipe_bridge.mzp` (3ds Max — drag-drop install). Sidebar panel / toolbar dialog with **Pull splat** and **Send camera** buttons.
+
+Both tiers speak HTTP to the same three endpoints (`/dcc/manifest`, `/dcc/splat.ply`, `/dcc/import-camera`) and use the same coordinate-system contract — paths land identically in both renderers regardless of authoring path. See [`docs/dcc-bridge.md`](docs/dcc-bridge.md) for the math + worked example.
+
 ## Spark 2 renderer (v0.6+)
 
 PlayCanvas remains the default. To use Spark instead:
@@ -126,7 +135,7 @@ splatpipe web                   # Launch web dashboard
 
 | Tool | Purpose | Install |
 |------|---------|---------|
-| **Python 3.11+** | Runtime | python.org |
+| **Python 3.12+** | Runtime | python.org |
 | **Postshot CLI** | Gaussian splat training | [jawset.com](https://jawset.com) |
 | **LichtFeld Studio** | Alternative open-source trainer | [github.com/MrNeRF](https://github.com/MrNeRF/LichtFeld-Studio) |
 | **Node.js** | For `splat-transform` LOD assembly | [nodejs.org](https://nodejs.org) |
