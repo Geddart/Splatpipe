@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-04-17
+
+### Changed
+- **Minimum Python is now 3.12** (was 3.11). Drops six `hasattr(path, 'is_junction')` polyfills across `core/project.py` and `web/routes/projects.py` — `Path.is_junction()` has been native since 3.12. CI matrix updated: drops 3.11, keeps 3.12 + 3.13, **adds Windows runner** (since junction handling is Windows-specific and now uses native API).
+
+### Added
+- **3DGS Render addon install guide** in `docs/dcc-bridge.md` for the Blender Tier-2 plugin — step-by-step on installing the optional [ReshotAI/gaussian-splatting-blender-addon](https://github.com/ReshotAI/gaussian-splatting-blender-addon) so the splat shows as continuous Gaussians instead of points while the user authors a camera against it. Includes a perf note (point preview while scrubbing, rendered for keyframe placement).
+- Note in the Blender plugin's camera-extraction docs that the splat object is temporarily hidden during sampling (already implemented in v0.6.2; now documented).
+
 ## [0.6.3] - 2026-04-17
 
 ### Fixed

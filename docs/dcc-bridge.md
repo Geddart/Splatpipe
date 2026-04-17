@@ -139,9 +139,20 @@ Pure-Python via `pymxs`; HTTP via `urllib.request`. No extra deps.
 
 Edit → Preferences → Add-ons → Install. Adds a "Splatpipe" sidebar panel (View tab) in the 3D Viewport with the same two buttons.
 
-PLY preview uses `bpy.ops.wm.ply_import` (Blender 4.0+) — points only. For full Gaussian preview install the optional [3DGS Render addon](https://github.com/ReshotAI/gaussian-splatting-blender-addon).
+PLY preview uses `bpy.ops.wm.ply_import` (Blender 4.0+) — **points only**, which is enough for camera positioning but doesn't show the splat as a continuous Gaussian field. Strongly recommended: install the optional **3DGS Render addon** to see the full Gaussian preview as you animate.
 
-Camera extraction: per-frame `bpy.context.scene.frame_set(f)` + `cam.matrix_world` + `cam.data.angle`. HTTP via `urllib` (no `requests` to avoid forcing pip installs in Blender's bundled Python).
+#### Installing the 3DGS Render addon
+
+1. Download the latest `gaussian_splatting.zip` release from <https://github.com/ReshotAI/gaussian-splatting-blender-addon/releases> (compatible with Blender 4.0–4.2).
+2. In Blender: **Edit → Preferences → Add-ons → Install...** and pick the zip.
+3. Tick **"Render: 3D Gaussian Splatting"** to enable.
+4. After Splatpipe Bridge's *Pull splat* finishes, the splat will be in the scene as a generic mesh of points. Open the addon's panel (sidebar **3DGS** tab) and click **"Import Splat from Selected Object"** (or use the addon's PLY import which supports the Gaussian fields directly).
+5. Switch the viewport to **Material Preview** or **Rendered** shading to see the splatted Gaussians instead of points.
+6. The splat object stays parented under `splatpipe_inner`, so the Stand-Up Parent contract continues to apply — you can still animate the camera against it as usual.
+
+> **Performance note**: the 3DGS addon is GPU-heavy. For multi-million-Gaussian scenes you may want to switch to point preview while scrubbing the timeline, then back to rendered shading for keyframe placement. The Splatpipe Bridge plugin itself doesn't depend on the addon being installed; everything still works with point preview alone.
+
+Camera extraction: per-frame `bpy.context.scene.frame_set(f)` + `cam.matrix_world` + `cam.data.angle`. HTTP via `urllib` (no `requests` to avoid forcing pip installs in Blender's bundled Python). The plugin **temporarily hides the splat object** during sampling — without that, depsgraph evaluation on a 3M-vertex Gaussian preview every frame can take seconds and wedge the connection on dense paths (>= 240 keyframes). Visibility is restored after sampling completes.
 
 ---
 

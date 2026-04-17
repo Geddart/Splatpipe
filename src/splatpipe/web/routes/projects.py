@@ -59,7 +59,7 @@ def _folder_stats(folder: Path) -> dict:
     # Top-level items with sizes (for delete confirmation)
     items = []
     for item in sorted(folder.iterdir()):
-        if item.is_symlink() or (hasattr(item, 'is_junction') and item.is_junction()):
+        if item.is_symlink() or item.is_junction():
             items.append(f"{item.name}/ (link)")
         elif item.is_dir():
             sub_files = list(item.rglob("*"))
@@ -308,7 +308,7 @@ def _move_project_cross_fs(src: Path, dest: Path) -> None:
         src_item = src / item.name
         dest_item = dest / item.name
 
-        if src_item.is_symlink() or (hasattr(src_item, 'is_junction') and src_item.is_junction()):
+        if src_item.is_symlink() or src_item.is_junction():
             # Recreate the junction/symlink at destination
             target = src_item.resolve()
             if os.name == "nt":
@@ -455,7 +455,7 @@ async def update_colmap_source(request: Request, project_path: str):
     if target.exists() and target.is_dir():
         # Remove old link/dir if empty
         if source_link.exists():
-            if source_link.is_symlink() or (hasattr(source_link, 'is_junction') and source_link.is_junction()):
+            if source_link.is_symlink() or source_link.is_junction():
                 source_link.unlink()
             elif source_link.is_dir() and not any(source_link.iterdir()):
                 source_link.rmdir()
@@ -602,7 +602,7 @@ async def project_detail(request: Request, project_path: str):
 
     # Resolve COLMAP source path
     colmap_source_dir = proj.get_folder(FOLDER_COLMAP_SOURCE)
-    if colmap_source_dir.is_symlink() or (hasattr(colmap_source_dir, 'is_junction') and colmap_source_dir.is_junction()):
+    if colmap_source_dir.is_symlink() or colmap_source_dir.is_junction():
         colmap_source_resolved = str(colmap_source_dir.resolve())
     else:
         colmap_source_resolved = state.get("colmap_source", str(colmap_source_dir))
@@ -1286,7 +1286,7 @@ def _clear_folder(folder: Path) -> tuple[int, list[str]]:
     failed: list[str] = []
     for item in list(folder.iterdir()):
         try:
-            if item.is_symlink() or (hasattr(item, 'is_junction') and item.is_junction()):
+            if item.is_symlink() or item.is_junction():
                 item.unlink()
             elif item.is_dir():
                 shutil.rmtree(str(item))
