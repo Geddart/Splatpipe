@@ -187,20 +187,28 @@ def send_camera(project_url: str, name: str = "Max DCC Path") -> dict:
     f_end = int(fr.end)
     fps = float(rt.framerate)
 
-    frames = []
+    # Stand-Up Parent compose math (row-vec MaxScript form).
+    #
+    # We want: cam_in_pc_displayed = R_180X @ inv(inner.matrix_world) @ cam (col-vec).
+    # In MaxScript row-vec convention this is:
+    #     cam.transform * inverse(inner.transform) * rotateXMatrix(180)
+    # — apply cam first, then map into inner-local (= PLY-native), then flip
+    # 180° X to land in PC-displayed.
+    #
+    # The previous version of this code shipped without the rotateXMatrix(180)
+    # — the exported camera ended up mirrored on Y. Fixed in v0.6.2.
+    flip_180_x = rt.rotateXMatrix(180.0)
     inner_inv = rt.inverse(inner.transform)
 
+    frames = []
     for f in range(f_start, f_end + 1):
         rt.sliderTime = f  # advances animation evaluation
         cam_world = cam.transform
-        # Compose: cam_in_pc_displayed = inv(inner) * cam
-        composed = inner_inv * cam_world
+        composed = cam_world * inner_inv * flip_180_x
         pos = composed.translation
-        # Max's quat order is (x, y, z, w) for `composed.rotation` → exposed as
-        # `as_quat = composed.rotation` and quat.x/y/z/w accessors.
+        # Max's quat order is (x, y, z, w) for `composed.rotation`.
         q = composed.rotation
         qx, qy, qz, qw = float(q.x), float(q.y), float(q.z), float(q.w)
-        fov_rad = float(cam.fov) * math.pi / 180.0  # Max gives degrees already
         fov_deg = float(cam.fov)
         frames.append({
             "frame": f - f_start,

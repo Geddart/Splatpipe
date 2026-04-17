@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-04-17
+
+### Fixed
+- **DCC bridge math — Stand-Up Parent compose was missing the final 180°-X flip.** Cameras animated in 3ds Max or Blender came back mirrored on Y: a camera placed at DCC `(0, 0, 5)` (5 units above the splat) was returning as PC `(0, -5, 0)` (5 units *below*) instead of `(0, 5, 0)`. Caught by a Tier-1 Blender round-trip via `blender-mcp`. Both plugins (`tools/dcc-bridge/max/splatpipe_bridge.py`, `tools/dcc-bridge/blender/__init__.py`) and the in-editor Claude prompt template now compose `cam_in_pc_displayed = R_180X @ inv(inner.matrix_world) @ cam.matrix_world` (column-vec / Blender) or `cam.transform * inverse(inner.transform) * rotateXMatrix(180)` (row-vec / MaxScript). Why the extra `R_180X`: `inv(inner)` only takes a DCC world point into the splat's *local* (PLY-native, Y-down) frame; Splatpipe stores camera-paths in PC-displayed (Y-up) frame, which is `R_180X @ PLY-native`. `docs/dcc-bridge.md` updated with the corrected math, the worked example, and a regression note.
+- **Blender camera sampling perf** — `bpy.context.scene.frame_set(f)` triggered a full depsgraph evaluation on the 3M-vertex Gaussian splat preview every frame, which on dense paths (240 frames @ 24 fps × 10s) wedged the MCP connection. The Send-camera operator now temporarily hides the splat object (`hide_viewport=True, hide_render=True`) for the sampling loop and restores its prior visibility after, dropping the per-frame cost to milliseconds.
+
 ## [0.6.1] - 2026-04-17
 
 ### Added

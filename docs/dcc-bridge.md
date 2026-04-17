@@ -37,14 +37,23 @@ splatpipe_outer        (rotation R_outer = 180° X — undoes COLMAP Y-down)
 
 Net rotation = `R_outer ∘ R_inner` = `180°X ∘ 90°X` = **270°X** (i.e. **−90°X**). With this in place, the user sees a right-side-up splat in their DCC's natural Z-up world.
 
-**On export, compose the camera against the inner empty's inverse only:**
+**On export, compose the camera against the inner empty's inverse AND a 180°-X flip:**
 
 ```python
-cam_in_pc_displayed = inv(inner.matrix_world) @ cam.matrix_world
-                    = R_-90X @ cam.matrix_world           # since inv(R_+90X) = R_-90X
+cam_in_pc_displayed = R_180X @ inv(inner.matrix_world) @ cam.matrix_world   # column-vec (Blender)
 ```
 
-The outer empty doesn't enter the export math — it's there purely so the splat looks right in the viewport. Result is the camera in the same frame as Splatpipe's annotations and recorded paths.
+In MaxScript row-vec convention the equivalent is:
+
+```maxscript
+cam_in_pc_displayed = cam.transform * inverse(inner.transform) * rotateXMatrix(180)
+```
+
+Why the extra `R_180X`? `inv(inner.matrix_world)` only takes a DCC world point into the splat's **local** frame — and the splat's local frame is **PLY-native** (the raw COLMAP-Y-down PLY data). Splatpipe stores annotations + camera-paths in **PC-displayed** frame, which is `R_180X @ PLY-native` (the PC viewer applies that flip at render time). So we need one more R_180X on top of `inv(inner)` to land in the storage frame.
+
+> **Fixed in v0.6.2.** Earlier versions (0.6.1) shipped without the `R_180X` flip — the exported camera ended up mirrored on Y (Z=4 in DCC came back as Y=−4 in PC instead of Y=+4). The Tier-1 Blender round-trip caught the bug.
+
+**Equivalent shorthand for THIS specific empty configuration only:** since outer is `R_180X` and inner.matrix_world ends up = `R_180X @ R_+90X = R_-90X`, you can also write `cam_in_pc = inner.matrix_world @ cam.matrix_world` (Blender) — but that's a coincidence of the specific rotations chosen. The explicit `R_180X @ inv(inner)` form is portable to any future restructuring of the empty hierarchy.
 
 The bridge sends this in the request payload as `coord_frame: "playcanvas_displayed"`. The importer writes it as-is (no second flip).
 

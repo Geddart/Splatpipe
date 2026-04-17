@@ -249,13 +249,45 @@ class SPLATPIPE_OT_send_camera(bpy.types.Operator):
         f_start = scene.frame_start
         f_end = scene.frame_end
 
+        # ──────────────────────────────────────────────────────────────────
+        # Stand-Up Parent compose math
+        # ──────────────────────────────────────────────────────────────────
+        # We need: cam_in_pc_displayed = R_180X @ inv(inner.matrix_world) @ cam.matrix_world
+        #
+        # Why R_180X on top of inv(inner)?
+        #   - inner.matrix_world = outer.matrix_world @ inner.matrix_local
+        #                        = R_180X @ R_+90X = R_-90X
+        #     (inner is parented to outer; world matrix composes them)
+        #   - inv(inner.matrix_world) = R_+90X — takes DCC world coords into
+        #     the splat's LOCAL frame, which is **PLY-native** (the raw PLY
+        #     data is COLMAP-Y-down).
+        #   - PC viewer applies R_180X to the splat at render time to display
+        #     it right-side up; annotations + recorded paths in scene_config
+        #     are stored in that **PC-displayed** frame.
+        #   - So we need one more R_180X to go PLY-native → PC-displayed.
+        # The previous version of this code shipped without the R_180X — the
+        # exported camera landed mirrored on Y (Z=4 in DCC came back as Y=-4 in
+        # PC instead of Y=+4). Caught during a Blender Tier-1 round-trip test
+        # and fixed in v0.6.2.
+        flip_180_x = Matrix.Rotation(math.pi, 4, "X")
+
+        # Hide the splat object before iterating frames so frame_set() doesn't
+        # trigger a depsgraph update on its multi-million-vertex mesh — that
+        # was making 240-frame samples take >30s and timing out the bridge.
+        prev_splat_state = None
+        splat_obj = bpy.data.objects.get(SPLAT_OBJ_NAME)
+        if splat_obj is not None:
+            prev_splat_state = (splat_obj.hide_viewport, splat_obj.hide_render)
+            splat_obj.hide_viewport = True
+            splat_obj.hide_render = True
+
         frames = []
         original_frame = scene.frame_current
         try:
             for f in range(f_start, f_end + 1):
                 scene.frame_set(f)
                 inner_inv = inner.matrix_world.inverted()
-                composed = inner_inv @ cam_obj.matrix_world
+                composed = flip_180_x @ inner_inv @ cam_obj.matrix_world
                 pos = composed.to_translation()
                 # Blender quaternions are (w, x, y, z); Splatpipe expects (x, y, z, w)
                 q = composed.to_quaternion()
@@ -268,6 +300,8 @@ class SPLATPIPE_OT_send_camera(bpy.types.Operator):
                 })
         finally:
             scene.frame_set(original_frame)
+            if splat_obj is not None and prev_splat_state is not None:
+                splat_obj.hide_viewport, splat_obj.hide_render = prev_splat_state
 
         payload = {
             "name": name,
