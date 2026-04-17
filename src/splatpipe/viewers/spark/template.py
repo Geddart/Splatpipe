@@ -14,7 +14,6 @@ Pinned versions (bump in lockstep):
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 
 SPARK_VERSION = "2.0.0"

@@ -36,7 +36,7 @@ def build_lod_cmd(
 
     enabled = [lod for lod in proj.lod_levels if lod.get("enabled", True)]
     if not enabled:
-        console.print(f"[red]No enabled LODs in project[/red]")
+        console.print("[red]No enabled LODs in project[/red]")
         raise typer.Exit(1)
     lod_name = enabled[0]["name"]
 
@@ -56,7 +56,7 @@ def build_lod_cmd(
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
 
-    console.print(f"[bold]build-lod[/bold]")
+    console.print("[bold]build-lod[/bold]")
     console.print(f"  Toolchain : {info['command'][0]} ({info['version']}, {'cargo' if info['is_cargo'] else 'binary'})")
     console.print(f"  Input     : {input_ply.name} ({input_ply.stat().st_size / (1<<20):.1f} MB)")
     console.print(f"  Algorithm : {'quick (tiny-lod)' if quick else 'quality (bhatt-lod)'}")

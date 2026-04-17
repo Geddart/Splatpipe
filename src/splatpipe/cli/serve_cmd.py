@@ -65,7 +65,7 @@ def serve(
 
     # Spin up a tiny FastAPI app that serves the output dir via FileResponse,
     # which Starlette implements with proper HTTP Range support.
-    from fastapi import FastAPI, Request
+    from fastapi import FastAPI
     from fastapi.responses import FileResponse, HTMLResponse
     from fastapi.middleware.cors import CORSMiddleware
     import uvicorn

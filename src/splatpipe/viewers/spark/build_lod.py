@@ -154,7 +154,7 @@ def build(
         return cached_rad
 
     if on_progress:
-        on_progress(f"[build-lod] cache MISS, building (~33s/GB; first cargo build ~2 min)")
+        on_progress("[build-lod] cache MISS, building (~33s/GB; first cargo build ~2 min)")
 
     # Run build-lod with input copied into a temp dir so it can write
     # `<basename>-lod.rad` next to the input without polluting 04_review/.

@@ -78,7 +78,7 @@ def path_import_colmap(
     """Import the original COLMAP capture cameras as a camera path."""
     proj = _resolve_project(project)
 
-    console.print(f"[bold]Importing capture cameras from COLMAP[/bold]")
+    console.print("[bold]Importing capture cameras from COLMAP[/bold]")
     try:
         path = from_colmap(
             proj.colmap_dir(),

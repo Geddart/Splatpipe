@@ -292,7 +292,6 @@ def _read_accessor(gltf, blob, accessor_index: int):
     """Read a glTF accessor as a flat numpy array. Supports .glb binary blob and
     embedded base64 data URIs. Does NOT support external .bin files yet."""
     import base64
-    import struct
     import numpy as np
 
     accessor = gltf.accessors[accessor_index]
@@ -457,11 +456,9 @@ def from_colmap(
 
     Algorithm follows SuperSplat's `colmap-loader.ts` (PlayCanvas, MIT).
     """
-    import math
     from pathlib import Path as _Path
     import numpy as np
 
-    from .. import colmap
     from ..colmap.parsers import (
         detect_colmap_format,
         parse_cameras_txt,

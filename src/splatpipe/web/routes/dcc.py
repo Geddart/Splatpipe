@@ -27,7 +27,6 @@ See ``docs/dcc-bridge.md`` for the math.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from fastapi import APIRouter, Request
@@ -38,7 +37,6 @@ from ...core.path_io import (
     DEFAULT_PLAY_SPEED,
     DEFAULT_SMOOTHNESS,
     KeyframeDict,
-    PathDict,
     mutate_paths,
     new_path,
 )

@@ -54,7 +54,7 @@ class SparkAssembler:
         project = step.project
 
         review_dir = project.get_folder(FOLDER_REVIEW)
-        enabled_lods = [l for l in project.lod_levels if l.get("enabled", True)]
+        enabled_lods = [lod for lod in project.lod_levels if lod.get("enabled", True)]
         if not enabled_lods:
             raise FileNotFoundError(
                 f"No enabled LODs in project {project.name}. Enable at least one and re-run."
