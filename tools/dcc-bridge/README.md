@@ -17,12 +17,26 @@ tools/dcc-bridge/
 
 Both plugins are self-contained Python — no third-party packages. They speak HTTP directly to your local `splatpipe web`'s DCC bridge endpoints (`/projects/{p}/dcc/{manifest,splat.ply,import-camera}`).
 
+## Build distribution archives (one-liner)
+
+```bash
+cd tools/dcc-bridge && python build.py
+# → splatpipe_bridge.zip  (Blender)
+# → splatpipe_bridge.mzp  (3ds Max)
+```
+
+Then install from the built file (below). Both archives are ~5 KB and pure stdlib — no build dependencies.
+
 ## Install — 3ds Max
 
 Requires:
 - 3ds Max 2023+ (for the bundled Python 3 + pymxs)
 - V-Ray 7+ (for the `VRayGaussiansGeom` node — Gaussian splat support)
 - `splatpipe web` running locally
+
+**Option A — drag-drop installer (recommended):** drag `splatpipe_bridge.mzp` into a 3ds Max viewport. It copies the script into your user scripts folder, registers the *Splatpipe Bridge* macro, and opens the dialog. Pin the macro to a toolbar via Customize → Toolbars → Category "Splatpipe".
+
+**Option B — manual:**
 
 1. Copy `max/splatpipe_bridge.py` somewhere on Max's Python path. The simplest:
    - Place it in `%LOCALAPPDATA%\Autodesk\3dsMax\<version>\ENU\scripts\python\`
@@ -47,11 +61,7 @@ Requires:
 - Blender 4.0+
 - `splatpipe web` running locally
 
-1. Zip the `blender/` directory:
-   ```bash
-   cd tools/dcc-bridge
-   zip -r splatpipe_bridge.zip blender/
-   ```
+1. Build `splatpipe_bridge.zip` (see above), or use a prebuilt one from a release.
 2. In Blender: Edit → Preferences → Add-ons → Install... → pick `splatpipe_bridge.zip` → enable **Splatpipe Bridge**.
 3. Open the 3D Viewport sidebar (`N`) → **Splatpipe** tab.
 
@@ -66,11 +76,14 @@ Optional: install the [3DGS Render addon](https://github.com/ReshotAI/gaussian-s
 
 ## Coord-system gotcha
 
-The two empties **must** stay at their original rotations (`splatpipe_outer` = 180°-X, `splatpipe_inner` = +90°-X). The Send step computes:
+The two empties **must** stay at their original rotations (`splatpipe_outer` = 180°-X world, `splatpipe_inner` = +90°-X *in local coordsys* — net `inner.world` = R_-90X). The Send step computes:
 
 ```
-cam_in_pc_displayed = inv(splatpipe_inner.matrix_world) @ cam.matrix_world
+cam_in_pc_displayed = R_180X @ inv(splatpipe_inner.matrix_world) @ cam.matrix_world      # column-vec (Blender)
+cam_in_pc_displayed = cam.transform * inverse(inner.transform) * rotateXMatrix(180)      # row-vec (MaxScript)
 ```
+
+Why the trailing `R_180X`: `inv(inner)` only takes a DCC point into the splat's *local* frame (PLY-native, Y-down). Splatpipe stores camera-paths in PC-displayed (Y-up) frame, which is `R_180X @ PLY-native`. See `docs/dcc-bridge.md` for the full derivation and worked example.
 
 If you accidentally reset the empties, the camera ends up in the wrong frame and the playback in Splatpipe's viewers will be visibly skewed. Re-pull to reset them.
 
