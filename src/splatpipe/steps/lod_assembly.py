@@ -116,6 +116,32 @@ _VIEWER_TEMPLATE = """\
     .ann-tooltip h4 {{ font-weight: 600; margin: 0 0 2px; }}
     .ann-tooltip p {{ margin: 0; opacity: 0.8; white-space: normal; }}
     .ann-marker:hover .ann-tooltip {{ display: block; }}
+    .ann-dot.path-active {{
+      background: #ff3300; box-shadow: 0 0 14px rgba(255,80,30,0.9);
+      transform: scale(1.15); transition: all 0.2s;
+    }}
+
+    /* Camera path HUD */
+    #path-hud {{
+      position: absolute; bottom: 60px; left: 50%; transform: translateX(-50%);
+      z-index: 12; display: none; align-items: center; gap: 10px;
+      background: rgba(0,0,0,0.75); border-radius: 8px; padding: 8px 14px;
+      color: #ccc; font-size: 12px; pointer-events: auto;
+    }}
+    #path-hud.active {{ display: flex; }}
+    #path-hud select {{
+      background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.2);
+      color: #ccc; border-radius: 4px; padding: 4px 6px; font-size: 12px;
+    }}
+    #path-hud button {{
+      background: rgba(255,100,50,0.3); border: 1px solid rgba(255,100,50,0.5);
+      color: #fff; border-radius: 4px; padding: 4px 10px; font-size: 12px; cursor: pointer;
+    }}
+    #path-hud button:hover {{ background: rgba(255,100,50,0.5); }}
+    #path-hud .scrub {{
+      width: 200px;
+    }}
+    #path-hud .time {{ font-family: monospace; min-width: 60px; text-align: center; }}
   </style>
 </head>
 <body>
@@ -167,6 +193,14 @@ _VIEWER_TEMPLATE = """\
   </div>
 
   <div id="annotation-markers"></div>
+
+  <div id="path-hud">
+    <select id="path-select"></select>
+    <button id="path-play">▶ Play</button>
+    <button id="path-stop">⏹</button>
+    <input type="range" class="scrub" id="path-scrub" min="0" max="1000" value="0">
+    <span class="time" id="path-time">0.00s</span>
+  </div>
 
   <script type="importmap">
   {{
@@ -506,6 +540,8 @@ _VIEWER_TEMPLATE = """\
     const displayed = app.stats.frame.gsplats || 0;
     const displayedM = (displayed / 1_000_000).toFixed(2);
     splatCountEl.textContent = 'Splats: ' + displayedM + 'M';
+    // Drive any active camera-path playback (defined below)
+    if (window._pathTick) window._pathTick();
     // Clamp camera position: ground + bounds (only when constraints enabled)
     if (cam.enabled === true) {{
       const pos = camera.getLocalPosition();
@@ -530,6 +566,237 @@ _VIEWER_TEMPLATE = """\
       }}
     }});
   }});
+
+  // --- Camera path playback ---
+  // Same algorithm as scene_editor.html (B2 in plan): per-segment timing with
+  // hold_s, eased local_t, lerp position, slerp quaternion, lerp FOV.
+  // Annotation triggers: each keyframe with annotation_id highlights the
+  // matching DOM marker while the camera passes through that segment.
+  (function setupPathPlayback() {{
+    const cameraPaths = viewerConfig.camera_paths || [];
+    const defaultPathId = viewerConfig.default_path_id || null;
+    const hud = document.getElementById('path-hud');
+    const select = document.getElementById('path-select');
+    const playBtn = document.getElementById('path-play');
+    const stopBtn = document.getElementById('path-stop');
+    const scrub = document.getElementById('path-scrub');
+    const timeEl = document.getElementById('path-time');
+
+    if (cameraPaths.length === 0) return;
+    hud.classList.add('active');
+
+    cameraPaths.forEach(p => {{
+      const opt = document.createElement('option');
+      opt.value = p.id; opt.textContent = p.name || p.id;
+      select.appendChild(opt);
+    }});
+
+    // Cubic Hermite spline ported from SuperSplat (PlayCanvas Ltd, MIT)
+    // src/anim/spline.ts. Splines pos.xyz + quat.xyzw + fov in one call;
+    // smoothness 0..1 (0 = linear segments, 1 = smooth Catmull-Rom). C1 (velocity)
+    // continuity through every keyframe — no stop-start at keys.
+    class CubicSpline {{
+      constructor(times, knots) {{
+        this.times = times; this.knots = knots;
+        this.dim = knots.length / times.length / 3;
+      }}
+      evaluate(time, result) {{
+        const times = this.times; const last = times.length - 1;
+        if (time <= times[0]) {{ this.getKnot(0, result); return; }}
+        if (time >= times[last]) {{ this.getKnot(last, result); return; }}
+        let seg = 0;
+        while (time >= times[seg + 1]) seg++;
+        this.evaluateSegment(seg, (time - times[seg]) / (times[seg + 1] - times[seg]), result);
+      }}
+      getKnot(index, result) {{
+        const dim = this.dim; const idx = index * 3 * dim;
+        for (let i = 0; i < dim; i++) result[i] = this.knots[idx + i * 3 + 1];
+      }}
+      evaluateSegment(segment, t, result) {{
+        const knots = this.knots; const dim = this.dim;
+        const t2 = t * t; const twot = t + t; const omt = 1 - t; const omt2 = omt * omt;
+        let idx = segment * dim * 3;
+        for (let i = 0; i < dim; i++) {{
+          const p0 = knots[idx + 1];
+          const m0 = knots[idx + 2];
+          const m1 = knots[idx + dim * 3];
+          const p1 = knots[idx + dim * 3 + 1];
+          idx += 3;
+          result[i] =
+            p0 * ((1 + twot) * omt2) +
+            m0 * (t * omt2) +
+            p1 * (t2 * (3 - twot)) +
+            m1 * (t2 * (t - 1));
+        }}
+      }}
+      static calcKnots(times, points, smoothness) {{
+        const n = times.length; const dim = points.length / n;
+        const knots = new Array(n * dim * 3);
+        for (let i = 0; i < n; i++) {{
+          const t = times[i];
+          for (let j = 0; j < dim; j++) {{
+            const idx = i * dim + j;
+            const p = points[idx];
+            let tangent;
+            if (i === 0) tangent = (points[idx + dim] - p) / (times[i + 1] - t);
+            else if (i === n - 1) tangent = (p - points[idx - dim]) / (t - times[i - 1]);
+            else tangent = (points[idx + dim] - points[idx - dim]) / (times[i + 1] - times[i - 1]);
+            const inScale = i > 0 ? (times[i] - times[i - 1]) : (times[1] - times[0]);
+            const outScale = i < n - 1 ? (times[i + 1] - times[i]) : (times[i] - times[i - 1]);
+            knots[idx * 3] = tangent * inScale * smoothness;
+            knots[idx * 3 + 1] = p;
+            knots[idx * 3 + 2] = tangent * outScale * smoothness;
+          }}
+        }}
+        return knots;
+      }}
+      static fromPoints(times, points, smoothness = 1) {{
+        return new CubicSpline(times, CubicSpline.calcKnots(times, points, smoothness));
+      }}
+      static fromPointsLooping(length, times, points, smoothness = 1) {{
+        if (times.length < 2) return CubicSpline.fromPoints(times, points, smoothness);
+        const dim = points.length / times.length;
+        const newTimes = times.slice();
+        const newPoints = points.slice();
+        newTimes.push(length + times[0], length + times[1]);
+        newPoints.push(...points.slice(0, dim * 2));
+        newTimes.splice(0, 0, times[times.length - 2] - length, times[times.length - 1] - length);
+        newPoints.splice(0, 0, ...points.slice(points.length - dim * 2));
+        return CubicSpline.fromPoints(newTimes, newPoints, smoothness);
+      }}
+    }}
+
+    function buildPlayer(p) {{
+      const sortedKfs = (p.keyframes || []).slice().sort((a, b) => (a.t || 0) - (b.t || 0));
+      if (sortedKfs.length < 2) return null;
+      const times = []; const points = []; const sourceKf = [];
+      let acc = 0;
+      const lastDef = {{ quat: [0, 0, 0, 1], fov: 60 }};
+      for (let i = 0; i < sortedKfs.length; i++) {{
+        const kf = sortedKfs[i];
+        const tBase = (kf.t || 0) + acc;
+        const quat = (kf.quat && kf.quat.length === 4) ? kf.quat : lastDef.quat;
+        const fov = (typeof kf.fov === 'number') ? kf.fov : lastDef.fov;
+        lastDef.quat = quat; lastDef.fov = fov;
+        let q = quat;
+        if (sourceKf.length > 0) {{
+          const prev = points.slice(-5, -1);
+          const dot = prev[0]*q[0] + prev[1]*q[1] + prev[2]*q[2] + prev[3]*q[3];
+          if (dot < 0) q = [-q[0], -q[1], -q[2], -q[3]];
+        }}
+        times.push(tBase);
+        points.push(kf.pos[0], kf.pos[1], kf.pos[2], q[0], q[1], q[2], q[3], fov);
+        sourceKf.push(i);
+        if (kf.hold_s && kf.hold_s > 0) {{
+          times.push(tBase + kf.hold_s);
+          points.push(kf.pos[0], kf.pos[1], kf.pos[2], q[0], q[1], q[2], q[3], fov);
+          sourceKf.push(i);
+          acc += kf.hold_s;
+        }}
+      }}
+      const smoothness = (typeof p.smoothness === 'number') ? p.smoothness : 1.0;
+      const playSpeed = (typeof p.play_speed === 'number' && p.play_speed > 0) ? p.play_speed : 1.0;
+      const duration = times[times.length - 1];
+      const spline = p.loop
+        ? CubicSpline.fromPointsLooping(duration, times, points, smoothness)
+        : CubicSpline.fromPoints(times, points, smoothness);
+      return {{ spline, times, sortedKfs, sourceKf, duration, loop: !!p.loop, playSpeed }};
+    }}
+
+    const _splineOut = new Array(8);
+    function sampleAt(player, t) {{
+      if (player.loop && t > player.duration) t = t % player.duration;
+      player.spline.evaluate(t, _splineOut);
+      const qx = _splineOut[3], qy = _splineOut[4], qz = _splineOut[5], qw = _splineOut[6];
+      const n = Math.hypot(qx, qy, qz, qw) || 1;
+      const times = player.times;
+      let seg = 0;
+      while (seg < times.length - 1 && times[seg + 1] < t) seg++;
+      return {{
+        pos: [_splineOut[0], _splineOut[1], _splineOut[2]],
+        quat: [qx/n, qy/n, qz/n, qw/n],
+        fov: _splineOut[7],
+        _kfIndex: player.sourceKf[seg],
+      }};
+    }}
+
+    let _player = null;
+    let _t0 = 0;
+    let _activePathId = null;
+    let _lastTriggeredAnnotation = null;
+
+    window._pathTick = function() {{
+      if (!_player) return;
+      const speed = _player.playSpeed || 1.0;
+      const tNow = ((performance.now() - _t0) / 1000) * speed;
+      if (tNow > _player.duration && !_player.loop) {{ stopPath(); return; }}
+      const s = sampleAt(_player, tNow);
+      camera.setPosition(s.pos[0], s.pos[1], s.pos[2]);
+      camera.setRotation(s.quat[0], s.quat[1], s.quat[2], s.quat[3]);
+      camera.camera.fov = s.fov;
+      // Update HUD scrubber
+      const pct = Math.min(1000, Math.max(0, (tNow / _player.duration) * 1000));
+      scrub.value = pct;
+      timeEl.textContent = tNow.toFixed(2) + 's';
+      // Annotation trigger: highlight the marker matching kfs[i].annotation_id.
+      const triggerKf = _player.sortedKfs[s._kfIndex];
+      const triggerId = (triggerKf && triggerKf.annotation_id) || null;
+      if (triggerId !== _lastTriggeredAnnotation) {{
+        markerEls.forEach(m => m.el.querySelector('.ann-dot').classList.remove('path-active'));
+        if (triggerId) {{
+          const ann = annotationsData.find(a => a.id === triggerId);
+          if (ann) {{
+            const idx = annotationsData.indexOf(ann);
+            if (markerEls[idx]) markerEls[idx].el.querySelector('.ann-dot').classList.add('path-active');
+          }}
+        }}
+        _lastTriggeredAnnotation = triggerId;
+      }}
+    }};
+
+    function startPath(pathId) {{
+      const p = cameraPaths.find(x => x.id === pathId);
+      if (!p) return;
+      _player = buildPlayer(p);
+      if (!_player) {{ alert('Path needs at least 2 keyframes.'); return; }}
+      _t0 = performance.now();
+      _activePathId = pathId;
+      cc.enabled = false;  // Disable user controls during playback
+    }}
+
+    function stopPath() {{
+      _player = null; _activePathId = null; _lastTriggeredAnnotation = null;
+      // Rebind CameraControls to where playback left off so it doesn't snap
+      // back to its cached internal pose when re-enabled.
+      const pos = camera.getPosition().clone();
+      const focus = new pc.Vec3().copy(pos).add(new pc.Vec3().copy(camera.forward).mulScalar(5));
+      cc.reset(focus, pos);
+      cc.enabled = true;
+      markerEls.forEach(m => m.el.querySelector('.ann-dot').classList.remove('path-active'));
+    }}
+
+    playBtn.addEventListener('click', () => startPath(select.value));
+    stopBtn.addEventListener('click', stopPath);
+    scrub.addEventListener('input', () => {{
+      if (!_player) {{
+        // Build from currently selected path on first scrub
+        const p = cameraPaths.find(x => x.id === select.value);
+        if (!p) return;
+        _player = buildPlayer(p);
+        if (!_player) return;
+        cc.enabled = false;
+      }}
+      const t = (parseFloat(scrub.value) / 1000) * _player.duration;
+      _t0 = performance.now() - t * 1000;
+      // Don't auto-play; let user release the slider then hit Play.
+    }});
+
+    // Autoplay default path if configured
+    if (defaultPathId) {{
+      select.value = defaultPathId;
+      startPath(defaultPathId);
+    }}
+  }})();
 
   // --- Audio sources from config ---
   (viewerConfig.audio || []).forEach(src => {{
@@ -614,6 +881,20 @@ class LodAssemblyStep(PipelineStep):
     output_folder = FOLDER_OUTPUT
 
     def run(self, output_dir: Path) -> dict:
+        # Dispatch on project.renderer (default 'playcanvas' for back-compat).
+        if getattr(self.project, "renderer", "playcanvas") == "spark":
+            from ..viewers.spark.assembler import SparkAssembler
+            return SparkAssembler().assemble(self, output_dir)
+        return self._run_playcanvas(output_dir)
+
+    def run_streaming(self, output_dir: Path):
+        if getattr(self.project, "renderer", "playcanvas") == "spark":
+            from ..viewers.spark.assembler import SparkAssembler
+            yield from SparkAssembler().assemble_streaming(self, output_dir)
+            return
+        yield from self._run_playcanvas_streaming(output_dir)
+
+    def _run_playcanvas(self, output_dir: Path) -> dict:
         review_dir = self.project.get_folder(FOLDER_REVIEW)
         lod_levels = self.project.lod_levels
 
@@ -670,8 +951,8 @@ class LodAssemblyStep(PipelineStep):
 
         return result
 
-    def run_streaming(self, output_dir: Path):
-        """Generator yielding ProgressEvent during assembly, returns result dict.
+    def _run_playcanvas_streaming(self, output_dir: Path):
+        """Generator yielding ProgressEvent during PlayCanvas assembly, returns result dict.
 
         Reads splat-transform stderr line-by-line for per-chunk step progress
         ([1/8] Writing positions, etc.) and counts output files recursively.

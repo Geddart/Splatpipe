@@ -517,6 +517,19 @@
                         <!-- Collapsible settings: Assemble LODs -->
                         {% if step.name == 'assemble' %}
                         <div id="settings-assemble" class="hidden mt-4 pt-4 border-t border-base-300">
+                            <!-- Output Renderer -->
+                            <div class="form-control mb-4">
+                                <label class="label py-0"><span class="label-text text-xs">Output Renderer</span></label>
+                                <form hx-post="/projects/{{ project.path }}/update-renderer" hx-swap="none">
+                                    <select name="renderer" class="select select-bordered select-xs w-72"
+                                            onchange="this.form.requestSubmit()">
+                                        <option value="playcanvas" {% if project.renderer == 'playcanvas' %}selected{% endif %}>PlayCanvas — chunked SOG, mature</option>
+                                        <option value="spark" {% if project.renderer == 'spark' %}selected{% endif %}>Spark 2 — .rad streaming LoD (Rust build-lod)</option>
+                                    </select>
+                                </form>
+                                <p class="text-xs opacity-40 mt-1">Spark requires the cloned <code>sparkjsdev/spark</code> repo + Rust toolchain (<code>SPARK_REPO</code> env var or sibling clone).</p>
+                            </div>
+
                             <!-- SH Bands -->
                             <div class="form-control mb-4">
                                 <label class="label py-0"><span class="label-text text-xs">SH Bands</span></label>

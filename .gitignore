@@ -39,3 +39,7 @@ imgui.ini
 
 # Claude Code
 .claude/
+
+# DCC bridge distribution archives — re-build via `python tools/dcc-bridge/build.py`
+tools/dcc-bridge/splatpipe_bridge.zip
+tools/dcc-bridge/splatpipe_bridge.mzp

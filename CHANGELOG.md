@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-04-17
+
+### Changed
+- **Minimum Python is now 3.12** (was 3.11). Drops six `hasattr(path, 'is_junction')` polyfills across `core/project.py` and `web/routes/projects.py` — `Path.is_junction()` has been native since 3.12. CI matrix updated: drops 3.11, keeps 3.12 + 3.13, **adds Windows runner** (since junction handling is Windows-specific and now uses native API).
+
+### Added
+- **3DGS Render addon install guide** in `docs/dcc-bridge.md` for the Blender Tier-2 plugin — step-by-step on installing the optional [ReshotAI/gaussian-splatting-blender-addon](https://github.com/ReshotAI/gaussian-splatting-blender-addon) so the splat shows as continuous Gaussians instead of points while the user authors a camera against it. Includes a perf note (point preview while scrubbing, rendered for keyframe placement).
+- Note in the Blender plugin's camera-extraction docs that the splat object is temporarily hidden during sampling (already implemented in v0.6.2; now documented).
+
+## [0.6.3] - 2026-04-17
+
+### Fixed
+- **Max plugin Stand-Up Parent setup — wrong inner rotation in 3ds Max only.** In Max, assigning `inner.parent = outer` preserves the world transform, so setting `inner.rotation = +90°X` *before* parenting (the previous order) left `inner.world = R_+90X` instead of the documented composed `R_-90X`. Two visible symptoms: (a) the splat appeared upside-down in the Max viewport, (b) the v0.6.2 export math gave wrong PC coords (DCC `(0, 0, 5)` came back as PC `(0, -5, 0)` instead of `(0, 5, 0)`, mirrored on Y). The plugin now sets `inner.parent = outer` first, then `inner.rotation = (eulerangles 90 0 0)` — which Max interprets in local coordsys after parenting, yielding the correct `inner.world = R_-90X`. Blender unaffected (it composes `matrix_world = parent @ local` natively, so order doesn't matter there). Caught via 3dsmax-mcp Tier-1 round-trip test against a known-position keyframe sweep — Max output now matches Blender output to ≤1e-6 unit. Worked example in `docs/dcc-bridge.md`.
+
+## [0.6.2] - 2026-04-17
+
+### Fixed
+- **DCC bridge math — Stand-Up Parent compose was missing the final 180°-X flip.** Cameras animated in 3ds Max or Blender came back mirrored on Y: a camera placed at DCC `(0, 0, 5)` (5 units above the splat) was returning as PC `(0, -5, 0)` (5 units *below*) instead of `(0, 5, 0)`. Caught by a Tier-1 Blender round-trip via `blender-mcp`. Both plugins (`tools/dcc-bridge/max/splatpipe_bridge.py`, `tools/dcc-bridge/blender/__init__.py`) and the in-editor Claude prompt template now compose `cam_in_pc_displayed = R_180X @ inv(inner.matrix_world) @ cam.matrix_world` (column-vec / Blender) or `cam.transform * inverse(inner.transform) * rotateXMatrix(180)` (row-vec / MaxScript). Why the extra `R_180X`: `inv(inner)` only takes a DCC world point into the splat's *local* (PLY-native, Y-down) frame; Splatpipe stores camera-paths in PC-displayed (Y-up) frame, which is `R_180X @ PLY-native`. `docs/dcc-bridge.md` updated with the corrected math, the worked example, and a regression note.
+- **Blender camera sampling perf** — `bpy.context.scene.frame_set(f)` triggered a full depsgraph evaluation on the 3M-vertex Gaussian splat preview every frame, which on dense paths (240 frames @ 24 fps × 10s) wedged the MCP connection. The Send-camera operator now temporarily hides the splat object (`hide_viewport=True, hide_render=True`) for the sampling loop and restores its prior visibility after, dropping the per-frame cost to milliseconds.
+
+## [0.6.1] - 2026-04-17
+
+### Added
+- **DCC bridge** for round-trip camera-path authoring in 3ds Max + Blender. Three new HTTP endpoints under `/projects/{p}/dcc/`:
+  - `GET /manifest` — project metadata, splat URLs (full + preview LOD), available LODs, COLMAP detection, frame range, fps, existing paths.
+  - `GET /splat.ply?lod=N` — Range-streamed reviewed PLY for the DCC viewport.
+  - `POST /import-camera` — accepts JSON `{name, fps, coord_frame, frames: [...]}` or a multipart `.glb` upload; appends a new entry to `scene_config.camera_paths`.
+- **Stand-Up Parent** coordinate-system contract documented in `docs/dcc-bridge.md`. Bridge clients wrap the splat in two nested empties (`splatpipe_outer` 180°-X + `splatpipe_inner` +90°-X = net -90°-X). Net effect: splat appears upright in the DCC's Z-up world; on export the camera is composed against `inv(inner.matrix_world)` to land in PlayCanvas-displayed frame. Importer accepts `coord_frame: "playcanvas_displayed"` (already-composed) or `"ply_native"` (applies the 180°-X flip on the way in).
+- **3ds Max plugin** (`tools/dcc-bridge/max/splatpipe_bridge.py`) — pymxs script with a tkinter dialog: paste project URL → Pull splat (creates VRayGaussiansGeom + Stand-Up Parent + camera + frame range) → animate → Send camera. Pure stdlib, no extra deps.
+- **Blender addon** (`tools/dcc-bridge/blender/__init__.py`) — `bl_info` block, two operators (`splatpipe.pull_splat`, `splatpipe.send_camera`), sidebar panel in 3D Viewport. Uses `bpy.ops.wm.ply_import` (Blender 4.0+); recommends optional [3DGS Render addon](https://github.com/ReshotAI/gaussian-splatting-blender-addon) for full Gaussian preview.
+- **"Author in Max / Blender via Claude" button** in the scene editor — opens a modal with a copyable prompt template that drives the same workflow via the `3dsmax-mcp` (and optional community `blender-mcp`) MCP servers. No DCC plugin install required for the Tier 1 path.
+
+### Notes
+- Manual smoke tests of the plugin buttons (D4 / D5 / D8 in the original plan) are user-facing and require live Max + Blender installs with the corresponding MCP servers; not run by CI. The HTTP endpoints + the Stand-Up Parent math are end-to-end verified.
+
+## [0.6.0] - 2026-04-17
+
+### Added
+- **Camera path tours** — author smooth fly-through cameras in the scene editor or import them. Per-path keyframes carry `pos`/`quat`/`fov`/`hold_s` plus optional `annotation_id` for highlighting. Per-path `smoothness` slider (0..1, default 1.0 = full Catmull-Rom) and `play_speed` log-scale slider (0.01×..5×) work live during playback.
+- **Smooth-pass-through spline playback** — ported SuperSplat's MIT cubic Hermite (`src/anim/spline.ts`) into both viewers. 8-D spline over `(pos.xyz, quat.xyzw, fov)`, quat renormalised per frame; `fromPointsLooping` for smooth loop wrap. C1 (velocity) continuity through every keyframe — no stop-start at keys. Same algorithm in PlayCanvas + Spark, byte-identical motion.
+- **glTF camera importer** — `splatpipe path-import scene.glb` (or web upload) parses `KHR_animations` channels for the first perspective camera, walks parent transforms, samples to fixed-step keyframes, applies the 180°-X PLY-native → PC-displayed flip, appends as a new path.
+- **COLMAP capture-camera importer** — `splatpipe path-import-colmap` reads `01_colmap_source/cameras.{txt,bin}` + `images.{txt,bin}`, computes camera-in-world from each image's pose, applies the 180°-X flip, emits a path with one keyframe per image (or every-Nth). Friendly error for passthrough projects with no COLMAP source. Algorithm references SuperSplat's `colmap-loader.ts` (MIT).
+- **Spark 2 renderer** — per-project `renderer: "playcanvas" | "spark"` toggle in the Assemble settings panel. PlayCanvas remains default; switching to Spark emits a `.rad` streaming LoD viewer.
+  - `splatpipe build-lod <project>` standalone CLI for warming the cache.
+  - `viewers/spark/build_lod.py` wraps the Rust `build-lod` binary (sparkjsdev/spark MIT) — toolchain detection (cached binary → `$SPARK_REPO` release → `cargo run --manifest-path …` first-run), sha256+rev cache key in `~/.cache/splatpipe/rad/`, subprocess streaming with `ProgressEvent`-style callback, atomic move into the cache.
+  - `viewers/spark/template.py` emits a self-contained THREE.js + `@sparkjsdev/spark@2.0.0` viewer pinned to `three@0.180.0` (peer dep). Loads `scene.rad` with `paged: true` for HTTP-Range streaming. CSS2DRenderer annotation markers, OrbitControls, conditional bounds clamp, conditional `THREE.AudioListener` only when audio sources exist, foveation knobs (`coneFov0`, `coneFov`, `coneFoveate`, `behindFoveate`).
+  - Tone mapping mapped from PC names: `neutral`→Neutral, `aces`/`aces2`→ACESFilmic, `filmic`→AgX, `linear`→Linear.
+  - Splat oriented with the same 180°-X flip as PC so annotations + camera-paths land in the same place across renderers.
+- **Annotation `id` migration** — `Project.__init__` now runs `_migrate_state()` once, idempotently backfilling stable `id`s on existing annotations so `keyframe.annotation_id` references stay valid.
+- **Cascade on annotation delete** — deleting an annotation clears any `keyframe.annotation_id` references to it across all paths.
+
+### Changed
+- `DEFAULT_SCENE_CONFIG` extended with `camera_paths`, `default_path_id`, `spark_render` (lod_splat_scale, lod_render_scale, foveation, ondemand_lod_fallback).
+- New `pygltflib` runtime dependency (camera-path glTF import).
+- `LodAssemblyStep.run() / run_streaming()` dispatch on `project.renderer`. PlayCanvas pipeline path (chunked SOG via `splat-transform`) is unchanged; Spark path delegates to the new `SparkAssembler`.
+- `splatpipe assemble` summary print handles both renderer shapes (PlayCanvas: chunk count; Spark: `.rad` size, optional `.sog` fallback flag).
+
+### Fixed
+- Mid-drag DOM rebuild bug on per-path sliders — `updatePathSilent` saves to the server without triggering `loadPaths()`/re-render so the slider keeps its dragged value.
+- `gotoKeyframe` in the scene editor — direct `camera.setPosition` was overridden by PlayCanvas's `CameraControls` on the next update tick. Now uses `cc.reset(focus, position)` (`camera-controls.mjs:697`) so the new pose sticks AND the user can keep orbiting from there. `stopPath` rebinds the controls the same way so playback ending doesn't snap back.
+
+### Notes
+- Spark output requires the Rust toolchain + a sibling clone of [sparkjsdev/spark](https://github.com/sparkjsdev/spark) (or `SPARK_REPO` env var). First-time `cargo build --release` of the workspace takes ~2 min; subsequent runs use the cached `build-lod` binary.
+- PlayCanvas pin remains `2.17.0` (2.17.1+ has a regression — see 0.5.0 notes). Spark pin is `2.0.0`.
+
 ## [0.5.0] - 2026-04-16
 
 ### Security

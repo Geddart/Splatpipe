@@ -50,9 +50,10 @@ STEP_DESCRIPTIONS = {
         "floaters, then approve. Auto-approved when trainer is Passthrough."
     ),
     STEP_ASSEMBLE: (
-        "Run splat-transform: convert reviewed PLYs into the PlayCanvas "
-        "streaming format (lod-meta.json + SOG webp chunks) and generate "
-        "the index.html viewer."
+        "Generate the viewer output. With renderer=playcanvas (default): runs "
+        "splat-transform to produce lod-meta.json + SOG webp chunks. With "
+        "renderer=spark: runs Rust build-lod to produce a single scene.rad "
+        "(HTTP-Range streaming). Both write index.html + viewer-config.json."
     ),
     STEP_EXPORT: (
         "Copy 05_output/ to a local folder OR upload it to Bunny CDN. "
