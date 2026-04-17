@@ -38,7 +38,7 @@ async def index(request: Request):
     if not projects_root:
         return RedirectResponse("/settings/?setup=true", status_code=303)
 
-    return templates.TemplateResponse("projects.html", {
+    return templates.TemplateResponse(request, "projects.html", {
         "request": request,
         "projects": projects.list_all_projects(),
     })

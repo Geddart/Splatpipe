@@ -20,7 +20,7 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templa
 
 def _queue_panel_response(request: Request):
     """Render the queue panel partial with current state."""
-    return templates.TemplateResponse("partials/queue_panel.html", {
+    return templates.TemplateResponse(request, "partials/queue_panel.html", {
         "request": request,
         "queue": get_queue_snapshot(),
     })

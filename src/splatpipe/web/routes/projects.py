@@ -157,7 +157,7 @@ def _create_link(link_path: Path, target: Path) -> None:
 @router.get("/new", response_class=HTMLResponse)
 async def new_project_form(request: Request):
     """Show project creation form."""
-    return templates.TemplateResponse("create_project.html", {
+    return templates.TemplateResponse(request, "create_project.html", {
         "request": request,
         "values": {},
         "error": None,
@@ -179,14 +179,14 @@ async def create_project(request: Request):
 
     # Validation
     if not name:
-        return templates.TemplateResponse("create_project.html", {
+        return templates.TemplateResponse(request, "create_project.html", {
             "request": request, "values": values,
             "error": "Project name is required.",
         })
 
     source_path = Path(colmap_dir_str)
     if not source_path.exists():
-        return templates.TemplateResponse("create_project.html", {
+        return templates.TemplateResponse(request, "create_project.html", {
             "request": request, "values": values,
             "error": f"Path does not exist: {source_path}",
         })
@@ -199,7 +199,7 @@ async def create_project(request: Request):
         elif ext == ".ply":
             fmt = "ply"
         else:
-            return templates.TemplateResponse("create_project.html", {
+            return templates.TemplateResponse(request, "create_project.html", {
                 "request": request, "values": values,
                 "error": "File input must be .psht or .ply.",
             })
@@ -210,7 +210,7 @@ async def create_project(request: Request):
     config = load_defaults()
     projects_root = config.get("paths", {}).get("projects_root", "")
     if not projects_root:
-        return templates.TemplateResponse("create_project.html", {
+        return templates.TemplateResponse(request, "create_project.html", {
             "request": request, "values": values,
             "error": "projects_root not configured. Go to Settings first.",
         })
@@ -218,7 +218,7 @@ async def create_project(request: Request):
     project_dir = Path(projects_root) / name
 
     if project_dir.exists() and (project_dir / "state.json").exists():
-        return templates.TemplateResponse("create_project.html", {
+        return templates.TemplateResponse(request, "create_project.html", {
             "request": request, "values": values,
             "error": f"Project already exists at {project_dir}",
         })
@@ -405,7 +405,7 @@ async def add_lod(request: Request, project_path: str):
     levels = _renumber_lods(levels)
     proj.set_lod_levels(levels)
     # Return updated LOD list partial
-    return templates.TemplateResponse("partials/lod_list.html", {
+    return templates.TemplateResponse(request, "partials/lod_list.html", {
         "request": request,
         "lod_levels": levels,
         "project_path": project_path,
@@ -425,7 +425,7 @@ async def remove_lod(request: Request, project_path: str):
         msg = f"Removed {removed['name']}"
     else:
         msg = "Invalid LOD index"
-    return templates.TemplateResponse("partials/lod_list.html", {
+    return templates.TemplateResponse(request, "partials/lod_list.html", {
         "request": request,
         "lod_levels": levels,
         "project_path": project_path,
@@ -499,7 +499,7 @@ async def serve_thumbnail(project_path: str):
 @router.get("/", response_class=HTMLResponse)
 async def project_list(request: Request):
     """Show all projects."""
-    return templates.TemplateResponse("projects.html", {
+    return templates.TemplateResponse(request, "projects.html", {
         "request": request,
         "projects": list_all_projects(),
     })
@@ -675,7 +675,7 @@ async def project_detail(request: Request, project_path: str):
 
     from ...core.constants import STEP_DESCRIPTIONS
 
-    return templates.TemplateResponse("project_detail.html", {
+    return templates.TemplateResponse(request, "project_detail.html", {
         "request": request,
         "project": {
             "name": state["name"],
@@ -714,7 +714,7 @@ async def toggle_lod(request: Request, project_path: str):
     proj = Project(Path(project_path))
     proj.set_lod_enabled(index, enabled)
     levels = proj.lod_levels
-    return templates.TemplateResponse("partials/lod_list.html", {
+    return templates.TemplateResponse(request, "partials/lod_list.html", {
         "request": request,
         "lod_levels": levels,
         "project_path": project_path,
@@ -760,7 +760,7 @@ async def update_lod_splats(request: Request, project_path: str):
     levels[index]["max_splats"] = parsed["max_splats"]
     levels = _renumber_lods(levels)
     proj.set_lod_levels(levels)
-    return templates.TemplateResponse("partials/lod_list.html", {
+    return templates.TemplateResponse(request, "partials/lod_list.html", {
         "request": request,
         "lod_levels": levels,
         "project_path": project_path,
@@ -1136,7 +1136,7 @@ async def scene_editor(request: Request, project_path: str):
         or (output_dir / "scene.rad").exists()
         or (output_dir / "scene.sog").exists()
     )
-    return templates.TemplateResponse("scene_editor.html", {
+    return templates.TemplateResponse(request, "scene_editor.html", {
         "request": request,
         "project_name": proj.name,
         "project_path": str(proj.root),

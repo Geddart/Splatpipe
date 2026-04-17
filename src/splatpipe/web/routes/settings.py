@@ -98,7 +98,7 @@ def _tool_status(config: dict) -> dict[str, bool]:
 async def settings_page(request: Request, setup: bool = False):
     """Show settings page."""
     config = load_defaults()
-    return templates.TemplateResponse("settings.html", {
+    return templates.TemplateResponse(request, "settings.html", {
         "request": request,
         "config": config,
         "schema": CONFIG_SCHEMA,
@@ -138,7 +138,7 @@ async def save_settings(request: Request):
         from starlette.responses import RedirectResponse
         return RedirectResponse("/", status_code=303)
 
-    return templates.TemplateResponse("settings.html", {
+    return templates.TemplateResponse(request, "settings.html", {
         "request": request,
         "config": config,
         "schema": CONFIG_SCHEMA,
