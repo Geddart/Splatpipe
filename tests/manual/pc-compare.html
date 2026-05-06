@@ -72,13 +72,12 @@
         <span>Test bump</span>
         <span class="version">playcanvas@2.18.1</span>
       </div>
-      <!-- jsdelivr serves /gh/ files as text/plain (XSS hardening), so the
-           iframe is wrapped in htmlpreview.github.io which proxies the raw
-           file with the correct text/html MIME. The viewer's <base href>
-           still resolves relative URLs against Bunny CDN regardless of
-           which proxy delivered the page. -->
+      <!-- Hosted on the same Bunny CDN as the production splat so the
+           browser gets proper text/html (jsdelivr's /gh/ route serves all
+           files as text/plain for XSS hardening, which would have made the
+           iframe show source instead of rendering). -->
       <iframe
-        src="https://htmlpreview.github.io/?https://raw.githubusercontent.com/Geddart/Splatpipe/main/tests/manual/pc-2-18-1.html"
+        src="https://splatpipe-cdn.b-cdn.net/pc-test/pc-2-18-1.html"
         title="PlayCanvas 2.18.1 test"
         loading="eager"
         allowfullscreen></iframe>
