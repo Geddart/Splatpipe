@@ -495,3 +495,94 @@ class TestLodAssembly:
         assert "AudioHandler" in html
         assert "audiolistener" in html
         assert "viewerConfig.audio" in html
+
+
+# splat-transform v2.0.4 stderr captured from a real run on a 46K-gaussian PLY
+# (`npx --yes @playcanvas/splat-transform@2.0.4 --no-tty input.ply -l 0
+# --filter-nan output/lod-meta.json`). The progress format was refactored in
+# v2.0 (PR #204) — the v1.x `[1/8] Generating morton order` step labels are
+# gone, replaced by a structured `▸`-prefixed tree with chunks emitted as
+# `▸ [N/M] X_Y` lines inside the Writing section.
+_V2_STDERR_SINGLE_LOD_2_CHUNKS = """\
+splat-transform v2.0.4 (fa46db3)
+▸ [1/2] Input /path/to/input.ply
+  ▸ Reading
+    ▸ decoding 0.005s
+  · 46.2K gaussians · 0 SH bands · 3.0MB
+  ▸ Filter NaN
+    · no change
+▸ [2/2] Output /path/to/lod-meta.json
+  · 46.2K gaussians · 0 SH bands · 3.2MB
+  ▸ Writing
+    · lod-meta.json (211B)
+    ▸ [1/2] 0_0
+      · means_l.webp (135.4KB)
+      · means_u.webp (64.6KB)
+      · quats.webp (93.2KB)
+      · scales.webp (106.6KB)
+      · sh0.webp (109.3KB)
+      · meta.json (10.1KB)
+    ▸ [2/2] 0_1
+      · means_l.webp (130.0KB)
+      · means_u.webp (62.0KB)
+      · quats.webp (92.0KB)
+      · scales.webp (105.0KB)
+      · sh0.webp (108.0KB)
+      · meta.json (10.1KB)
+done in 1.499s  [peak 119.1KB]
+"""
+
+
+class TestProgressRegex:
+    """Lock in the splat-transform v2.x stderr parser.
+
+    The regexes live in lod_assembly._CHUNK_RE / _SECTION_RE. Each chunk
+    line emitted inside the Writing section corresponds to one SOG chunk
+    being produced — counting them gives us chunks_done for progress.
+    """
+
+    def test_chunk_re_matches_indented_chunk_lines(self):
+        from splatpipe.steps.lod_assembly import _CHUNK_RE
+
+        chunk_lines = [
+            line for line in _V2_STDERR_SINGLE_LOD_2_CHUNKS.splitlines()
+            if _CHUNK_RE.match(line)
+        ]
+        assert len(chunk_lines) == 2
+        m0 = _CHUNK_RE.match(chunk_lines[0])
+        assert m0 is not None
+        assert (m0.group(1), m0.group(2), m0.group(3), m0.group(4)) == (
+            "1", "2", "0", "0",
+        )
+        m1 = _CHUNK_RE.match(chunk_lines[1])
+        assert m1 is not None
+        assert (m1.group(1), m1.group(2), m1.group(3), m1.group(4)) == (
+            "2", "2", "0", "1",
+        )
+
+    def test_chunk_re_does_not_match_top_level_file_steps(self):
+        """`▸ [1/2] Input ...` is a file step, not a chunk — must not match."""
+        from splatpipe.steps.lod_assembly import _CHUNK_RE
+
+        assert _CHUNK_RE.match("▸ [1/2] Input /path/to/input.ply") is None
+        assert _CHUNK_RE.match("▸ [2/2] Output /path/to/lod-meta.json") is None
+
+    def test_chunk_re_does_not_match_v1_format(self):
+        """v1.x `[1/8] Generating morton order` lines must not be miscounted
+        as chunks if a v1.x splat-transform somehow gets invoked."""
+        from splatpipe.steps.lod_assembly import _CHUNK_RE
+
+        assert _CHUNK_RE.match("[1/8] Generating morton order") is None
+        assert _CHUNK_RE.match("  [1/8] Generating morton order") is None
+
+    def test_section_re_matches_writing_reading_and_filter(self):
+        from splatpipe.steps.lod_assembly import _SECTION_RE
+
+        sections = [
+            (_SECTION_RE.match(line).group(1) if _SECTION_RE.match(line) else None)
+            for line in _V2_STDERR_SINGLE_LOD_2_CHUNKS.splitlines()
+        ]
+        sections = [s for s in sections if s]
+        assert "Reading" in sections
+        assert "Writing" in sections
+        assert "Filter NaN" in sections

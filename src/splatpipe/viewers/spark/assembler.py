@@ -204,6 +204,7 @@ def _emit_sog_fallback(project, input_ply: Path, output_dir: Path) -> None:
     cmd = [
         "node", "--max-old-space-size=32000",
         str(splat_transform_mjs),
+        "--no-tty",
         str(input_ply),
         "--filter-nan",
         "--filter-harmonics", str(sh_bands),

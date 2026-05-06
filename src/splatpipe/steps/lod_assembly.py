@@ -4,17 +4,31 @@ Takes reviewed PLY files from 04_review/ and produces PlayCanvas-ready
 LOD streaming output (lod-meta.json + SOG chunk files + index.html viewer)
 in 05_output/.
 
-CLI syntax (splat-transform v1.7+):
-  splat-transform lod0.ply -l 0 lod1.ply -l 1 ... --filter-nan output/lod-meta.json
+CLI syntax (splat-transform v2.x):
+  splat-transform --no-tty lod0.ply -l 0 lod1.ply -l 1 ... --filter-nan
+    output/lod-meta.json
 
 Output structure (per chunk):
   {lod}_{chunk}/meta.json, means_l.webp, means_u.webp, quats.webp,
   scales.webp, sh0.webp, shN_centroids.webp, shN_labels.webp
 
-splat-transform stderr progress:
-  [1/8] Generating morton order
-  [2/8] Writing positions
-  ... (8 steps per chunk, 6 if no SH bands)
+splat-transform v2.x stderr structure (--no-tty):
+  splat-transform v2.0.4 (...)
+  ▸ [1/2] Input <path>            ← top-level file step (1 of N inputs+output)
+    ▸ Reading
+      ▸ decoding [...] 0.005s
+    · 46.2K gaussians · ...       ← stat lines start with ·
+    ▸ Filter NaN
+  ▸ [2/2] Output <path>           ← Output section
+    ▸ Writing
+      · lod-meta.json (211B)
+      ▸ [1/N] X_Y                 ← chunk index (X=lod, Y=chunk-in-lod)
+        · means_l.webp (...)
+        ...
+  done in 1.499s [peak 119.1KB]
+
+The v1.x format (`[1/8] Generating morton order` per chunk) is no longer
+emitted — splat-transform v2.0 refactored its progress reporting (PR #204).
 """
 
 import json
@@ -854,6 +868,12 @@ def _copy_project_assets(project_root: Path, output_dir: Path) -> None:
 _DEFAULT_BIN_SIZE = 512 * 1024  # 524,288 splats per output chunk
 _FILES_PER_CHUNK = 8  # 7 webp + 1 meta.json
 
+# Indented `▸ [N/M] X_Y` line emitted once per output chunk in v2.x stderr.
+# X = lod index, Y = chunk index within that lod.
+_CHUNK_RE = re.compile(r"^\s+▸\s+\[(\d+)/(\d+)\]\s+(\d+)_(\d+)\s*$")
+# Top-level `▸ Reading` / `▸ Writing` / `▸ Filter NaN` section markers.
+_SECTION_RE = re.compile(r"^\s*▸\s+([A-Z][A-Za-z ]+)\s*$")
+
 
 def _count_ply_vertices(ply_path: Path) -> int:
     """Read vertex count from PLY header without loading the full file."""
@@ -1003,6 +1023,7 @@ class LodAssemblyStep(PipelineStep):
         cmd = [
             "node", "--max-old-space-size=32000",
             str(splat_transform_mjs),
+            "--no-tty",
         ] + input_args + [
             "--filter-nan",
             "--filter-harmonics", str(sh_bands),
@@ -1017,13 +1038,12 @@ class LodAssemblyStep(PipelineStep):
                 item.unlink()
 
         t0 = time.time()
-        # Read stderr line-by-line for per-chunk step progress
+        # Read stderr line-by-line for chunk progress (v2.x format)
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
 
         stderr_lines = []
-        step_re = re.compile(r"\[(\d+)/(\d+)\]\s*(.*)")
         chunks_done = 0
         last_step_msg = ""
 
@@ -1052,14 +1072,18 @@ class LodAssemblyStep(PipelineStep):
                 if line is None:
                     break
                 stderr_lines.append(line)
-                m = step_re.match(line)
+                m = _CHUNK_RE.search(line)
                 if m:
-                    step_num, total_steps, step_name = m.group(1), m.group(2), m.group(3)
-                    last_step_msg = f"[{step_num}/{total_steps}] {step_name}"
-                    if step_num == total_steps:
-                        chunks_done += 1
-                elif "done" in line:
-                    pass  # final completion marker
+                    chunk_n, chunk_total = m.group(1), m.group(2)
+                    chunks_done += 1
+                    last_step_msg = (
+                        f"chunk {chunk_n}/{chunk_total} "
+                        f"({m.group(3)}_{m.group(4)})"
+                    )
+                else:
+                    section = _SECTION_RE.match(line)
+                    if section:
+                        last_step_msg = section.group(1)
 
             # Count actual files recursively
             file_count = sum(1 for _ in output_dir.rglob("*") if _.is_file())
@@ -1141,6 +1165,7 @@ class LodAssemblyStep(PipelineStep):
         cmd = [
             "node", "--max-old-space-size=32000",
             str(splat_transform_mjs),
+            "--no-tty",
         ] + input_args + [
             "--filter-nan",
             "--filter-harmonics", str(sh_bands),

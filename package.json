@@ -1,5 +1,5 @@
 {
   "dependencies": {
-    "@playcanvas/splat-transform": "^1.10.2"
+    "@playcanvas/splat-transform": "^2.0.4"
   }
 }

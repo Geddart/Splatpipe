@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **`@playcanvas/splat-transform` bumped to `^2.0.4`** (was `^1.10.2`). v2.0 refactored progress reporting (PR #204) — the v1.x `[1/8] Generating morton order` per-chunk step labels are gone, replaced by a `▸`-prefixed structured tree. The `lod_assembly` progress parser now matches the v2.x chunk lines (`▸ [N/M] X_Y` inside the Writing section) via `_CHUNK_RE`, with `_SECTION_RE` capturing top-level section labels (Reading / Writing / Filter NaN) for the user-visible step message. Both the streaming and non-streaming command builders now pass `--no-tty` so the new logger emits stable, line-by-line output suitable for subprocess piping. Captured-stderr unit tests in `test_lod_assembly.py::TestProgressRegex` lock the parser against the v2.x format.
+- **`pyproject.toml` `[tool.ruff] target-version`** updated from `py311` to `py312` to match the Python floor bumped in v0.7.0.
+
 ## [0.7.0] - 2026-04-17
 
 ### Changed
