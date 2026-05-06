@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Base href makes every relative URL in the rest of the page (lod-meta.json,
+       viewer-config.json, chunk webps, etc.) resolve to the deployed splat on
+       Bunny CDN. This file is meant to be served from anywhere (jsdelivr,
+       gh-pages, local dev) while still loading the real splat data. -->
+  <base href="https://splatpipe-cdn.b-cdn.net/Gutsmutstrasse/">
+  <title>PC 2.18.1 test — Gutsmutstrasse</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #1a1a1a;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    canvas { width: 100vw; height: 100vh; display: block; }
+    #header {
+      position: absolute; top: 0; left: 0; right: 0; z-index: 10;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 20px; pointer-events: none;
+      background: linear-gradient(180deg, rgba(0,0,0,0.7) 0%, rgba(0,0,0,0) 100%);
+    }
+    #header > * { pointer-events: auto; }
+    #title { color: #fff; }
+    #title h1 { font-size: 18px; font-weight: 600; }
+    #title p { font-size: 12px; color: #aaa; margin-top: 2px; }
+    #quality-buttons { display: flex; gap: 6px; align-items: center; }
+    .quality-btn {
+      padding: 8px 16px; border: 1px solid rgba(255,255,255,0.3);
+      border-radius: 6px; background: rgba(0,0,0,0.5); color: #ccc;
+      font-size: 14px; font-weight: 500; cursor: pointer; transition: all 0.2s;
+    }
+    .quality-btn:hover { background: rgba(255,255,255,0.15); color: #fff; }
+    .quality-btn.active {
+      background: rgba(255,255,255,0.25); color: #fff;
+      border-color: rgba(255,255,255,0.6); font-weight: 700;
+    }
+    #stats {
+      position: absolute; bottom: 0; left: 0; right: 0; z-index: 10;
+      text-align: center; padding: 16px; pointer-events: none;
+      background: linear-gradient(0deg, rgba(0,0,0,0.7) 0%, rgba(0,0,0,0) 100%);
+    }
+    #splat-count {
+      font-size: 28px; font-weight: 300; color: #fff;
+      text-shadow: 0 2px 8px rgba(0,0,0,0.8);
+    }
+    #debug-panel {
+      position: absolute; top: 60px; right: 20px; z-index: 10;
+      background: rgba(0,0,0,0.6); border-radius: 8px;
+      padding: 10px 14px; color: #ccc; font-size: 12px;
+    }
+    #debug-panel label {
+      display: flex; align-items: center; gap: 6px; cursor: pointer; margin: 4px 0;
+    }
+    #debug-panel input[type="checkbox"] { cursor: pointer; }
+    #loading {
+      position: absolute; inset: 0; z-index: 100;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      background: #1a1a1a; transition: opacity 0.5s;
+    }
+    #loading.hidden { opacity: 0; pointer-events: none; }
+    #loading p { color: #aaa; font-size: 16px; margin-top: 16px; }
+    .spinner {
+      width: 40px; height: 40px;
+      border: 3px solid rgba(255,255,255,0.1); border-top-color: #fff;
+      border-radius: 50%; animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #controls-hint {
+      position: absolute; bottom: 60px; left: 20px; z-index: 10;
+      color: rgba(255,255,255,0.4); font-size: 11px; pointer-events: none;
+    }
+    #lod-sliders input[type="range"] { cursor: pointer; }
+    #annotation-markers { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 15; }
+    .ann-marker { position: absolute; transform: translate(-50%, -100%); pointer-events: auto; cursor: pointer; transition: opacity 0.2s; }
+    .ann-dot {
+      width: 28px; height: 28px; border-radius: 50%; background: #ff6b35; color: white;
+      display: flex; align-items: center; justify-content: center; font-size: 13px;
+      font-weight: 700; border: 2px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+    }
+    .ann-tooltip {
+      display: none; position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
+      background: rgba(0,0,0,0.9); color: white; padding: 8px 12px; border-radius: 8px;
+      white-space: nowrap; font-size: 12px; line-height: 1.4; max-width: 200px; pointer-events: none;
+    }
+    .ann-tooltip h4 { font-weight: 600; margin: 0 0 2px; }
+    .ann-tooltip p { margin: 0; opacity: 0.8; white-space: normal; }
+    .ann-marker:hover .ann-tooltip { display: block; }
+  </style>
+</head>
+<body>
+  <canvas id="app-canvas"></canvas>
+
+  <div id="header">
+    <div id="title">
+      <h1>Gutsmutstrasse</h1>
+      <p>PC 2.18.1 test &middot; Splatpipe Viewer</p>
+    </div>
+    <div id="quality-buttons">
+      <button class="quality-btn" data-preset="low">Low</button>
+      <button class="quality-btn" data-preset="medium">Medium</button>
+      <button class="quality-btn" data-preset="high">High</button>
+      <button class="quality-btn" data-preset="ultra">Ultra</button>
+      <button class="quality-btn" data-preset="custom">Custom</button>
+      <select id="splat-budget" class="quality-btn" style="appearance:auto">
+        <option value="0">No limit</option>
+        <option value="1000000">1M</option>
+        <option value="2000000">2M</option>
+        <option value="3000000">3M</option>
+        <option value="4000000">4M</option>
+        <option value="6000000">6M</option>
+      </select>
+    </div>
+  </div>
+
+  <div id="lod-sliders" style="display:none; position:absolute; top:60px; left:20px; z-index:10;
+       background:rgba(0,0,0,0.8); border-radius:8px; padding:12px 16px; color:#ccc; font-size:12px;">
+    <div style="font-weight:600; margin-bottom:8px;">LOD Distances</div>
+  </div>
+
+  <div id="debug-panel">
+    <label><input type="checkbox" id="debug-lod"> Colorize LOD</label>
+    <label><input type="checkbox" id="debug-sh"> Colorize SH updates</label>
+  </div>
+
+  <div id="stats">
+    <div id="splat-count">Splats: 0.00M</div>
+  </div>
+
+  <div id="controls-hint">
+    WASD / Arrow keys to move &middot; Mouse drag to look &middot; Scroll to zoom &middot; Shift for fast
+  </div>
+
+  <div id="loading">
+    <div class="spinner"></div>
+    <p>Loading splats...</p>
+  </div>
+
+  <div id="annotation-markers"></div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "playcanvas": "https://cdn.jsdelivr.net/npm/playcanvas@2.18.1/+esm"
+    }
+  }
+  </script>
+  <script type="module">
+  import * as pc from 'playcanvas';
+
+  const CAMERA_CONTROLS_URL =
+    'https://cdn.jsdelivr.net/npm/playcanvas@2.18.1/scripts/esm/camera-controls.mjs';
+  const { CameraControls } = await import(CAMERA_CONTROLS_URL);
+
+  const canvas = document.getElementById('app-canvas');
+  window.focus();
+
+  const SPLAT_URL = 'lod-meta.json';
+  const PROJECT_NAME = 'Gutsmutstrasse';
+
+  // LOD distances baked from project config
+  const lodDistances = [5];
+  const numLods = lodDistances.length;
+
+  // PlayCanvas 2.17+ uses geometric progression: distance[i] = baseDistance * multiplier^i
+  // Derive from project distances: base = distances[0], mult = geometric mean of ratios
+  const projectBaseDistance = Math.max(1, lodDistances[0] || 5);
+  const rawMultiplier = numLods > 1
+    ? Math.pow(lodDistances[numLods - 1] / projectBaseDistance, 1 / (numLods - 1))
+    : 3;
+  // Clamp to the slider's valid range so the UI stays consistent with what's applied
+  const projectMultiplier = Math.min(5, Math.max(1.2, rawMultiplier));
+
+  // Build LOD presets using base+multiplier
+  const LOD_PRESETS = {
+    ultra: { range: [0, Math.min(numLods - 1, Math.floor(numLods * 0.7))],
+              baseDistance: projectBaseDistance, multiplier: projectMultiplier },
+    high:  { range: [0, numLods - 1],
+              baseDistance: projectBaseDistance, multiplier: projectMultiplier },
+    medium: { range: [Math.min(1, numLods - 1), numLods - 1],
+               baseDistance: projectBaseDistance, multiplier: projectMultiplier },
+    low:    { range: [Math.max(0, numLods - 2), numLods - 1],
+               baseDistance: projectBaseDistance, multiplier: projectMultiplier }
+  };
+
+  const gfxOptions = { deviceTypes: ['webgpu', 'webgl2'], antialias: false };
+  const device = await pc.createGraphicsDevice(canvas, gfxOptions);
+  const createOptions = new pc.AppOptions();
+  createOptions.graphicsDevice = device;
+  createOptions.mouse = new pc.Mouse(document.body);
+  createOptions.touch = new pc.TouchDevice(document.body);
+  createOptions.keyboard = new pc.Keyboard(document.body);
+  createOptions.componentSystems = [
+    pc.RenderComponentSystem, pc.CameraComponentSystem,
+    pc.LightComponentSystem, pc.ScriptComponentSystem,
+    pc.GSplatComponentSystem,
+    pc.SoundComponentSystem, pc.AudioListenerComponentSystem
+  ];
+  createOptions.resourceHandlers = [
+    pc.TextureHandler, pc.ContainerHandler,
+    pc.ScriptHandler, pc.GSplatHandler, pc.AudioHandler
+  ];
+
+  const app = new pc.AppBase(canvas);
+  app.init(createOptions);
+  app.setCanvasFillMode(pc.FILLMODE_FILL_WINDOW);
+  app.setCanvasResolution(pc.RESOLUTION_AUTO);
+
+  const dpr = window.devicePixelRatio || 1;
+  device.maxPixelRatio = dpr >= 2 ? dpr * 0.5 : dpr;
+
+  const onResize = () => app.resizeCanvas();
+  window.addEventListener('resize', onResize);
+  app.on('destroy', () => window.removeEventListener('resize', onResize));
+
+  const splatAsset = new pc.Asset('gsplat', 'gsplat', { url: SPLAT_URL });
+  app.assets.add(splatAsset);
+  await new Promise((resolve, reject) => {
+    splatAsset.on('load', resolve);
+    splatAsset.on('error', err => reject(new Error(err)));
+    app.assets.load(splatAsset);
+  });
+
+  // --- Load viewer config ---
+  const _DEFAULTS = {
+    camera: { pitch_min: -89, pitch_max: 89, zoom_min: 1, zoom_max: 200,
+              ground_height: 0.3, bounds_radius: 150 },
+    splat_budget: 0,
+    annotations: [],
+    background: { type: 'color', color: '#1a1a1a' },
+    postprocessing: { tonemapping: 'neutral', exposure: 1.5,
+                      bloom: false, vignette: false },
+    audio: []
+  };
+  let viewerConfig = _DEFAULTS;
+  try {
+    const cfgResp = await fetch('viewer-config.json');
+    if (cfgResp.ok) viewerConfig = { ..._DEFAULTS, ...await cfgResp.json() };
+  } catch (e) { /* use defaults */ }
+
+  app.start();
+
+  // --- Apply post-processing from config ---
+  const pp = viewerConfig.postprocessing || _DEFAULTS.postprocessing;
+  app.scene.exposure = pp.exposure ?? 1.5;
+
+  const TONEMAP = {
+    linear: pc.TONEMAP_LINEAR, neutral: pc.TONEMAP_NEUTRAL,
+    aces: pc.TONEMAP_ACES, aces2: pc.TONEMAP_ACES2, filmic: pc.TONEMAP_FILMIC
+  };
+
+  app.scene.gsplat.lodUpdateAngle = 90;
+  app.scene.gsplat.lodBehindPenalty = 2;
+  app.scene.gsplat.radialSorting = true;
+  app.scene.gsplat.lodUpdateDistance = 1;
+  app.scene.gsplat.lodUnderfillLimit = 10;
+  app.scene.gsplat.colorUpdateDistance = 1;
+  app.scene.gsplat.colorUpdateAngle = 4;
+  app.scene.gsplat.colorUpdateDistanceLodScale = 2;
+  app.scene.gsplat.colorUpdateAngleLodScale = 2;
+
+  const splatEntity = new pc.Entity(PROJECT_NAME);
+  splatEntity.addComponent('gsplat', { asset: splatAsset, unified: true });
+  splatEntity.setLocalEulerAngles(180, 0, 0);
+  app.root.addChild(splatEntity);
+  const gs = splatEntity.gsplat;
+
+  const focusPoint = new pc.Vec3(0, 1, 0);
+  const camera = new pc.Entity('camera');
+  camera.addComponent('camera', {
+    clearColor: new pc.Color(0.15, 0.15, 0.15),
+    fov: 75,
+    toneMapping: TONEMAP[pp.tonemapping] ?? pc.TONEMAP_NEUTRAL
+  });
+
+  // --- Apply background from config ---
+  const bg = viewerConfig.background || _DEFAULTS.background;
+  if (bg.type === 'color' && bg.color) {
+    camera.camera.clearColor = new pc.Color().fromString(bg.color);
+    document.body.style.background = bg.color;
+  }
+
+  camera.setLocalPosition(0, 2, -10);
+  app.root.addChild(camera);
+  camera.addComponent('script');
+  // Only attach the audiolistener when the scene actually has audio sources —
+  // saves the engine some idle work when there's nothing to play.
+  if ((viewerConfig.audio || []).length > 0) {
+    camera.addComponent('audiolistener');
+  }
+  const cc = camera.script.create(CameraControls);
+  Object.assign(cc, {
+    sceneSize: 500,
+    moveSpeed: 4,
+    moveFastSpeed: 15,
+    enableOrbit: true,
+    enablePan: true,
+    focusPoint: focusPoint
+  });
+
+  // --- Apply camera constraints from config ---
+  // Camera constraints are opt-in (cam.enabled === true). When disabled,
+  // the user can fly anywhere — no pitch/zoom/ground/bounds clamping.
+  const cam = viewerConfig.camera || _DEFAULTS.camera;
+  if (cam.enabled === true) {
+    cc.pitchRange = new pc.Vec2(cam.pitch_min, cam.pitch_max);
+    cc.zoomRange = new pc.Vec2(cam.zoom_min, cam.zoom_max);
+  }
+
+  // Quality preset buttons
+  const buttons = document.querySelectorAll('.quality-btn');
+  const isMobile = pc.platform.mobile;
+  let currentPreset = isMobile ? 'medium' : 'high';
+
+  // --- Custom LOD distance controls (PlayCanvas 2.17+ base+multiplier) ---
+  // Colors match PlayCanvas engine's colorizeLod exactly (gsplat-manager.js _lodColorsRaw)
+  const LOD_COLORS = [
+    'rgb(255,0,0)', 'rgb(0,255,0)', 'rgb(0,0,255)', 'rgb(255,255,0)',
+    'rgb(255,0,255)', 'rgb(0,255,255)', 'rgb(255,128,0)', 'rgb(128,0,255)'
+  ];
+  const LOD_NAMES = ['Highest', 'High', 'Medium', 'Low', 'Lower', 'Lowest', 'Min', 'Tiny'];
+  const sliderPanel = document.getElementById('lod-sliders');
+  let customBase = projectBaseDistance;
+  let customMultiplier = projectMultiplier;
+
+  function buildSliderPanel() {
+    // Base distance slider (first LOD transition)
+    const baseRow = document.createElement('div');
+    baseRow.style.cssText = 'display:flex; align-items:center; gap:8px; margin:4px 0;';
+    const baseLabel = document.createElement('span');
+    baseLabel.textContent = 'Base';
+    baseLabel.style.cssText = 'width:52px; font-size:11px; color:#ccc; font-weight:600;';
+    const baseSlider = document.createElement('input');
+    baseSlider.type = 'range'; baseSlider.min = '1'; baseSlider.max = '50'; baseSlider.step = '0.5';
+    baseSlider.value = String(customBase);
+    baseSlider.style.cssText = 'flex:1; height:4px;';
+    const baseVal = document.createElement('span');
+    baseVal.textContent = customBase.toFixed(1) + 'm';
+    baseVal.style.cssText = 'width:44px; text-align:right; font-size:11px; font-family:monospace; color:#ccc;';
+    baseRow.append(baseLabel, baseSlider, baseVal);
+    sliderPanel.appendChild(baseRow);
+
+    // Multiplier slider (geometric ratio between LODs)
+    const multRow = document.createElement('div');
+    multRow.style.cssText = 'display:flex; align-items:center; gap:8px; margin:4px 0;';
+    const multLabel = document.createElement('span');
+    multLabel.textContent = 'Mult';
+    multLabel.style.cssText = 'width:52px; font-size:11px; color:#ccc; font-weight:600;';
+    const multSlider = document.createElement('input');
+    multSlider.type = 'range'; multSlider.min = '1.2'; multSlider.max = '5'; multSlider.step = '0.1';
+    multSlider.value = String(customMultiplier);
+    multSlider.style.cssText = 'flex:1; height:4px;';
+    const multVal = document.createElement('span');
+    multVal.textContent = customMultiplier.toFixed(2) + 'x';
+    multVal.style.cssText = 'width:44px; text-align:right; font-size:11px; font-family:monospace; color:#ccc;';
+    multRow.append(multLabel, multSlider, multVal);
+    sliderPanel.appendChild(multRow);
+
+    // Read-only computed per-LOD distance preview
+    const previewRows = [];
+    for (let i = 0; i < numLods; i++) {
+      const color = LOD_COLORS[i % LOD_COLORS.length];
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex; align-items:center; gap:8px; margin:2px 0; padding-left:8px;';
+      const dot = document.createElement('span');
+      dot.style.cssText = 'width:6px; height:6px; border-radius:50%; flex-shrink:0; background:' + color;
+      const name = document.createElement('span');
+      name.textContent = (LOD_NAMES[i] || 'LOD ' + i);
+      name.style.cssText = 'width:52px; font-size:10px; color:' + color + ';';
+      const dist = document.createElement('span');
+      dist.style.cssText = 'flex:1; font-size:10px; font-family:monospace; color:' + color + ';';
+      row.append(dot, name, dist);
+      sliderPanel.appendChild(row);
+      previewRows.push(dist);
+    }
+
+    function updatePreview() {
+      for (let i = 0; i < numLods; i++) {
+        const d = customBase * Math.pow(customMultiplier, i);
+        previewRows[i].textContent = d.toFixed(1) + 'm';
+      }
+    }
+    updatePreview();
+
+    baseSlider.addEventListener('input', () => {
+      customBase = parseFloat(baseSlider.value);
+      baseVal.textContent = customBase.toFixed(1) + 'm';
+      gs.lodBaseDistance = customBase;
+      updatePreview();
+    });
+    multSlider.addEventListener('input', () => {
+      customMultiplier = parseFloat(multSlider.value);
+      multVal.textContent = customMultiplier.toFixed(2) + 'x';
+      gs.lodMultiplier = customMultiplier;
+      updatePreview();
+    });
+  }
+  buildSliderPanel();
+
+  function applyPreset(name) {
+    currentPreset = name;
+    if (name === 'custom') {
+      sliderPanel.style.display = 'block';
+      app.scene.gsplat.lodRangeMin = 0;
+      app.scene.gsplat.lodRangeMax = numLods - 1;
+      gs.lodBaseDistance = customBase;
+      gs.lodMultiplier = customMultiplier;
+    } else {
+      const preset = LOD_PRESETS[name];
+      if (!preset) return;
+      sliderPanel.style.display = 'none';
+      app.scene.gsplat.lodRangeMin = preset.range[0];
+      app.scene.gsplat.lodRangeMax = preset.range[1];
+      gs.lodBaseDistance = preset.baseDistance;
+      gs.lodMultiplier = preset.multiplier;
+    }
+    buttons.forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.preset === name);
+    });
+  }
+
+  buttons.forEach(btn => {
+    btn.addEventListener('click', () => applyPreset(btn.dataset.preset));
+  });
+  applyPreset(currentPreset);
+
+  // --- Splat budget from config ---
+  const budgetEl = document.getElementById('splat-budget');
+  const cfgBudget = viewerConfig.splat_budget || 0;
+  if (cfgBudget > 0) {
+    if (!budgetEl.querySelector('option[value="' + cfgBudget + '"]')) {
+      const opt = document.createElement('option');
+      opt.value = String(cfgBudget);
+      opt.textContent = (cfgBudget / 1_000_000).toFixed(1) + 'M';
+      budgetEl.appendChild(opt);
+    }
+    budgetEl.value = String(cfgBudget);
+  } else {
+    budgetEl.value = isMobile ? '1000000' : '4000000';
+  }
+  app.scene.gsplat.splatBudget = parseInt(budgetEl.value);
+  budgetEl.addEventListener('change', () => {
+    app.scene.gsplat.splatBudget = parseInt(budgetEl.value);
+  });
+
+  // Debug visualization checkboxes
+  document.getElementById('debug-lod').addEventListener('change', e => {
+    app.scene.gsplat.colorizeLod = e.target.checked;
+  });
+  document.getElementById('debug-sh').addEventListener('change', e => {
+    app.scene.gsplat.colorizeColorUpdate = e.target.checked;
+  });
+
+  document.getElementById('loading').classList.add('hidden');
+
+  // --- Annotation markers ---
+  const annotationsData = viewerConfig.annotations || [];
+  const markersContainer = document.getElementById('annotation-markers');
+  const markerEls = [];
+  annotationsData.forEach((ann, i) => {
+    const marker = document.createElement('div');
+    marker.className = 'ann-marker';
+    const label = (ann.label || String(i + 1)).replace(/</g, '&lt;');
+    const title = (ann.title || '').replace(/</g, '&lt;');
+    const text = (ann.text || '').replace(/</g, '&lt;');
+    marker.innerHTML = '<div class="ann-dot">' + label + '</div><div class="ann-tooltip">' +
+      (title ? '<h4>' + title + '</h4>' : '') + (text ? '<p>' + text + '</p>' : '') + '</div>';
+    markersContainer.appendChild(marker);
+    markerEls.push({ el: marker, pos: new pc.Vec3(ann.pos[0], ann.pos[1], ann.pos[2]) });
+  });
+
+  // Live splat count + camera constraints + annotation markers
+  const splatCountEl = document.getElementById('splat-count');
+  app.on('update', () => {
+    const displayed = app.stats.frame.gsplats || 0;
+    const displayedM = (displayed / 1_000_000).toFixed(2);
+    splatCountEl.textContent = 'Splats: ' + displayedM + 'M';
+    // Clamp camera position: ground + bounds (only when constraints enabled)
+    if (cam.enabled === true) {
+      const pos = camera.getLocalPosition();
+      const cx = pc.math.clamp(pos.x, -cam.bounds_radius, cam.bounds_radius);
+      const cy = Math.max(pos.y, cam.ground_height);
+      const cz = pc.math.clamp(pos.z, -cam.bounds_radius, cam.bounds_radius);
+      if (cx !== pos.x || cy !== pos.y || cz !== pos.z) {
+        camera.setLocalPosition(cx, cy, cz);
+      }
+    }
+    // Update annotation marker screen positions
+    const _sp = new pc.Vec3();
+    markerEls.forEach(m => {
+      camera.camera.worldToScreen(m.pos, _sp);
+      const _tp = new pc.Vec3().sub2(m.pos, camera.getPosition());
+      if (_tp.dot(camera.forward) < 0) {
+        m.el.style.display = 'none';
+      } else {
+        m.el.style.display = '';
+        m.el.style.left = _sp.x + 'px';
+        m.el.style.top = _sp.y + 'px';
+      }
+    });
+  });
+
+  // --- Audio sources from config ---
+  (viewerConfig.audio || []).forEach(src => {
+    const audioAsset = new pc.Asset('audio', 'audio', { url: src.file });
+    app.assets.add(audioAsset);
+    app.assets.load(audioAsset);
+    audioAsset.on('load', () => {
+      const ent = new pc.Entity('audio-source');
+      ent.addComponent('sound', {
+        positional: src.positional ?? false,
+        volume: src.volume ?? 0.5,
+        refDistance: 5, maxDistance: 100
+      });
+      ent.sound.addSlot('main', { asset: audioAsset, loop: src.loop ?? true, autoPlay: true });
+      if (src.pos) ent.setLocalPosition(src.pos[0], src.pos[1], src.pos[2]);
+      app.root.addChild(ent);
+      ent.sound.play('main');
+    });
+  });
+  </script>
+</body>
+</html>

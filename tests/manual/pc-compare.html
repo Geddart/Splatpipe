@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PlayCanvas 2.17 vs 2.18 — Splatpipe mobile test</title>
+  <!--
+    Side-by-side comparison page for the PlayCanvas viewer pin bump.
+
+    Top iframe: the deployed Gutsmutstrasse viewer on Bunny CDN, pinned to
+                playcanvas@2.17.0 (current production / control).
+    Bottom iframe: tests/manual/pc-2-18-1.html on this branch, served via
+                   jsdelivr — same viewer, same splat, only the playcanvas
+                   import bumped to @2.18.1.
+
+    What we're checking: does the 2.18.x line still trigger the
+    `Cannot read properties of undefined (reading 'listener')` regression
+    that broke 2.17.1 / 2.17.2 (splat count stuck at 0.00M, loading spinner
+    never hides)? If 2.18.1 renders a normal scene, we can unpin the viewer.
+
+    Mobile note: vertical stack so each viewer gets its own ~half-screen on
+    a phone. On wide screens (desktop) it switches to side-by-side via the
+    media query below.
+  -->
+  <style>
+    html, body { height: 100%; margin: 0; padding: 0;
+                 background: #111; color: #eee;
+                 font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    body { display: flex; flex-direction: column; }
+    .compare {
+      flex: 1; display: flex; flex-direction: column; min-height: 0;
+    }
+    .pane {
+      flex: 1; display: flex; flex-direction: column; min-height: 0;
+      border-bottom: 1px solid #333;
+    }
+    .pane:last-child { border-bottom: none; }
+    .pane-label {
+      flex: 0 0 auto;
+      padding: 8px 12px; font-size: 13px; font-weight: 600;
+      background: #1a1a1a; border-bottom: 1px solid #333;
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .pane-label .version { color: #aaa; font-weight: 400; font-size: 12px; }
+    .pane-label.control .version { color: #6c6; }
+    .pane-label.test .version    { color: #fa6; }
+    .pane iframe {
+      flex: 1; width: 100%; border: 0; background: #000;
+    }
+    @media (min-width: 800px) and (orientation: landscape) {
+      .compare { flex-direction: row; }
+      .pane { border-bottom: 0; border-right: 1px solid #333; }
+      .pane:last-child { border-right: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="compare">
+    <div class="pane">
+      <div class="pane-label control">
+        <span>Production (control)</span>
+        <span class="version">playcanvas@2.17.0</span>
+      </div>
+      <iframe
+        src="https://splatpipe-cdn.b-cdn.net/Gutsmutstrasse/index.html"
+        title="PlayCanvas 2.17.0 control"
+        loading="eager"
+        allowfullscreen></iframe>
+    </div>
+    <div class="pane">
+      <div class="pane-label test">
+        <span>Test bump</span>
+        <span class="version">playcanvas@2.18.1</span>
+      </div>
+      <iframe
+        src="https://cdn.jsdelivr.net/gh/Geddart/Splatpipe@main/tests/manual/pc-2-18-1.html"
+        title="PlayCanvas 2.18.1 test"
+        loading="eager"
+        allowfullscreen></iframe>
+    </div>
+  </div>
+</body>
+</html>
