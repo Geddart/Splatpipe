@@ -3,11 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <!-- Base href makes every relative URL in the rest of the page (lod-meta.json,
-       viewer-config.json, chunk webps, etc.) resolve to the deployed splat on
-       Bunny CDN. This file is meant to be served from anywhere (jsdelivr,
-       gh-pages, local dev) while still loading the real splat data. -->
-  <base href="https://splatpipe-cdn.b-cdn.net/Gutsmutstrasse/">
+  <!-- This file MUST be uploaded to https://splatpipe-cdn.b-cdn.net/Gutsmutstrasse/
+       (next to the production index.html and the chunks). PlayCanvas resolves
+       chunk URLs from lod-meta.json relative to the *page* URL, ignoring any
+       <base href>, so the page has to live in the same folder as the splat
+       data for the relative `0_0/means_l.webp` paths to resolve. -->
   <title>PC 2.18.1 test — Gutsmutstrasse</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }

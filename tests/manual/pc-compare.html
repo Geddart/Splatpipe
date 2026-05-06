@@ -72,12 +72,12 @@
         <span>Test bump</span>
         <span class="version">playcanvas@2.18.1</span>
       </div>
-      <!-- Hosted on the same Bunny CDN as the production splat so the
-           browser gets proper text/html (jsdelivr's /gh/ route serves all
-           files as text/plain for XSS hardening, which would have made the
-           iframe show source instead of rendering). -->
+      <!-- MUST live in /Gutsmutstrasse/ (next to the chunks). PlayCanvas
+           resolves chunk URLs from lod-meta.json relative to the page URL,
+           ignoring <base href> — putting the test page in /pc-test/ caused
+           every chunk webp to 404 and gave a false-negative "broken" result. -->
       <iframe
-        src="https://splatpipe-cdn.b-cdn.net/pc-test/pc-2-18-1.html"
+        src="https://splatpipe-cdn.b-cdn.net/Gutsmutstrasse/pc-2-18-1.html"
         title="PlayCanvas 2.18.1 test"
         loading="eager"
         allowfullscreen></iframe>
