@@ -219,7 +219,7 @@ _VIEWER_TEMPLATE = """\
   <script type="importmap">
   {{
     "imports": {{
-      "playcanvas": "https://cdn.jsdelivr.net/npm/playcanvas@2.17.0/+esm"
+      "playcanvas": "https://cdn.jsdelivr.net/npm/playcanvas@2.18.1/+esm"
     }}
   }}
   </script>
@@ -227,7 +227,7 @@ _VIEWER_TEMPLATE = """\
   import * as pc from 'playcanvas';
 
   const CAMERA_CONTROLS_URL =
-    'https://cdn.jsdelivr.net/npm/playcanvas@2.17.0/scripts/esm/camera-controls.mjs';
+    'https://cdn.jsdelivr.net/npm/playcanvas@2.18.1/scripts/esm/camera-controls.mjs';
   const {{ CameraControls }} = await import(CAMERA_CONTROLS_URL);
 
   const canvas = document.getElementById('app-canvas');

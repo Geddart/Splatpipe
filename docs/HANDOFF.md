@@ -108,7 +108,7 @@ non-obvious and we have lost time to all of them:
 | Tool | Version | Notes |
 |------|---------|-------|
 | Python floor | 3.12 | Bumped from 3.11 in v0.7.0; uses native `Path.is_junction()`. |
-| PlayCanvas | **2.17.0 exactly** | 2.17.1 / 2.17.2 have an engine-update-loop regression that breaks splat rendering. Pin is intentional. |
+| PlayCanvas | **2.18.1 exactly** | The 2.17.1 / 2.17.2 update-loop regression that previously held us at 2.17.0 is fixed in the 2.18 line. Bump verified via `tests/manual/pc-compare.html` against a real splat. |
 | `@playcanvas/splat-transform` | ^2.0.4 | LOD assembly + SOG compression. v2.0 refactored progress output — parser handles the `▸ [N/M] X_Y` chunk format and we pass `--no-tty` to keep stderr line-stable. |
 | `@sparkjsdev/spark` | 2.0.0 | Spark 2 renderer (`scene.rad`). |
 | `three` | 0.180.0 | Spark peer dep — must match. |
