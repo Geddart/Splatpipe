@@ -31,12 +31,70 @@ THREE_VERSION = "0.180.0"
 SPARK_FORK_URL = "https://splatpipe-cdn.b-cdn.net/_sparkfork-rcf2/spark.module.min.js"
 
 
-def html_for(project_name: str, *, primary_asset: str = "scene.rad", paged: bool = True) -> str:
+def html_for(
+    project_name: str,
+    *,
+    primary_asset: str = "scene.rad",
+    paged: bool = True,
+    share_url: str | None = None,
+    share_image: str | None = None,
+    description: str | None = None,
+) -> str:
     """Render the Spark viewer HTML for a given project.
 
     `primary_asset` is the filename the SplatMesh loads (relative to index.html).
     `paged=True` enables HTTP-Range streaming for `.rad`; should be False for `.sog`.
+
+    Share-card (Open Graph + Twitter) so a pasted viewer link shows a rich
+    preview in Telegram / WhatsApp / iMessage / Discord / Slack / Twitter:
+      * `share_url`   — absolute URL of the deployed index.html. Optional;
+                        when given it's emitted as `og:url`. Scrapers fall
+                        back to the fetched URL when absent, so it's safe to
+                        omit for the local dashboard preview.
+      * `share_image` — preview image. Defaults to the relative
+                        `"preview.jpg"` (a scraper resolves it against the
+                        page URL); deploy scripts pass an ABSOLUTE Bunny URL
+                        for maximum cross-platform compatibility. The image
+                        itself is generated + uploaded separately
+                        (`.codex-run/make_share_preview.py`).
+      * `description` — card text; a sensible generic default otherwise.
+    Backward-compatible: every arg is optional, so existing callers
+    (`SparkAssembler`, older deploy scripts) keep working and still get a
+    title/description card (plus the image card once `preview.jpg` exists).
     """
+    import html as _h
+
+    _title = f"{project_name} — interactive 3D scene"
+    _desc = description or (
+        "Explore this photogrammetry capture in 3D, right in your browser — "
+        "a Gaussian-splat scene streamed with Splatpipe / Spark 2."
+    )
+    _img = share_image or "preview.jpg"
+
+    def _e(s: object) -> str:
+        return _h.escape(str(s), quote=True)
+
+    _meta = [
+        f'<meta name="description" content="{_e(_desc)}">',
+        '<meta property="og:type" content="website">',
+        '<meta property="og:site_name" content="Splatpipe">',
+        f'<meta property="og:title" content="{_e(_title)}">',
+        f'<meta property="og:description" content="{_e(_desc)}">',
+        f'<meta property="og:image" content="{_e(_img)}">',
+        '<meta property="og:image:width" content="1200">',
+        '<meta property="og:image:height" content="630">',
+        f'<meta property="og:image:alt" content="{_e(_title)}">',
+        '<meta name="twitter:card" content="summary_large_image">',
+        f'<meta name="twitter:title" content="{_e(_title)}">',
+        f'<meta name="twitter:description" content="{_e(_desc)}">',
+        f'<meta name="twitter:image" content="{_e(_img)}">',
+    ]
+    if share_url:
+        _meta.insert(5, f'<meta property="og:url" content="{_e(share_url)}">')
+    # Joined value is substituted as a single {share_meta} field; .format()
+    # does NOT re-scan substituted text, so no brace-doubling is needed here.
+    share_meta = "\n  ".join(_meta)
+
     return _VIEWER_TEMPLATE.format(
         project_name=project_name,
         spark_version=SPARK_VERSION,
@@ -44,6 +102,7 @@ def html_for(project_name: str, *, primary_asset: str = "scene.rad", paged: bool
         spark_fork_url=SPARK_FORK_URL,
         primary_asset=primary_asset,
         paged_json=json.dumps(bool(paged)),
+        share_meta=share_meta,
     )
 
 
@@ -62,6 +121,7 @@ _VIEWER_TEMPLATE = """\
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
   <link rel="dns-prefetch" href="https://cdn.jsdelivr.net">
   <title>{project_name} — Splatpipe Viewer (Spark)</title>
+  {share_meta}
   <style>
     * {{ margin: 0; padding: 0; box-sizing: border-box; }}
     /* iOS Safari: a long-press anywhere will, by default, trigger
