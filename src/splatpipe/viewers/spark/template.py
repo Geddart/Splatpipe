@@ -451,6 +451,7 @@ _VIEWER_TEMPLATE = """\
       lod_splat_scale: 1.0,
       lod_render_scale: 1.0,
       clip_xy: 1.4,
+      move_speed_mult: 1.0,
       foveation: {{ enabled: false, cone_fov0: 30, cone_fov: 90, cone_foveate: 2.0, behind_foveate: 4.0 }},
       ondemand_lod_fallback: true
     }}
@@ -890,10 +891,18 @@ _VIEWER_TEMPLATE = """\
   window.addEventListener('keyup', (e) => {{ _keys[e.code] = false; }});
   window.addEventListener('blur', () => {{ for (const k in _keys) _keys[k] = false; }});
 
-  // Speed in world units per second. Scene size varies, so scale loosely to
-  // the initial camera-to-target distance for a sensible "feels right" speed.
+  // Speed in world units per second. Scaled loosely to the initial
+  // camera-to-target distance — but that's the AUTHORED start-view framing,
+  // not true scene size, so a scene whose start view sits far from its pivot
+  // (e.g. Polygraf) flies too fast. A per-scene multiplier
+  // (spark_render.move_speed_mult, default 1.0 = unchanged for every other
+  // scene) corrects it; ?moveSpeed=N overrides live for A/B feel-tuning.
   const _initDist = camera.position.distanceTo(controls.target);
-  const MOVE_SPEED = Math.max(2, _initDist * 0.6);          // base
+  const _msQ = parseFloat(new URLSearchParams(location.search).get('moveSpeed'));
+  const _moveSpeedMult = (Number.isFinite(_msQ) && _msQ > 0)
+    ? _msQ
+    : ((typeof sr.move_speed_mult === 'number' && sr.move_speed_mult > 0) ? sr.move_speed_mult : 1.0);
+  const MOVE_SPEED = Math.max(2, _initDist * 0.6) * _moveSpeedMult;   // base × per-scene feel
   const SPRINT_MULT = 4;                                     // Shift
   let _lastMoveTime = performance.now();
 

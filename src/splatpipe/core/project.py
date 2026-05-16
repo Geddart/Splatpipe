@@ -344,6 +344,11 @@ class Project:
             # Scenes with giant outlier splats (e.g. Speicher) set 3.0 so
             # those chunks aren't culled and the scene doesn't go blank.
             "clip_xy": 1.4,
+            # WASD/fly speed multiplier. 1.0 = unchanged. Base speed scales
+            # off the authored start-view distance, which over-speeds scenes
+            # whose start view sits far from its pivot (e.g. Polygraf) — set
+            # <1.0 per scene to taste; ?moveSpeed=N overrides live.
+            "move_speed_mult": 1.0,
             "foveation": {
                 "enabled": False,
                 "cone_fov0": 30.0,

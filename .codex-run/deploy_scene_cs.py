@@ -28,6 +28,18 @@ import sys
 import urllib.request
 from pathlib import Path
 
+# build-lod streams unicode (e.g. "[build-lod] done → …", the U+2192 arrow)
+# through on_progress; the Windows console is cp1252 and a plain print()
+# of it raises UnicodeEncodeError mid-run (lost the v1 Polygraf attempt at
+# the very end — after a successful ~30 min cached build). Force UTF-8
+# stdout/stderr so any tool output is printable. errors="replace" is a
+# belt-and-braces fallback for anything UTF-8 still can't represent.
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 sys.path.insert(0, "src")
 from splatpipe.steps.deploy import load_bunny_env, deploy_to_bunny  # noqa: E402
 from splatpipe.viewers.spark.build_lod import build  # noqa: E402
@@ -43,6 +55,8 @@ def main() -> int:
     ap.add_argument("--folder", required=True, help="FRESH Bunny folder (never reuse)")
     ap.add_argument("--live", default=None, help="existing Bunny folder to inherit viewer-config.json from")
     ap.add_argument("--clip-xy", type=float, default=None, help="per-scene spark_render.clip_xy (Speicher=3.0)")
+    ap.add_argument("--move-speed-mult", type=float, default=None,
+                    help="per-scene spark_render.move_speed_mult (WASD speed; <1.0 = slower, e.g. Polygraf 0.5)")
     ap.add_argument("--desc", default=None, help="share-card description")
     args = ap.parse_args()
 
@@ -91,10 +105,15 @@ def main() -> int:
     if args.clip_xy is not None:
         cfg.setdefault("spark_render", {})["clip_xy"] = args.clip_xy
         print(f"[{args.scene}] injected spark_render.clip_xy = {args.clip_xy}", flush=True)
+    if args.move_speed_mult is not None:
+        cfg.setdefault("spark_render", {})["move_speed_mult"] = args.move_speed_mult
+        print(f"[{args.scene}] injected spark_render.move_speed_mult = {args.move_speed_mult}", flush=True)
     (stage / "viewer-config.json").write_text(json.dumps(cfg, indent=2), encoding="utf-8")
     back = json.loads((stage / "viewer-config.json").read_text(encoding="utf-8"))
     if args.clip_xy is not None:
         assert back["spark_render"]["clip_xy"] == args.clip_xy, "clip_xy did not round-trip"
+    if args.move_speed_mult is not None:
+        assert back["spark_render"]["move_speed_mult"] == args.move_speed_mult, "move_speed_mult did not round-trip"
 
     # 4. index.html with absolute share-card meta
     share_url = f"{cdn}/{args.folder}/index.html"
