@@ -297,6 +297,7 @@ class PipelineRunner:
 
         # Build train options
         postshot_cfg = self._config.get("postshot", {})
+        lichtfeld_cfg = self._config.get("lichtfeld", {})
         train_opts = {
             "profile": postshot_cfg.get("profile", "Splat3"),
             "downsample": postshot_cfg.get("downsample", True),
@@ -304,6 +305,7 @@ class PipelineRunner:
             "anti_aliasing": postshot_cfg.get("anti_aliasing", False),
             "create_sky_model": postshot_cfg.get("create_sky_model", False),
             "train_steps_limit": postshot_cfg.get("train_steps_limit", 0),
+            "ppisp": lichtfeld_cfg.get("ppisp", False),
         }
         train_settings = proj.step_settings.get("train", {})
         train_opts.update(train_settings)
@@ -349,6 +351,7 @@ class PipelineRunner:
                     anti_aliasing=train_opts["anti_aliasing"],
                     create_sky_model=train_opts["create_sky_model"],
                     train_steps_limit=effective_steps,
+                    ppisp=train_opts["ppisp"],
                 )
 
                 # Consume generator synchronously — StopIteration propagates normally

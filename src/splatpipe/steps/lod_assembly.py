@@ -389,7 +389,15 @@ _VIEWER_TEMPLATE = """\
   // Quality preset buttons
   const buttons = document.querySelectorAll('.quality-btn');
   const isMobile = pc.platform.mobile;
-  let currentPreset = isMobile ? 'medium' : 'high';
+  // Robust mobile detection — same logic as the budget cap below. pc.platform.mobile
+  // can miss iPhone Safari; augment with UA + maxTouchPoints + short-side.
+  const _isMobileForPreset = isMobile ||
+    /iPhone|iPad|iPod|Android/i.test(navigator.userAgent || '') ||
+    (navigator.maxTouchPoints > 0 && Math.min(screen.width, screen.height) <= 768);
+  // Mobile starts at 'low' preset (loads only the 2 coarsest LoD levels)
+  // because PC's splatBudget caps RENDERING but the LoD streamer can still
+  // pull all chunks → GPU memory pressure → iPhone Safari crash.
+  let currentPreset = _isMobileForPreset ? 'low' : 'high';
 
   // --- Custom LOD distance controls (PlayCanvas 2.17+ base+multiplier) ---
   // Colors match PlayCanvas engine's colorizeLod exactly (gsplat-manager.js _lodColorsRaw)
@@ -504,9 +512,27 @@ _VIEWER_TEMPLATE = """\
   applyPreset(currentPreset);
 
   // --- Splat budget from config ---
+  // Robust mobile detection — pc.platform.mobile misses iPhone Safari in
+  // some configurations. Augment with UA + maxTouchPoints + short-side.
+  const _ua = navigator.userAgent || '';
+  const _isMobileRobust = isMobile ||
+    /iPhone|iPad|iPod|Android/i.test(_ua) ||
+    (navigator.maxTouchPoints > 0 && Math.min(screen.width, screen.height) <= 768);
   const budgetEl = document.getElementById('splat-budget');
+  // Hard-cap mobile at 1 M splats to avoid Safari's 256 MB canvas-memory
+  // ceiling. Disable larger dropdown options so the user can't accidentally
+  // pick a value that crashes the tab.
+  if (_isMobileRobust) {{
+    budgetEl.querySelectorAll('option').forEach(opt => {{
+      const v = parseInt(opt.value, 10);
+      if (v === 0 || v > 1_000_000) {{
+        opt.disabled = true;
+        opt.textContent = opt.textContent + ' (desktop only)';
+      }}
+    }});
+  }}
   const cfgBudget = viewerConfig.splat_budget || 0;
-  if (cfgBudget > 0) {{
+  if (cfgBudget > 0 && (!_isMobileRobust || cfgBudget <= 1_000_000)) {{
     if (!budgetEl.querySelector('option[value="' + cfgBudget + '"]')) {{
       const opt = document.createElement('option');
       opt.value = String(cfgBudget);
@@ -515,11 +541,16 @@ _VIEWER_TEMPLATE = """\
     }}
     budgetEl.value = String(cfgBudget);
   }} else {{
-    budgetEl.value = isMobile ? '1000000' : '4000000';
+    budgetEl.value = _isMobileRobust ? '1000000' : '4000000';
   }}
   app.scene.gsplat.splatBudget = parseInt(budgetEl.value);
   budgetEl.addEventListener('change', () => {{
-    app.scene.gsplat.splatBudget = parseInt(budgetEl.value);
+    let v = parseInt(budgetEl.value, 10);
+    if (_isMobileRobust && (v === 0 || v > 1_000_000)) {{
+      v = 1_000_000;
+      budgetEl.value = '1000000';
+    }}
+    app.scene.gsplat.splatBudget = v;
   }});
 
   // Debug visualization checkboxes

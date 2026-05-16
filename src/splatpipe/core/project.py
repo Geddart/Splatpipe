@@ -22,6 +22,12 @@ from .constants import (
 ALL_STEPS = [STEP_CLEAN, STEP_TRAIN, STEP_REVIEW, STEP_ASSEMBLE, STEP_EXPORT]
 
 
+def _is_link_like(path: Path) -> bool:
+    """Return True for symlinks and, on Python 3.12+, Windows junctions."""
+    is_junction = getattr(path, "is_junction", None)
+    return path.is_symlink() or (is_junction() if is_junction else False)
+
+
 def _trim_summary(summary: dict | None) -> dict | None:
     """Create a compact copy of summary for history storage."""
     if not summary:
@@ -330,9 +336,14 @@ class Project:
         "audio": [],
         "camera_paths": [],
         "default_path_id": None,
+        "start_view": None,  # {pos,quat,target,fov} — highest-priority initial camera
         "spark_render": {
             "lod_splat_scale": 1.0,
             "lod_render_scale": 1.0,
+            # Per-splat XY frustum-cull slack. Spark default 1.4 (40%).
+            # Scenes with giant outlier splats (e.g. Speicher) set 3.0 so
+            # those chunks aren't culled and the scene doesn't go blank.
+            "clip_xy": 1.4,
             "foveation": {
                 "enabled": False,
                 "cone_fov0": 30.0,
@@ -394,7 +405,7 @@ class Project:
         ``01_colmap_source`` folder doesn't exist on disk.
         """
         source = self.get_folder(FOLDER_COLMAP_SOURCE)
-        if source.is_symlink() or source.is_junction():
+        if _is_link_like(source):
             return source.resolve()
         if source.is_dir():
             return source

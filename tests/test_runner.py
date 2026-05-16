@@ -220,6 +220,25 @@ class TestPipelineRunnerTrain:
         assert (review_dir / "lod0_reviewed.ply").exists()
         assert (review_dir / "lod1_reviewed.ply").exists()
 
+    def test_runner_passes_ppisp_option(self, runner_project):
+        """Runner forwards saved PPISP training settings to the active trainer."""
+        config = _make_config()
+        config["lichtfeld"] = {"ppisp": True}
+        runner_project.set_trainer("lichtfeld")
+        runner = PipelineRunner(str(runner_project.root), ["train"], config)
+
+        with patch("splatpipe.web.runner.get_trainer") as mock_get:
+            mock_trainer = MagicMock()
+            mock_trainer.train_lod.side_effect = self._mock_train_lod
+            mock_get.return_value = mock_trainer
+
+            runner.start()
+            runner._thread.join(timeout=10)
+
+        assert runner.snapshot.status == "completed"
+        for call in mock_trainer.train_lod.call_args_list:
+            assert call.kwargs["ppisp"] is True
+
 
 class TestPipelineRunnerPsht:
     """Runner with .psht source input."""

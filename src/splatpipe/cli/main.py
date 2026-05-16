@@ -13,6 +13,7 @@ from .web_cmd import web
 from .status_cmd import status
 from .path_cmd import path_import, path_import_colmap
 from .build_lod_cmd import build_lod_cmd
+from .set_start_view_cmd import set_start_view
 
 app = typer.Typer(
     name="splatpipe",
@@ -32,6 +33,7 @@ app.command()(status)
 app.command(name="path-import")(path_import)
 app.command(name="path-import-colmap")(path_import_colmap)
 app.command(name="build-lod")(build_lod_cmd)
+app.command(name="set-start-view")(set_start_view)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>splat-transform filter-floaters vs filter-cluster — Gutsmutstrasse</title>
+  <!--
+    Three-pane comparison of the same Gutsmutstrasse splat through:
+      • Original (no filtering, deployed production viewer at /Gutsmutstrasse/)
+      • --filter-floaters (defaults: size=0.05, op=0.1, min=0.004) — removes
+        Gaussians that don't contribute to any solid voxel.
+      • --filter-cluster (defaults: res=1.0, op=0.999, min=0.1, seed-pos=0,0,0)
+        — keeps only the connected cluster around the seed.
+
+    Counts captured at filter time (splat-transform v2.0.4 stderr):
+      Original  : 2.99 M gaussians
+      Floaters  : 2.98 M gaussians  (-17.8 K, ≈0.6%)   3m18s
+      Cluster   : 2.93 M gaussians  (-62 K,  ≈2.0%)    3m05s
+
+    Mobile note: vertical stack so each viewer gets ~33% of the screen on
+    a phone. On wide landscape (≥1200px) it switches to side-by-side.
+  -->
+  <style>
+    html, body { height: 100%; margin: 0; padding: 0;
+                 background: #111; color: #eee;
+                 font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    body { display: flex; flex-direction: column; }
+    .compare {
+      flex: 1; display: flex; flex-direction: column; min-height: 0;
+    }
+    .pane {
+      flex: 1; display: flex; flex-direction: column; min-height: 0;
+      border-bottom: 1px solid #333;
+    }
+    .pane:last-child { border-bottom: none; }
+    .pane-label {
+      flex: 0 0 auto;
+      padding: 8px 12px; font-size: 13px; font-weight: 600;
+      background: #1a1a1a; border-bottom: 1px solid #333;
+      display: flex; justify-content: space-between; align-items: center;
+      gap: 12px;
+    }
+    .pane-label .meta { color: #aaa; font-weight: 400; font-size: 12px; }
+    .pane-label.original .meta { color: #6c6; }
+    .pane-label.floaters .meta { color: #fa6; }
+    .pane-label.cluster  .meta { color: #6cf; }
+    .pane iframe {
+      flex: 1; width: 100%; border: 0; background: #000;
+    }
+    @media (min-width: 1200px) and (orientation: landscape) {
+      .compare { flex-direction: row; }
+      .pane { border-bottom: 0; border-right: 1px solid #333; }
+      .pane:last-child { border-right: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="compare">
+    <div class="pane">
+      <div class="pane-label original">
+        <span>Original</span>
+        <span class="meta">no filter · 2.99 M splats</span>
+      </div>
+      <iframe
+        src="https://splatpipe-cdn.b-cdn.net/Gutsmutstrasse/index.html"
+        title="Original (no filter)"
+        loading="eager"
+        allowfullscreen></iframe>
+    </div>
+    <div class="pane">
+      <div class="pane-label floaters">
+        <span>--filter-floaters</span>
+        <span class="meta">defaults · -17.8 K splats (0.6%)</span>
+      </div>
+      <iframe
+        src="https://splatpipe-cdn.b-cdn.net/pc-test/gutsmuts-floaters/index.html"
+        title="filter-floaters"
+        loading="eager"
+        allowfullscreen></iframe>
+    </div>
+    <div class="pane">
+      <div class="pane-label cluster">
+        <span>--filter-cluster</span>
+        <span class="meta">defaults · seed (0,0,0) · -62 K splats (2.0%)</span>
+      </div>
+      <iframe
+        src="https://splatpipe-cdn.b-cdn.net/pc-test/gutsmuts-cluster/index.html"
+        title="filter-cluster"
+        loading="eager"
+        allowfullscreen></iframe>
+    </div>
+  </div>
+</body>
+</html>

@@ -126,11 +126,21 @@ def build(
     input_ply: Path,
     *,
     quality: bool = True,
+    chunked: bool = True,
     extra_flags: list[str] | None = None,
     on_progress: Callable[[str], None] | None = None,
     spark_repo: Path | None = None,
 ) -> Path:
-    """Produce a ``.rad`` for ``input_ply``. Returns path to cached file.
+    """Produce a Spark LoD asset for ``input_ply``. Returns the cached path.
+
+    When ``chunked`` (the pipeline default), build-lod emits a small manifest
+    ``<stem>-lod.rad`` plus N sibling ``<stem>-lod-<i>.radc`` chunk files; the
+    whole set is cached under one directory and the **manifest path** is
+    returned. The viewer resolves each chunk relative to the manifest URL, so
+    callers must keep manifest + ``.radc`` co-located when deploying.
+
+    When ``chunked`` is False, a single monolithic ``.rad`` is produced and
+    its path returned (legacy single-file behaviour).
 
     Idempotent: re-runs are cache hits (constant-time) when the input file's
     mtime + size + sha256 are unchanged.
@@ -142,16 +152,31 @@ def build(
     toolchain = detect_toolchain(spark_repo)
 
     flag_str = "q" if quality else "n"
+    if chunked:
+        flag_str += "c"
     if extra_flags:
         flag_str += "+" + ",".join(sorted(extra_flags))
 
     cache_key = _compute_cache_key(input_ply, toolchain.version, flag_str)
     RAD_CACHE.mkdir(parents=True, exist_ok=True)
-    cached_rad = RAD_CACHE / f"{cache_key}.rad"
-    if cached_rad.is_file():
-        if on_progress:
-            on_progress(f"[build-lod] cache HIT: {cached_rad.name}")
-        return cached_rad
+
+    if chunked:
+        # Chunked output is a *directory*: manifest ``<stem>-lod.rad`` plus N
+        # sibling ``<stem>-lod-<i>.radc`` files. The viewer resolves each
+        # chunk's ``filename`` relative to the manifest's URL, so the set must
+        # stay co-located — cache the whole directory under one key.
+        cache_dir = RAD_CACHE / cache_key
+        manifest = _find_manifest(cache_dir)
+        if manifest is not None:
+            if on_progress:
+                on_progress(f"[build-lod] cache HIT (chunked): {cache_dir.name}/{manifest.name}")
+            return manifest
+    else:
+        cached_rad = RAD_CACHE / f"{cache_key}.rad"
+        if cached_rad.is_file():
+            if on_progress:
+                on_progress(f"[build-lod] cache HIT: {cached_rad.name}")
+            return cached_rad
 
     if on_progress:
         on_progress("[build-lod] cache MISS, building (~33s/GB; first cargo build ~2 min)")
@@ -171,27 +196,55 @@ def build(
             argv.append("--quality")
         else:
             argv.append("--quick")
+        if chunked:
+            argv.append("--rad-chunked")
         if extra_flags:
             argv.extend(extra_flags)
         argv.append(str(tmp_input))
 
         _run_subprocess(argv, cwd=toolchain.cwd, on_progress=on_progress)
 
-        # build-lod writes <basename>-lod.{rad,spz}; we asked for --quality which
-        # produces .rad by default. Glob both to be safe across version drift.
-        produced = list(Path(tmpdir).glob(f"{tmp_input.stem}-lod.*"))
-        produced = [p for p in produced if p.suffix in {".rad", ".spz"}]
-        if not produced:
-            raise BuildLodError(
-                f"build-lod did not produce a .rad or .spz next to {tmp_input}. "
-                f"Files in temp dir: {[p.name for p in Path(tmpdir).iterdir()]}"
-            )
-        winner = produced[0]
+        if chunked:
+            # build-lod --rad-chunked writes the manifest ``<stem>-lod.rad``
+            # plus N sibling ``<stem>-lod-<i>.radc`` chunk files.
+            manifest_src = list(Path(tmpdir).glob(f"{tmp_input.stem}-lod.rad"))
+            radc_src = sorted(Path(tmpdir).glob(f"{tmp_input.stem}-lod-*.radc"))
+            if not manifest_src or not radc_src:
+                raise BuildLodError(
+                    f"build-lod --rad-chunked did not produce a manifest + .radc "
+                    f"set next to {tmp_input}. Files in temp dir: "
+                    f"{[p.name for p in Path(tmpdir).iterdir()]}"
+                )
+            # Stage into a sibling .tmp dir, then atomically swap into place so
+            # a crashed build never leaves a half-written cache dir that the
+            # completeness check (`_find_manifest`) would wrongly accept.
+            stage = RAD_CACHE / f"{cache_key}.tmp"
+            if stage.exists():
+                shutil.rmtree(stage)
+            stage.mkdir(parents=True)
+            for p in manifest_src + radc_src:
+                shutil.move(str(p), str(stage / p.name))
+            if cache_dir.exists():
+                shutil.rmtree(cache_dir)
+            os.replace(stage, cache_dir)
+            result_path = cache_dir / manifest_src[0].name
+        else:
+            # build-lod writes <basename>-lod.{rad,spz}; we asked for --quality
+            # which produces .rad by default. Glob both for version drift.
+            produced = list(Path(tmpdir).glob(f"{tmp_input.stem}-lod.*"))
+            produced = [p for p in produced if p.suffix in {".rad", ".spz"}]
+            if not produced:
+                raise BuildLodError(
+                    f"build-lod did not produce a .rad or .spz next to {tmp_input}. "
+                    f"Files in temp dir: {[p.name for p in Path(tmpdir).iterdir()]}"
+                )
+            winner = produced[0]
 
-        # Atomic move into the cache.
-        tmp_cache = cached_rad.with_suffix(cached_rad.suffix + ".tmp")
-        shutil.move(str(winner), str(tmp_cache))
-        os.replace(tmp_cache, cached_rad)
+            # Atomic move into the cache.
+            tmp_cache = cached_rad.with_suffix(cached_rad.suffix + ".tmp")
+            shutil.move(str(winner), str(tmp_cache))
+            os.replace(tmp_cache, cached_rad)
+            result_path = cached_rad
 
     # If we just used cargo for the first time, copy the built binary into
     # the cache so future builds skip the cargo overhead.
@@ -210,11 +263,26 @@ def build(
                         on_progress(f"[build-lod] could not cache binary: {e}")
 
     if on_progress:
-        on_progress(f"[build-lod] done → {cached_rad.name}")
-    return cached_rad
+        on_progress(f"[build-lod] done → {result_path.name}")
+    return result_path
 
 
 # ---- helpers --------------------------------------------------------------
+
+
+def _find_manifest(cache_dir: Path) -> Path | None:
+    """Return the chunked manifest in ``cache_dir`` iff the cached set looks
+    complete: exactly one ``*-lod.rad`` plus at least one ``*.radc``. A
+    partially-written dir (build crashed mid-stage) fails this and is treated
+    as a cache miss so the build is redone rather than served broken.
+    """
+    if not cache_dir.is_dir():
+        return None
+    manifests = list(cache_dir.glob("*-lod.rad"))
+    radc = list(cache_dir.glob("*.radc"))
+    if len(manifests) == 1 and radc:
+        return manifests[0]
+    return None
 
 
 def _find_spark_repo() -> Path | None:

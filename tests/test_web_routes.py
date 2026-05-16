@@ -7,6 +7,7 @@ import tomli_w
 from starlette.testclient import TestClient
 
 from splatpipe.core.project import Project
+from splatpipe.web.routes.projects import _folder_stats
 
 
 @pytest.fixture
@@ -222,6 +223,15 @@ class TestProjectDetail:
         r = web_env["client"].get(f"/projects/{path}/detail")
         assert r.status_code == 200
         assert "TestProject" in r.text
+
+    def test_folder_stats_handles_python_without_is_junction(self, tmp_path):
+        """Folder stats works on Python versions before Path.is_junction."""
+        (tmp_path / "output.txt").write_text("ok")
+
+        stats = _folder_stats(tmp_path)
+
+        assert stats["file_count"] == 1
+        assert "output.txt" in stats["file_list"][0]
 
 
 class TestUpdateName:
@@ -932,6 +942,26 @@ class TestSceneConfig:
         r = web_env["client"].get(f"/projects/{path}/detail")
         assert r.status_code == 200
         assert "Splat Budget" in r.text
+
+    def test_project_detail_shows_postshot_photometric_unavailable(self, web_env):
+        """Postshot projects show Photometric Compensation without enabling a fake CLI flag."""
+        path = str(web_env["project"].root)
+        r = web_env["client"].get(f"/projects/{path}/detail")
+        assert r.status_code == 200
+        assert "Photometric Compensation" in r.text
+        assert "CLI unavailable" in r.text
+
+    def test_project_detail_shows_lichtfeld_ppisp_toggle(self, web_env):
+        """LichtFeld projects expose the PPISP checkbox that maps to --ppisp."""
+        proj = web_env["project"]
+        proj.set_trainer("lichtfeld")
+        path = str(proj.root)
+
+        r = web_env["client"].get(f"/projects/{path}/detail")
+
+        assert r.status_code == 200
+        assert 'name="ppisp" value="true"' in r.text
+        assert ">PPISP<" in r.text
 
 
 class TestAnnotations:

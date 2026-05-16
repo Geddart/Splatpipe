@@ -46,6 +46,12 @@ def _format_size(size_bytes: int) -> str:
         return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
 
 
+def _is_link_like(path: Path) -> bool:
+    """Return True for symlinks and, on Python 3.12+, Windows junctions."""
+    is_junction = getattr(path, "is_junction", None)
+    return path.is_symlink() or (is_junction() if is_junction else False)
+
+
 def _folder_stats(folder: Path) -> dict:
     """Count files and total size in a folder (recursive). Includes top-level item listing."""
     if not folder.exists():
@@ -59,7 +65,7 @@ def _folder_stats(folder: Path) -> dict:
     # Top-level items with sizes (for delete confirmation)
     items = []
     for item in sorted(folder.iterdir()):
-        if item.is_symlink() or item.is_junction():
+        if _is_link_like(item):
             items.append(f"{item.name}/ (link)")
         elif item.is_dir():
             sub_files = list(item.rglob("*"))
@@ -308,7 +314,7 @@ def _move_project_cross_fs(src: Path, dest: Path) -> None:
         src_item = src / item.name
         dest_item = dest / item.name
 
-        if src_item.is_symlink() or src_item.is_junction():
+        if _is_link_like(src_item):
             # Recreate the junction/symlink at destination
             target = src_item.resolve()
             if os.name == "nt":
@@ -455,7 +461,7 @@ async def update_colmap_source(request: Request, project_path: str):
     if target.exists() and target.is_dir():
         # Remove old link/dir if empty
         if source_link.exists():
-            if source_link.is_symlink() or source_link.is_junction():
+            if _is_link_like(source_link):
                 source_link.unlink()
             elif source_link.is_dir() and not any(source_link.iterdir()):
                 source_link.rmdir()
@@ -602,7 +608,7 @@ async def project_detail(request: Request, project_path: str):
 
     # Resolve COLMAP source path
     colmap_source_dir = proj.get_folder(FOLDER_COLMAP_SOURCE)
-    if colmap_source_dir.is_symlink() or colmap_source_dir.is_junction():
+    if _is_link_like(colmap_source_dir):
         colmap_source_resolved = str(colmap_source_dir.resolve())
     else:
         colmap_source_resolved = state.get("colmap_source", str(colmap_source_dir))
@@ -626,6 +632,7 @@ async def project_detail(request: Request, project_path: str):
             self.__dict__.update(d)
 
     postshot_cfg = config.get("postshot", {})
+    lichtfeld_cfg = config.get("lichtfeld", {})
     train_defaults = {
         "profile": postshot_cfg.get("profile", "Splat3"),
         "downsample": postshot_cfg.get("downsample", True),
@@ -633,6 +640,7 @@ async def project_detail(request: Request, project_path: str):
         "anti_aliasing": postshot_cfg.get("anti_aliasing", False),
         "create_sky_model": postshot_cfg.get("create_sky_model", False),
         "train_steps_limit": int(postshot_cfg.get("train_steps_limit", 0)),
+        "ppisp": bool(lichtfeld_cfg.get("ppisp", False)),
     }
     if "train" in step_overrides:
         train_defaults.update(step_overrides["train"])
@@ -1286,7 +1294,7 @@ def _clear_folder(folder: Path) -> tuple[int, list[str]]:
     failed: list[str] = []
     for item in list(folder.iterdir()):
         try:
-            if item.is_symlink() or item.is_junction():
+            if _is_link_like(item):
                 item.unlink()
             elif item.is_dir():
                 shutil.rmtree(str(item))

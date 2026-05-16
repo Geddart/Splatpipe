@@ -53,13 +53,13 @@ def train(
         raise typer.Exit(1)
 
     # Determine source (file or directory)
-    if proj.source_type == "postshot":
+    if proj.source_type in ("postshot", "ply"):
         source_file = proj.source_file()
         if not source_file or not source_file.exists():
-            console.print("[red]Postshot source file not found in project[/red]")
+            console.print(f"[red]{proj.source_type.capitalize()} source file not found in project[/red]")
             raise typer.Exit(1)
         clean_dir = source_file  # Pass file path directly to trainer
-        console.print(f"[bold]Source:[/bold] {source_file} (Postshot project)")
+        console.print(f"[bold]Source:[/bold] {source_file} ({proj.source_type})")
     else:
         clean_dir = proj.get_folder(FOLDER_COLMAP_CLEAN)
         has_clean = clean_dir.exists() and (

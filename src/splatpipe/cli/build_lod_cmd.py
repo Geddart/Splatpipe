@@ -20,6 +20,11 @@ def build_lod_cmd(
         False, "--quick",
         help="Use the faster `tiny-lod` algorithm instead of the default high-quality `bhatt-lod`",
     ),
+    chunked: bool = typer.Option(
+        True, "--chunked/--no-chunked",
+        help="Emit a chunked manifest + .radc set (pipeline default; faster first paint). "
+             "--no-chunked produces a single monolithic .rad.",
+    ),
     spark_repo: Path = typer.Option(
         None, "--spark-repo",
         help="Path to the sparkjsdev/spark clone (default: $SPARK_REPO env var)",
@@ -60,11 +65,13 @@ def build_lod_cmd(
     console.print(f"  Toolchain : {info['command'][0]} ({info['version']}, {'cargo' if info['is_cargo'] else 'binary'})")
     console.print(f"  Input     : {input_ply.name} ({input_ply.stat().st_size / (1<<20):.1f} MB)")
     console.print(f"  Algorithm : {'quick (tiny-lod)' if quick else 'quality (bhatt-lod)'}")
+    console.print(f"  Output    : {'chunked (manifest + .radc)' if chunked else 'single .rad'}")
 
     try:
         rad_path = build(
             input_ply,
             quality=not quick,
+            chunked=chunked,
             on_progress=lambda line: console.print(f"  [dim]{line}[/dim]"),
             spark_repo=spark_repo,
         )
@@ -72,8 +79,15 @@ def build_lod_cmd(
         console.print(f"\n[red]Build failed:[/red] {e}")
         raise typer.Exit(1)
 
-    size_mb = rad_path.stat().st_size / (1 << 20)
-    console.print(f"\n[green]Done[/green] → {rad_path} ({size_mb:.1f} MB)")
+    radc = sorted(rad_path.parent.glob("*.radc"))
+    total = rad_path.stat().st_size + sum(p.stat().st_size for p in radc)
+    if radc:
+        console.print(
+            f"\n[green]Done[/green] → {rad_path} "
+            f"({len(radc)} chunks, {total / (1 << 20):.1f} MB total)"
+        )
+    else:
+        console.print(f"\n[green]Done[/green] → {rad_path} ({total / (1 << 20):.1f} MB)")
 
 
 def _resolve_project(project_path: Path | None) -> Project:

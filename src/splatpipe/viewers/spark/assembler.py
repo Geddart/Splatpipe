@@ -92,21 +92,35 @@ class SparkAssembler:
 
         t0 = time.time()
         try:
-            rad_path = build(input_ply, quality=True, on_progress=_on_progress)
+            rad_path = build(input_ply, quality=True, chunked=True, on_progress=_on_progress)
         except BuildLodError as e:
             raise RuntimeError(f"build-lod failed: {e}") from e
 
-        rad_size = rad_path.stat().st_size
+        # Chunked build → manifest + sibling ``*.radc`` in the same cache dir.
+        # Legacy non-chunked → a lone ``.rad`` (the flat cache dir has no
+        # ``.radc``). Total deployed size = manifest + all chunks.
+        radc_src = sorted(rad_path.parent.glob("*.radc"))
+        chunk_count = len(radc_src)
+        rad_size = rad_path.stat().st_size + sum(p.stat().st_size for p in radc_src)
         yield ProgressEvent(
             step="assemble",
             progress=0.6,
-            message="Spark: built scene.rad",
+            message=(
+                f"Spark: built scene.rad ({chunk_count} chunks)"
+                if chunk_count
+                else "Spark: built scene.rad"
+            ),
             detail=f"{rad_size / (1<<20):.1f} MB in {time.time() - t0:.1f}s",
         )
 
-        # ---- Place .rad in 05_output/ ----
+        # ---- Place .rad (+ .radc chunks) in 05_output/ ----
+        # The manifest is deployed as ``scene.rad``; each chunk keeps its
+        # ORIGINAL basename because the manifest references chunks by basename
+        # and the viewer resolves them relative to the manifest's own URL.
         out_rad = output_dir / "scene.rad"
         shutil.copy2(rad_path, out_rad)
+        for rc in radc_src:
+            shutil.copy2(rc, output_dir / rc.name)
 
         # ---- Optional .sog fallback ----
         emitted_sog = False
@@ -151,11 +165,15 @@ class SparkAssembler:
                 shutil.rmtree(assets_dst)
             shutil.copytree(assets_src, assets_dst)
 
+        chunk_note = f" + {chunk_count} .radc" if chunk_count else ""
         yield ProgressEvent(
             step="assemble",
             progress=1.0,
             message="Spark: done",
-            detail=f"index.html + scene.rad ({'+ scene.sog' if emitted_sog else ''}) in {output_dir.name}",
+            detail=(
+                f"index.html + scene.rad{chunk_note}"
+                f"{' + scene.sog' if emitted_sog else ''} in {output_dir.name}"
+            ),
         )
 
         return {
@@ -177,6 +195,8 @@ class SparkAssembler:
                 "renderer": "spark",
                 "lod_count": len(enabled_lods),
                 "rad_size_bytes": rad_size,
+                "rad_chunked": chunk_count > 0,
+                "rad_chunk_count": chunk_count,
                 "spark_static_fallback": emitted_sog,
                 "success": True,
             },

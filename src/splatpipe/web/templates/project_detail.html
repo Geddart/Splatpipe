@@ -469,6 +469,33 @@
                                     </label>
                                 </div>
 
+                                <!-- Photometric Compensation -->
+                                <div class="form-control">
+                                    <label class="label py-0"><span class="label-text text-xs">Photometric Compensation</span></label>
+                                    {% if project.trainer == 'lichtfeld' %}
+                                    <label class="cursor-pointer flex items-center gap-2 mt-1">
+                                        <input type="hidden" name="ppisp" value="false">
+                                        <input type="checkbox" name="ppisp" value="true"
+                                               class="checkbox checkbox-xs checkbox-primary"
+                                               {% if step_defaults.train.ppisp %}checked{% endif %}
+                                               onchange="this.form.requestSubmit()">
+                                        <span class="text-xs">PPISP</span>
+                                    </label>
+                                    {% elif project.trainer == 'postshot' %}
+                                    <label class="cursor-not-allowed flex items-center gap-2 mt-1 opacity-50">
+                                        <input type="hidden" name="ppisp" value="false">
+                                        <input type="checkbox" class="checkbox checkbox-xs" disabled>
+                                        <span class="text-xs">CLI unavailable</span>
+                                    </label>
+                                    {% else %}
+                                    <label class="cursor-not-allowed flex items-center gap-2 mt-1 opacity-50">
+                                        <input type="hidden" name="ppisp" value="false">
+                                        <input type="checkbox" class="checkbox checkbox-xs" disabled>
+                                        <span class="text-xs">Not applicable</span>
+                                    </label>
+                                    {% endif %}
+                                </div>
+
                                 <!-- Create Sky Model -->
                                 <div class="form-control">
                                     <label class="label py-0"><span class="label-text text-xs">Sky Model</span></label>

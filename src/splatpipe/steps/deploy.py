@@ -115,7 +115,8 @@ def load_bunny_env(*env_paths: Path | None) -> dict:
             break
 
     # Fall back to environment variables
-    for key in ("BUNNY_STORAGE_ZONE", "BUNNY_STORAGE_PASSWORD", "BUNNY_CDN_URL"):
+    for key in ("BUNNY_STORAGE_ZONE", "BUNNY_STORAGE_PASSWORD", "BUNNY_CDN_URL",
+                "BUNNY_ACCOUNT_API_KEY"):
         if key not in env:
             val = os.environ.get(key)
             if val:
@@ -194,6 +195,81 @@ def _purge_bunny_folder(storage_zone: str, password: str, remote_folder: str) ->
     return deleted
 
 
+def purge_bunny_cache(api_key: str, urls: list[str]) -> tuple[int, int]:
+    """Purge Bunny CDN edge cache for one or more URLs.
+
+    Uploading a file to the Storage Zone does *not* invalidate the CDN edge
+    cache — Bunny continues serving the old copy until either the cache TTL
+    expires or someone explicitly purges. This helper hits the Bunny Account
+    API `POST /purge` endpoint once per URL (no batch endpoint as of 2026).
+
+    Args:
+        api_key: BUNNY_ACCOUNT_API_KEY (different from BUNNY_STORAGE_PASSWORD —
+                 see https://dash.bunny.net → Account → API).
+        urls:    Full CDN URLs to purge (e.g. ``https://x.b-cdn.net/foo/bar.html``).
+
+    Returns ``(purged_ok, purged_failed)``. Quiet on failure — purging is a
+    best-effort post-upload nicety; we don't fail the whole deploy if it
+    breaks.
+    """
+    ok = 0
+    failed = 0
+    for url in urls:
+        purge_url = f"https://api.bunny.net/purge?url={url}"
+        req = Request(purge_url, method="POST", data=b"")
+        req.add_header("AccessKey", api_key)
+        req.add_header("Content-Length", "0")
+        try:
+            resp = urlopen(req, timeout=30)
+            if 200 <= resp.status < 300:
+                ok += 1
+            else:
+                failed += 1
+        except (HTTPError, Exception):
+            failed += 1
+    return ok, failed
+
+
+# Per-extension Cache-Control policy. Large immutable assets (the splat
+# chunks themselves) get a year + immutable so the browser disk cache can
+# satisfy 206/Range re-requests across reloads without a network round-trip.
+# Viewer HTML / config keep a short TTL so updates are visible quickly.
+#
+# Important: as of 2026-05, Bunny's pull zone overrides origin Cache-Control
+# with its own default (typically `public, max-age=2592000`, 30 days, no
+# `immutable`) UNLESS "Honor Origin Cache Control" is enabled in the pull
+# zone settings — which is OFF by default. To make these headers take effect:
+#
+#   Bunny Dashboard → Pull Zone → Caching → Caching → enable
+#   "Use Origin Cache-Control Header" (or equivalent label)
+#
+# Until that is flipped, the 30-day pull-zone default still applies to .rad
+# (good for our paged-streaming cache hit rate) but viewer HTML also gets
+# 30 days — re-deploys rely on the post-upload purge call to refresh users.
+# Long-term we should pin the pull-zone setting via Bunny's pull-zone API
+# in deploy.py setup.
+_CACHE_CONTROL = {
+    ".rad":  "public, max-age=31536000, immutable",
+    ".radc": "public, max-age=31536000, immutable",
+    ".sog":  "public, max-age=31536000, immutable",
+    ".ply":  "public, max-age=31536000, immutable",
+    ".ksplat": "public, max-age=31536000, immutable",
+    ".splat":  "public, max-age=31536000, immutable",
+    ".spz":    "public, max-age=31536000, immutable",
+    ".json": "public, max-age=300",     # viewer/scene config — refresh quickly
+    ".html": "public, max-age=60",      # viewer shell — refresh almost-quickly
+}
+
+
+def _cache_control_for(remote_path: str) -> str | None:
+    """Pick a Cache-Control value based on file extension."""
+    lower = remote_path.lower()
+    for ext, value in _CACHE_CONTROL.items():
+        if lower.endswith(ext):
+            return value
+    return None
+
+
 def upload_file(
     storage_zone: str,
     password: str,
@@ -209,6 +285,9 @@ def upload_file(
     req.add_header("AccessKey", password)
     req.add_header("Checksum", checksum)
     req.add_header("Content-Type", "application/octet-stream")
+    cc = _cache_control_for(remote_path)
+    if cc:
+        req.add_header("Cache-Control", cc)
 
     try:
         resp = urlopen(req, timeout=120)
@@ -308,6 +387,21 @@ def deploy_to_bunny(
     duration = time.time() - t0
     viewer_url = f"{cdn_url}/{project_name}/index.html" if cdn_url else ""
 
+    # Purge Bunny edge cache for the URLs we just uploaded, so visitors hit
+    # the new content immediately instead of stale edge copies. Best-effort —
+    # if the account API key isn't configured or purging fails, we just log it
+    # in the summary and keep going (the upload itself already succeeded).
+    purge_ok = 0
+    purge_failed = 0
+    api_key = env.get("BUNNY_ACCOUNT_API_KEY", "")
+    if api_key and cdn_url and failed == 0:
+        purge_urls = [f"{cdn_url}/{remote}" for remote, _ in files]
+        yield ProgressEvent(
+            step="export", progress=1.0,
+            message=f"Purging CDN cache for {len(purge_urls)} URLs",
+        )
+        purge_ok, purge_failed = purge_bunny_cache(api_key, purge_urls)
+
     return StepResult(
         step="export",
         success=failed == 0,
@@ -320,6 +414,8 @@ def deploy_to_bunny(
             "cdn_url": f"{cdn_url}/{project_name}/" if cdn_url else "",
             "viewer_url": viewer_url,
             "failed_files": failed_files[:10],
+            "cache_purged": purge_ok,
+            "cache_purge_failed": purge_failed,
         },
         error=f"{failed} files failed" if failed > 0 else None,
     )
