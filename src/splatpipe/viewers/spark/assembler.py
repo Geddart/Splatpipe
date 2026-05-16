@@ -92,7 +92,11 @@ class SparkAssembler:
 
         t0 = time.time()
         try:
-            rad_path = build(input_ply, quality=True, chunked=True, on_progress=_on_progress)
+            # cluster_sh=True is the pipeline default — VQ the SH into a ≤64K
+            # codebook (~60% smaller .rad). Needs the patched fork the viewer
+            # template pins by default; explicit here so the intent is clear.
+            rad_path = build(input_ply, quality=True, chunked=True,
+                             cluster_sh=True, on_progress=_on_progress)
         except BuildLodError as e:
             raise RuntimeError(f"build-lod failed: {e}") from e
 

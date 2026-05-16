@@ -127,6 +127,7 @@ def build(
     *,
     quality: bool = True,
     chunked: bool = True,
+    cluster_sh: bool = True,
     extra_flags: list[str] | None = None,
     on_progress: Callable[[str], None] | None = None,
     spark_repo: Path | None = None,
@@ -142,8 +143,21 @@ def build(
     When ``chunked`` is False, a single monolithic ``.rad`` is produced and
     its path returned (legacy single-file behaviour).
 
+    ``cluster_sh`` (the pipeline default) passes build-lod ``--cluster-sh``:
+    the spherical-harmonic coefficients are vector-quantised into a ≤64K
+    codebook, which is what makes large scenes deployable — empirically
+    ~60% smaller .rad (IBUG 1653 MB → 661 MB) at no perceptible quality
+    loss, and dramatically less GPU/JS memory. This REQUIRES the patched,
+    self-hosted Spark fork (the ``SPARK_FORK_URL`` the viewer template
+    already pins by default: rcf2 = the RefCell-reentrancy + chunk-0
+    codebook-ordering fixes); upstream ``@sparkjsdev/spark@2.0.0`` crashes
+    on every cluster-sh chunk. Pass ``cluster_sh=False`` only to produce a
+    stock-Spark-compatible build (larger, no fork needed).
+
     Idempotent: re-runs are cache hits (constant-time) when the input file's
-    mtime + size + sha256 are unchanged.
+    mtime + size + sha256 are unchanged. The flag set (quality / chunked /
+    cluster_sh / extra_flags) is part of the cache key, so changing a flag
+    correctly rebuilds rather than serving a stale asset.
     """
     input_ply = Path(input_ply).resolve()
     if not input_ply.is_file():
@@ -154,6 +168,8 @@ def build(
     flag_str = "q" if quality else "n"
     if chunked:
         flag_str += "c"
+    if cluster_sh:
+        flag_str += "s"
     if extra_flags:
         flag_str += "+" + ",".join(sorted(extra_flags))
 
@@ -198,6 +214,8 @@ def build(
             argv.append("--quick")
         if chunked:
             argv.append("--rad-chunked")
+        if cluster_sh:
+            argv.append("--cluster-sh")
         if extra_flags:
             argv.extend(extra_flags)
         argv.append(str(tmp_input))

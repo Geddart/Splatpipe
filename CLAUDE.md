@@ -9,7 +9,7 @@ CLI-first Gaussian splatting pipeline. Takes COLMAP data through: auto-clean →
 ```bash
 cd H:\001_ProjectCache\1000_Coding\Splatpipe
 pip install -e ".[dev]"
-pytest tests/ -v                    # Run tests (456 tests, ~22s)
+pytest tests/ -v                    # Run tests (458 tests, ~22s)
 splatpipe --help                    # CLI commands
 splatpipe web                       # Launch dashboard
 ```
@@ -127,9 +127,11 @@ Per-project camera tours play smoothly in either renderer:
 Per-project `renderer: "playcanvas" | "spark"`. PlayCanvas is default; switching to Spark in the project detail page emits a `.rad` streaming viewer.
 
 - **Toolchain**: requires Rust + a sibling clone of [sparkjsdev/spark](https://github.com/sparkjsdev/spark) (default location `H:/001_ProjectCache/1000_Coding/spark`, override with `SPARK_REPO` env var). First-time `cargo build --release` of the workspace takes ~2 min; subsequent runs use the cached `build-lod` binary in `~/.cache/splatpipe/spark/`.
-- **Cache**: built `.rad`s land in `~/.cache/splatpipe/rad/<sha256[:16]>-<rev[:7]>-<flags>.rad`. Re-assemble is instant when the input PLY hasn't changed.
-- **Viewer**: pinned to `@sparkjsdev/spark@2.0.0` on `three@0.180.0`. Splat is rotated 180°-X to match the PlayCanvas viewer's orientation so annotations + camera-paths land consistently across renderers.
-- **Verified end-to-end**: 674 MB Gutsmutstrasse PLY → 191 MB scene.rad in 1m49s (GPU build_lod). Full feature parity with the PC viewer for annotations + camera-path playback.
+- **Cache**: built `.rad`s land in `~/.cache/splatpipe/rad/<sha256[:16]>-<rev[:7]>-<flags>` (chunked = a *directory*; flags encode `q`/`n` + `c` chunked + `s` cluster-sh + extra). Re-assemble is instant when the input PLY + flags are unchanged.
+- **Build defaults (the large-scene pipeline — DEFAULT, not a script).** `build_lod.build()` defaults to `quality=True, chunked=True, cluster_sh=True`; `splatpipe build-lod` / `splatpipe assemble` produce a chunked `--cluster-sh` `.rad` set. Cluster-sh VQ-compresses SH into a ≤64K codebook → **~60% smaller** (IBUG 1653→661 MB) at no perceptible quality loss; chunking → hundreds of CDN-cacheable `.radc` (faster cold first paint). Escape hatch: `--no-cluster-sh` / `--no-chunked` (larger, stock-Spark-compatible). Reusable end-to-end: `.codex-run/deploy_scene_cs.py --scene --ply --folder [--live --clip-xy --desc]`.
+- **HARD dependency — the patched fork (also default).** Cluster-sh `.rad`s only run on the self-hosted patched Spark fork the viewer template pins via `SPARK_FORK_URL` (currently rcf2: `ChunkDecoder` RefCell-reentrancy fix + chunk-0 SH-codebook ordering gate). Upstream `@sparkjsdev/spark@2.0.0` panics/OOMs on every cluster-sh chunk. The `build-lod` *binary* is still the fork's Rust tool; the *viewer* loads the fork bundle, not vanilla 2.0.0. Splat is rotated 180°-X to match the PlayCanvas viewer so annotations + camera-paths land consistently across renderers.
+- **Per-scene viewer config**: `spark_render.clip_xy` (default 1.4; scenes with training-outlier splats e.g. Speicher need 3.0 in their `viewer-config.json` or they blank). Social share-card (OG/Twitter + auto `preview.jpg`) is emitted by `html_for()` and published per scene via `.codex-run/make_share_preview.py`. Canonical per-scene source PLYs are NOT the splatpipe project dirs — see the `project_scene_source_plys` memory.
+- **Verified end-to-end**: 674 MB Gutsmutstrasse PLY → 191 MB scene.rad in 1m49s (GPU build_lod, pre-cluster-sh ref). Full feature parity with the PC viewer for annotations + camera-path playback.
 
 ## Quality Discipline
 
@@ -318,7 +320,7 @@ Key config sections: `[tools]`, `[colmap_clean]`, `[postshot]` (profile, gpu, ma
 ## Tests
 
 ```bash
-pytest tests/ -v              # All 456 tests
+pytest tests/ -v              # All 458 tests
 pytest tests/ -k colmap       # Just COLMAP tests
 pytest tests/ -k integration  # End-to-end with tiny data
 pytest tests/ -k trainers     # Trainer abstraction tests

@@ -25,6 +25,12 @@ def build_lod_cmd(
         help="Emit a chunked manifest + .radc set (pipeline default; faster first paint). "
              "--no-chunked produces a single monolithic .rad.",
     ),
+    cluster_sh: bool = typer.Option(
+        True, "--cluster-sh/--no-cluster-sh",
+        help="Vector-quantise SH into a <=64K codebook (pipeline default; "
+             "~60%% smaller .rad, needs the patched Spark fork the viewer "
+             "pins by default). --no-cluster-sh = larger, stock-Spark-compatible.",
+    ),
     spark_repo: Path = typer.Option(
         None, "--spark-repo",
         help="Path to the sparkjsdev/spark clone (default: $SPARK_REPO env var)",
@@ -66,12 +72,14 @@ def build_lod_cmd(
     console.print(f"  Input     : {input_ply.name} ({input_ply.stat().st_size / (1<<20):.1f} MB)")
     console.print(f"  Algorithm : {'quick (tiny-lod)' if quick else 'quality (bhatt-lod)'}")
     console.print(f"  Output    : {'chunked (manifest + .radc)' if chunked else 'single .rad'}")
+    console.print(f"  SH codebook: {'cluster-sh (<=64K, needs patched fork)' if cluster_sh else 'off (stock-compatible)'}")
 
     try:
         rad_path = build(
             input_ply,
             quality=not quick,
             chunked=chunked,
+            cluster_sh=cluster_sh,
             on_progress=lambda line: console.print(f"  [dim]{line}[/dim]"),
             spark_repo=spark_repo,
         )
