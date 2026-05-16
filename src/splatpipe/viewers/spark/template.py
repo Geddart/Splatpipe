@@ -315,6 +315,16 @@ _VIEWER_TEMPLATE = """\
       font-size: 11px; cursor: pointer; padding: 0;
     }}
     #safari-hint-close:hover {{ background: rgba(255,255,255,0.15); color: #fff; }}
+
+    /* ?embed=1 — clean canvas-only mode for <iframe> embedding (portfolio
+       sites). Hides every Splatpipe chrome element; the 3D scene,
+       annotations and camera-path playback are untouched. */
+    body.embed #header,
+    body.embed #quality-buttons,
+    body.embed #stats,
+    body.embed #controls-hint,
+    body.embed #safari-hint,
+    body.embed #path-hud {{ display: none !important; }}
   </style>
 </head>
 <body>
@@ -406,6 +416,14 @@ _VIEWER_TEMPLATE = """\
   // Useful for A/B visual comparisons against pure Spark defaults.
   const STOCK = new URLSearchParams(location.search).get('stock') === '1';
   if (STOCK) console.info('[Splatpipe] STOCK mode: all perf mods disabled');
+
+  // ?embed=1 — clean canvas-only mode for <iframe> embedding (e.g. the
+  // geddart.de portfolio): a <body> class hides all Splatpipe chrome via
+  // CSS (header, budget/bench buttons, stats, hints, path HUD). The scene,
+  // annotations and camera-path playback are unchanged. CSS-driven so
+  // there's no per-element JS or layout flash.
+  const EMBED = new URLSearchParams(location.search).get('embed') === '1';
+  if (EMBED) {{ document.body.classList.add('embed'); console.info('[Splatpipe] EMBED mode (chrome hidden for iframe)'); }}
 
   // ?bench=<value> auto-triggers a benchmark recording.
   //   ?bench=1               → 30 s static recording (user drives the camera or
