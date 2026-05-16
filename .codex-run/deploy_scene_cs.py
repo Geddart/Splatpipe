@@ -57,6 +57,8 @@ def main() -> int:
     ap.add_argument("--clip-xy", type=float, default=None, help="per-scene spark_render.clip_xy (Speicher=3.0)")
     ap.add_argument("--move-speed-mult", type=float, default=None,
                     help="per-scene spark_render.move_speed_mult (WASD speed; <1.0 = slower, e.g. Polygraf 0.5)")
+    ap.add_argument("--splat-budget", type=int, default=None,
+                    help="per-scene splat_budget (top-level; honored on capable desktop only, e.g. Polygraf 3000000)")
     ap.add_argument("--desc", default=None, help="share-card description")
     args = ap.parse_args()
 
@@ -108,12 +110,17 @@ def main() -> int:
     if args.move_speed_mult is not None:
         cfg.setdefault("spark_render", {})["move_speed_mult"] = args.move_speed_mult
         print(f"[{args.scene}] injected spark_render.move_speed_mult = {args.move_speed_mult}", flush=True)
+    if args.splat_budget is not None:
+        cfg["splat_budget"] = args.splat_budget  # top-level, not under spark_render
+        print(f"[{args.scene}] injected splat_budget = {args.splat_budget}", flush=True)
     (stage / "viewer-config.json").write_text(json.dumps(cfg, indent=2), encoding="utf-8")
     back = json.loads((stage / "viewer-config.json").read_text(encoding="utf-8"))
     if args.clip_xy is not None:
         assert back["spark_render"]["clip_xy"] == args.clip_xy, "clip_xy did not round-trip"
     if args.move_speed_mult is not None:
         assert back["spark_render"]["move_speed_mult"] == args.move_speed_mult, "move_speed_mult did not round-trip"
+    if args.splat_budget is not None:
+        assert back["splat_budget"] == args.splat_budget, "splat_budget did not round-trip"
 
     # 4. index.html with absolute share-card meta
     share_url = f"{cdn}/{args.folder}/index.html"

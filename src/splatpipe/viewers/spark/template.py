@@ -345,6 +345,16 @@ _VIEWER_TEMPLATE = """\
         <option value="4000000">4M</option>
         <option value="6000000">6M</option>
       </select>
+      <select id="move-speed" class="quality-btn" title="Camera fly speed (WASD / arrows). Live — your choice is remembered on this device, no reload or redeploy. ?moveSpeed=N forces a value.">
+        <option value="0.1">Speed: 0.1×</option>
+        <option value="0.25">Speed: 0.25×</option>
+        <option value="0.5">Speed: 0.5×</option>
+        <option value="0.75">Speed: 0.75×</option>
+        <option value="1">Speed: 1×</option>
+        <option value="1.5">Speed: 1.5×</option>
+        <option value="2">Speed: 2×</option>
+        <option value="4">Speed: 4×</option>
+      </select>
       <select id="bench-mode" class="quality-btn" title="Which benchmark the Bench button runs. Probe = teleport → time-to-loaded. Rotate = yaw at each pose while loading → frame-times-while-loading. Orbit/Dolly/Cold = motion-fps traces.">
         <option value="orbit">Bench: Orbit 360°</option>
         <option value="probe">Bench: Probe (load time)</option>
@@ -891,18 +901,37 @@ _VIEWER_TEMPLATE = """\
   window.addEventListener('keyup', (e) => {{ _keys[e.code] = false; }});
   window.addEventListener('blur', () => {{ for (const k in _keys) _keys[k] = false; }});
 
-  // Speed in world units per second. Scaled loosely to the initial
-  // camera-to-target distance — but that's the AUTHORED start-view framing,
-  // not true scene size, so a scene whose start view sits far from its pivot
-  // (e.g. Polygraf) flies too fast. A per-scene multiplier
-  // (spark_render.move_speed_mult, default 1.0 = unchanged for every other
-  // scene) corrects it; ?moveSpeed=N overrides live for A/B feel-tuning.
+  // Camera fly speed = sceneBase × a LIVE multiplier. sceneBase scales to the
+  // initial camera→target distance (authored start-view framing — an
+  // imperfect scene-size proxy, which is why a far-framed scene like Polygraf
+  // wants a lower multiplier). The multiplier is tunable with NO redeploy:
+  //   • in-viewer "Speed" dropdown — primary control, persisted per device
+  //     in localStorage (your pick sticks across reloads & scenes);
+  //   • ?moveSpeed=N — forces a value, wins over all (A/B / deep link);
+  //   • spark_render.move_speed_mult — per-scene default for first visitors.
   const _initDist = camera.position.distanceTo(controls.target);
+  const _moveBase = Math.max(2, _initDist * 0.6);
   const _msQ = parseFloat(new URLSearchParams(location.search).get('moveSpeed'));
-  const _moveSpeedMult = (Number.isFinite(_msQ) && _msQ > 0)
-    ? _msQ
-    : ((typeof sr.move_speed_mult === 'number' && sr.move_speed_mult > 0) ? sr.move_speed_mult : 1.0);
-  const MOVE_SPEED = Math.max(2, _initDist * 0.6) * _moveSpeedMult;   // base × per-scene feel
+  const _msFromUrl = Number.isFinite(_msQ) && _msQ > 0;
+  const _msCfg = (typeof sr.move_speed_mult === 'number' && sr.move_speed_mult > 0) ? sr.move_speed_mult : 1.0;
+  let _msLS = null;
+  try {{ const _v = parseFloat(localStorage.getItem('splatpipe.moveSpeedMult')); if (Number.isFinite(_v) && _v > 0) _msLS = _v; }} catch (e) {{}}
+  let _moveSpeedMult = _msFromUrl ? _msQ : (_msLS != null ? _msLS : _msCfg);
+  const _speedSel = document.getElementById('move-speed');
+  if (_speedSel) {{
+    const _opts = Array.from(_speedSel.options).map(o => parseFloat(o.value));
+    let _best = _opts[0];
+    for (const o of _opts) if (Math.abs(o - _moveSpeedMult) < Math.abs(_best - _moveSpeedMult)) _best = o;
+    _speedSel.value = String(_best);
+    _speedSel.addEventListener('change', () => {{
+      const m = parseFloat(_speedSel.value);
+      if (Number.isFinite(m) && m > 0) {{
+        _moveSpeedMult = m;
+        try {{ localStorage.setItem('splatpipe.moveSpeedMult', String(m)); }} catch (e) {{}}
+        console.info('[Splatpipe] move speed ×' + m + ' (saved on this device)');
+      }}
+    }});
+  }}
   const SPRINT_MULT = 4;                                     // Shift
   let _lastMoveTime = performance.now();
 
@@ -929,7 +958,7 @@ _VIEWER_TEMPLATE = """\
     const up = new THREE.Vector3(0, 1, 0);
 
     const sprint = (_keys.ShiftLeft || _keys.ShiftRight) ? SPRINT_MULT : 1;
-    const step = MOVE_SPEED * sprint * dt;
+    const step = _moveBase * _moveSpeedMult * sprint * dt;   // live multiplier
     const offset = new THREE.Vector3()
       .addScaledVector(fwd, -intent.z * step)
       .addScaledVector(right, intent.x * step)
@@ -2194,14 +2223,24 @@ _VIEWER_TEMPLATE = """\
   // from the (separate) maxPagedSplats resident pool.
   function pickDefaultBudget() {{
     const {{ tier }} = _deviceProfile;
-    const target = _deviceProfile.appleSilicon ? 1_000_000 :
-                   tier === 'phone' ? 500_000 :
-                   tier === 'tablet' ? 1_000_000 :
-                   2_000_000;  // discrete-GPU desktop (auto-focus makes the
-                               // total budget largely irrelevant for the
-                               // focal region — verified 2026-05-15)
+    const tierPick = _deviceProfile.appleSilicon ? 1_000_000 :
+                     tier === 'phone' ? 500_000 :
+                     tier === 'tablet' ? 1_000_000 :
+                     2_000_000;  // discrete-GPU desktop default
+    // Per-scene preferred budget (viewer-config `splat_budget`, default 0 =
+    // unset). Some scenes (large-extent aerial captures like Polygraf) only
+    // resolve well at a higher budget. Honored on a capable discrete-GPU
+    // desktop ONLY — phones / tablets / Apple-Silicon keep their
+    // measured-safe tier value (a 3 M scene tanks a phone), so a per-scene
+    // bump never regresses constrained devices. The runtime dropdown +
+    // ?budget= still override either way.
+    const sceneWant = (typeof cfg.splat_budget === 'number' && cfg.splat_budget > 0)
+      ? cfg.splat_budget : 0;
+    const useScene = sceneWant > 0 && tier === 'desktop' && !_deviceProfile.appleSilicon;
+    const target = useScene ? sceneWant : tierPick;
     console.info('[Splatpipe] device tier:', tier,
-      '| splat budget:', target.toLocaleString());
+      '| splat budget:', target.toLocaleString(),
+      useScene ? '(per-scene)' : '(tier default)');
     return target;
   }}
 
