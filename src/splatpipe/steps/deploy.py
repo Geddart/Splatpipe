@@ -6,6 +6,7 @@ Supports two modes:
 """
 
 import hashlib
+import json
 import os
 import shutil
 import time
@@ -228,6 +229,133 @@ def purge_bunny_cache(api_key: str, urls: list[str]) -> tuple[int, int]:
         except (HTTPError, Exception):
             failed += 1
     return ok, failed
+
+
+def list_bunny_subfolders(
+    storage_zone: str, password: str, remote_prefix: str
+) -> list[str]:
+    """Immediate subdirectory names under ``<zone>/<remote_prefix>/`` on
+    Bunny Storage. Empty list on any error (caller decides if that matters).
+    Used by the publish flow to find stale prior ``b<key>/`` build subfolders.
+    """
+    url = f"https://storage.bunnycdn.com/{storage_zone}/{remote_prefix}/"
+    req = Request(url, method="GET")
+    req.add_header("AccessKey", password)
+    try:
+        items = json.loads(urlopen(req, timeout=30).read())
+    except (HTTPError, Exception):
+        return []
+    return [it["ObjectName"] for it in items if it.get("IsDirectory")]
+
+
+# ---------------------------------------------------------------------------
+# Bunny pull-zone Edge Rule: make the small permanent-slug text files
+# (index.html / viewer-config.json) always edge+browser fresh while the big
+# immutable .rad/.radc keep the 30-day cache. WITHOUT this a re-deployed
+# stable-slug URL keeps serving a 30-day-stale shell (the pull zone's
+# CacheControlMaxAgeOverride overrides the client's cache:'no-store' too;
+# per-URL purge does not reach all edges). See the project memory
+# `project_bunny_viewer_config_cache`. Idempotent (~2 API calls), matched by
+# Description so re-runs update in place.
+# ---------------------------------------------------------------------------
+_EDGE_PULLZONE_HOST = "splatpipe-cdn"
+_EDGE_DESC = "splatpipe: no-edge-cache for permanent-slug index/config (redeploy-safe)"
+_EDGE_URL_PATTERNS = [
+    "https://splatpipe-cdn.b-cdn.net/*/index.html",
+    "https://splatpipe-cdn.b-cdn.net/*/viewer-config.json",
+    "https://splatpipe-cdn.b-cdn.net/index.html",
+    "https://splatpipe-cdn.b-cdn.net/viewer-config.json",
+]
+
+
+def _bunny_api(api_key: str, method: str, url: str, body: dict | None = None):
+    data = json.dumps(body).encode() if body is not None else None
+    req = Request(url, data=data, method=method)
+    req.add_header("AccessKey", api_key)
+    req.add_header("Accept", "application/json")
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    with urlopen(req, timeout=30) as r:
+        raw = r.read()
+        return json.loads(raw) if raw.strip() else {}
+
+
+def _find_edge_pullzone(api_key: str) -> dict:
+    zs = _bunny_api(api_key, "GET",
+                    "https://api.bunny.net/pullzone?page=1&perPage=100")
+    items = zs.get("Items", zs if isinstance(zs, list) else [])
+    for z in items:
+        if z.get("Name") == _EDGE_PULLZONE_HOST:
+            return z
+    raise RuntimeError(f"Bunny pull zone {_EDGE_PULLZONE_HOST!r} not found")
+
+
+def _desired_edge_rules(existing: list[dict]) -> list[dict]:
+    """Two rules (edge cache 0, browser cache 0). Reuse Guids by Description
+    so addOrUpdate edits in place instead of duplicating."""
+    by_desc = {r.get("Description"): r for r in existing}
+    trigger = {"Type": 0, "PatternMatchingType": 0,
+               "PatternMatches": _EDGE_URL_PATTERNS, "Parameter1": ""}
+    out = []
+    for action, tag in ((3, "edge"), (15, "browser")):
+        d = f"{_EDGE_DESC} [{tag}]"
+        prev = by_desc.get(d)
+        out.append({
+            "Guid": prev.get("Guid") if prev else None,
+            "ActionType": action,         # 3=OverrideCacheTime, 15=OverrideBrowserCacheTime
+            "ActionParameter1": "0",      # 0 = do not cache
+            "ActionParameter2": "",
+            "Enabled": True,
+            "Description": d,
+            "TriggerMatchingType": 0,     # MatchAny across triggers
+            "Triggers": [dict(trigger)],
+        })
+    return out
+
+
+def ensure_edge_rules(
+    api_key: str, *, verify_only: bool = False, quiet: bool = False
+) -> bool:
+    """Ensure (or, with ``verify_only``, just check) the no-edge-cache Edge
+    Rules on the splatpipe-cdn pull zone. Returns True on success /
+    present-and-enabled. Never raises on a missing key — the caller decides
+    whether the absence is fatal.
+    """
+    def _log(msg: str) -> None:
+        if not quiet:
+            print(msg, flush=True)
+
+    if not api_key:
+        _log("ensure_edge_rules: no BUNNY_ACCOUNT_API_KEY — skipped")
+        return False
+
+    z = _find_edge_pullzone(api_key)
+    zid = z["Id"]
+    existing = z.get("EdgeRules", []) or []
+    ours = [r for r in existing
+            if str(r.get("Description", "")).startswith(_EDGE_DESC)]
+    _log(f"edge-rule: pull zone {_EDGE_PULLZONE_HOST} id={zid} "
+         f"CacheControlMaxAgeOverride={z.get('CacheControlMaxAgeOverride')} "
+         f"existing={len(existing)} ours={len(ours)}")
+
+    if verify_only:
+        ok = len(ours) >= 2 and all(r.get("Enabled") for r in ours)
+        _log(f"edge-rule VERIFY: {'PRESENT+ENABLED' if ok else 'MISSING/DISABLED'}")
+        return ok
+
+    for rule in _desired_edge_rules(existing):
+        _bunny_api(api_key, "POST",
+                   f"https://api.bunny.net/pullzone/{zid}/edgerules/addOrUpdate",
+                   rule)
+        _log(f"edge-rule applied: [{rule['Description']}] "
+             f"ActionType={rule['ActionType']} -> cache 0")
+    now = [r for r in (_find_edge_pullzone(api_key).get("EdgeRules") or [])
+           if str(r.get("Description", "")).startswith(_EDGE_DESC)]
+    if len(now) < 2:
+        raise RuntimeError(f"expected >=2 edge rules, got {len(now)}")
+    _log("edge-rule OK — */index.html + */viewer-config.json bypass "
+         "edge+browser cache; .rad/.radc still long-cached")
+    return True
 
 
 # Per-extension Cache-Control policy. Large immutable assets (the splat

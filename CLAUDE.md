@@ -9,7 +9,7 @@ CLI-first Gaussian splatting pipeline. Takes COLMAP data through: auto-clean →
 ```bash
 cd H:\001_ProjectCache\1000_Coding\Splatpipe
 pip install -e ".[dev]"
-pytest tests/ -v                    # Run tests (458 tests, ~22s)
+pytest tests/ -v                    # Run tests (464 tests, ~24s)
 splatpipe --help                    # CLI commands
 splatpipe web                       # Launch dashboard
 ```
@@ -48,6 +48,8 @@ splatpipe/                    # repo root
       status_cmd.py           # splatpipe status
       path_cmd.py             # splatpipe path-import + path-import-colmap (v0.6+)
       build_lod_cmd.py        # splatpipe build-lod (Spark .rad cache prime, v0.6+)
+      set_start_view_cmd.py   # splatpipe set-start-view (apply SPV1 token → viewer-config.json)
+      publish_cmd.py          # splatpipe publish (build/stage → permanent Bunny slug, redeploy-safe; v0.7+)
     core/                     # Project, config, constants, events
       project.py              # Project class: folder scaffold, state.json CRUD, _migrate_state()
       config.py               # TOML config loader (defaults + per-project merge)
@@ -76,7 +78,8 @@ splatpipe/                    # repo root
       base.py                 # Abstract PipelineStep (debug JSON, env capture)
       colmap_clean.py         # COLMAP cleaning step (outliers + KD-tree + POINTS2D)
       lod_assembly.py         # splat-transform LOD meta + SOG compression
-      deploy.py               # Folder export + Bunny CDN upload with progress events
+      deploy.py               # Folder export + Bunny CDN upload; ensure_edge_rules + list_bunny_subfolders
+      publish.py              # publish_scene() generator: build/stage → permanent slug (v0.7+)
     web/                      # FastAPI + HTMX dashboard
       app.py                  # FastAPI app
       runner.py               # Background pipeline runner (daemon thread + RunnerSnapshot)
@@ -320,7 +323,7 @@ Key config sections: `[tools]`, `[colmap_clean]`, `[postshot]` (profile, gpu, ma
 ## Tests
 
 ```bash
-pytest tests/ -v              # All 458 tests
+pytest tests/ -v              # All 464 tests
 pytest tests/ -k colmap       # Just COLMAP tests
 pytest tests/ -k integration  # End-to-end with tiny data
 pytest tests/ -k trainers     # Trainer abstraction tests

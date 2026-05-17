@@ -32,6 +32,7 @@ STEP_TRAIN = "train"
 STEP_REVIEW = "review"
 STEP_ASSEMBLE = "assemble"
 STEP_EXPORT = "export"
+STEP_PUBLISH = "publish"
 
 # Plain-language explanations shown as tooltips next to each step in the UI.
 STEP_DESCRIPTIONS = {
@@ -58,5 +59,12 @@ STEP_DESCRIPTIONS = {
     STEP_EXPORT: (
         "Copy 05_output/ to a local folder OR upload it to Bunny CDN. "
         "CDN mode prints a viewer URL on completion."
+    ),
+    STEP_PUBLISH: (
+        "Build a source PLY (or stage a prebuilt chunked set) and deploy it "
+        "to a permanent Bunny slug URL that never changes across rebuilds: "
+        "build-agnostic index.html + a no-store viewer-config.json pointer "
+        "+ immutable b<key>/ chunk subfolder + the edge-cache rule, so the "
+        "embed URL is redeploy-safe forever."
     ),
 }
