@@ -40,7 +40,7 @@ import json
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Generator
+from typing import Callable, Generator
 from urllib.request import Request, urlopen
 
 from ..core.constants import STEP_PUBLISH
@@ -99,6 +99,7 @@ def publish_scene(
     desc: str | None = None,
     prune_stale: bool = False,
     spark_repo: Path | None = None,
+    on_build_line: Callable[[str], None] | None = None,
 ) -> Generator[ProgressEvent, None, StepResult]:
     """Build/stage a scene and deploy it to its permanent slug.
 
@@ -158,10 +159,16 @@ def publish_scene(
         yield _ev(0.05, f"build-lod --quality --rad-chunked --cluster-sh"
                         f"{' ' + xf[0] if xf else ''}")
         _last: list[str] = []
+
+        def _build_cb(line: str) -> None:
+            _last.append(line)
+            if on_build_line is not None:   # live-forward to the caller's sink
+                on_build_line(line)
+
         try:
             manifest = build(
                 ply, quality=True, chunked=True, cluster_sh=True,
-                extra_flags=xf, on_progress=lambda line: _last.append(line),
+                extra_flags=xf, on_progress=_build_cb,
                 spark_repo=spark_repo,
             )
         except BuildLodError as e:

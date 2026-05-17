@@ -134,7 +134,7 @@ def publish(
         console.print(f"  source: {src_ply.name} (project {proj.name})")
     console.print()
 
-    gen = publish_scene(
+    pub_kw = dict(
         scene_name=scene, slug=slug, env=env,
         ply=src_ply, rad_dir=src_rad,
         base_config=base_config, live_slug=live,
@@ -143,20 +143,45 @@ def publish(
         desc=desc, prune_stale=prune_stale, spark_repo=spark_repo,
     )
     result = None
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-        TimeElapsedColumn(),
-        console=console,
-    ) as progress:
-        task = progress.add_task("Publishing", total=1.0)
+    if console.is_terminal:
+        # Interactive terminal: the live rich progress bar.
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TimeElapsedColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Publishing", total=1.0)
+            gen = publish_scene(
+                **pub_kw,
+                on_build_line=lambda l: progress.update(
+                    task, description=(l.strip()[:80] or "building")),
+            )
+            try:
+                while True:
+                    event = next(gen)
+                    progress.update(task, completed=event.progress,
+                                    description=event.message)
+            except StopIteration as e:
+                result = e.value
+    else:
+        # Non-interactive (background / piped / CI): a rich live bar emits
+        # almost nothing here, so stream plain flushed lines instead - the
+        # same per-line visibility the pre-productization script had. Every
+        # build-lod line + every publish ProgressEvent is printed live.
+        gen = publish_scene(
+            **pub_kw,
+            on_build_line=lambda l: print(f"  {l.rstrip()}", flush=True),
+        )
         try:
             while True:
                 event = next(gen)
-                progress.update(task, completed=event.progress,
-                                description=event.message)
+                pct = int(round(event.progress * 100))
+                print(f"[{pct:3d}%] {event.message}"
+                      + (f"  {event.detail}" if event.detail else ""),
+                      flush=True)
         except StopIteration as e:
             result = e.value
 
