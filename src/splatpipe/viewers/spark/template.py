@@ -478,6 +478,18 @@ _VIEWER_TEMPLATE = """\
     if (r.ok) cfg = {{ ..._DEFAULTS, ...(await r.json()) }};
   }} catch (e) {{ /* defaults */ }}
 
+  // Effective splat asset. Bunny serves index.html with a 30-day edge
+  // cache and its purge is unreliable, so a re-deployed stable-slug URL
+  // would keep serving a STALE index.html that hardcodes an old build
+  // subfolder → 404 → blank. Fix: index.html stays build-AGNOSTIC; the
+  // current build's path lives in viewer-config.json (fetched no-store
+  // above = always fresh) as `primary_asset`. So a redeploy only updates
+  // the always-fresh config + adds an immutable new subfolder; the
+  // permanent URL never goes stale. Falls back to the baked PRIMARY_ASSET
+  // for single-file / legacy deploys that don't set cfg.primary_asset.
+  const _PRIMARY = (typeof cfg.primary_asset === 'string' && cfg.primary_asset)
+    ? cfg.primary_asset : PRIMARY_ASSET;
+
   // Device tier (used by the renderer DPR cap below, by Spark construction
   // further down, and by the initial splat-budget pick later). The web
   // platform doesn't expose VRAM (privacy / fingerprinting), so we use
@@ -796,7 +808,7 @@ _VIEWER_TEMPLATE = """\
   // raycastable: true enables Spark's first-class pick API — standard
   // THREE.Raycaster.intersectObject(splat) returns world-space hit points,
   // which we use below for the double-click pivot.
-  const splatMeshOpts = {{ url: PRIMARY_ASSET, raycastable: true }};
+  const splatMeshOpts = {{ url: _PRIMARY, raycastable: true }};
   if (PAGED) splatMeshOpts.paged = true;
   // Moderate cone foveation ON by default (2026-05-15): centre crisp,
   // edges softer but still "sharp enough" (NOT the aggressive global mush).
@@ -2402,7 +2414,7 @@ _VIEWER_TEMPLATE = """\
   function _benchConfigSnapshot() {{
     return {{
       project: document.querySelector('#title h1')?.textContent || '',
-      primaryAsset: PRIMARY_ASSET,
+      primaryAsset: _PRIMARY,
       stock: STOCK,
       paged: PAGED,
       tier: _deviceProfile.tier,

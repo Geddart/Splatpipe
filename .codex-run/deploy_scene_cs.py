@@ -27,6 +27,7 @@ Usage:
 — feedback_no_fabricated_scene_descriptions). Pass real user copy verbatim.
 """
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -67,7 +68,7 @@ def _list_subdirs(zone: str, pw: str, slug: str) -> list[str]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--scene", required=True, help="display name (og:title / project_name)")
-    ap.add_argument("--ply", required=True, help="absolute source PLY path")
+    ap.add_argument("--ply", default=None, help="source PLY to build from — XOR --rad-dir")
     ap.add_argument("--slug", required=True, help="STABLE scene slug, e.g. polygraf (permanent URL)")
     ap.add_argument("--live", default=None, help="existing Bunny folder to inherit viewer-config.json from")
     ap.add_argument("--clip-xy", type=float, default=None, help="per-scene spark_render.clip_xy (Speicher=3.0)")
@@ -75,14 +76,23 @@ def main() -> int:
                     help="per-scene spark_render.move_speed_mult (WASD speed; <1.0 slower)")
     ap.add_argument("--splat-budget", type=int, default=None,
                     help="per-scene splat_budget (top-level; capable desktop only, e.g. 3000000)")
+    ap.add_argument("--rad-dir", default=None,
+                    help="prebuilt chunked dir (one *-lod.rad + *.radc) staged as-is instead of "
+                         "building, e.g. .radchunk_cs for IBUG — XOR --ply")
+    ap.add_argument("--crop-within", default=None,
+                    help="build-lod --within-dist crop 'x,y,z,radius' — drop training-outlier "
+                         "splats at source so no clip_xy hack is needed (Speicher)")
     ap.add_argument("--desc", default=None, help="share-card description — REAL user copy only, never invented")
+    ap.add_argument("--prune-stale", action="store_true",
+                    help="delete prior b*/ build subfolders after deploy. OFF by default: a "
+                         "30-day-edge-cached OLD-design index.html (hardcoded b<key>, no cfg "
+                         "pointer) still needs its subfolder alive through the cache TTL. Only "
+                         "the deliberate #85 final consolidation passes this.")
     args = ap.parse_args()
+    assert bool(args.ply) ^ bool(args.rad_dir), "give exactly one of --ply or --rad-dir"
+    assert not (args.crop_within and args.rad_dir), "--crop-within only applies to a --ply build"
 
     slug = args.slug.strip("/").lower()
-    ply = Path(args.ply)
-    assert ply.is_file(), f"source PLY not found: {ply}"
-    print(f"[{slug}] source PLY: {ply} ({ply.stat().st_size/1e9:.2f} GB)", flush=True)
-
     env = load_bunny_env(Path(".env"))
     cdn = env.get("BUNNY_CDN_URL", "").rstrip("/")
     zone = env.get("BUNNY_STORAGE_ZONE", "")
@@ -90,17 +100,63 @@ def main() -> int:
     api = env.get("BUNNY_ACCOUNT_API_KEY", "")
     assert zone and pw, "BUNNY_STORAGE_ZONE / BUNNY_STORAGE_PASSWORD missing"
 
-    # 1. BUILD chunked --cluster-sh (cache HIT if this PLY built before)
-    print(f"[{slug}] build-lod --quality --rad-chunked --cluster-sh ...", flush=True)
-    manifest = build(ply, quality=True, chunked=True, cluster_sh=True,
-                      on_progress=lambda l: print(f"  {l}", flush=True), spark_repo=SPARK_REPO)
-    cache_dir = manifest.parent
-    radc = sorted(cache_dir.glob("*.radc"))
-    assert radc, f"no .radc next to {manifest}"
-    # build-versioned subfolder: PLY-content sha256[:16] (cache_dir name's 1st field)
-    bkey = "b" + cache_dir.name.split("-")[0][:16]
+    # Re-assert the Bunny Edge Rule that makes */index.html +
+    # */viewer-config.json bypass the pull zone's 30-day force-cache
+    # (CacheControlMaxAgeOverride). WITHOUT this the permanent-slug design
+    # is unreliable: an overwritten stable index.html/viewer-config.json
+    # keeps serving a 30-day-stale copy (cache:'no-store' is overridden by
+    # the pull zone; purge doesn't reach all edges) → blank scene. The big
+    # .rad/.radc stay 30-day cached (immutable per-build subfolders).
+    # Idempotent (~2 API calls); see memory project_bunny_viewer_config_cache.
+    if api:
+        try:
+            import bunny_edge_rules
+            bunny_edge_rules.apply(api, quiet=True)
+            print(f"[{slug}] Bunny edge-rule (no-cache index/config) ensured", flush=True)
+        except Exception as e:  # never block a deploy on this
+            print(f"[{slug}] WARN edge-rule ensure failed: {e!r}", flush=True)
+    else:
+        print(f"[{slug}] WARN no BUNNY_ACCOUNT_API_KEY — cannot ensure edge-rule "
+              f"(permanent-slug freshness depends on it)", flush=True)
+
+    # 1. Obtain the chunked cluster-sh set — build from --ply, or stage a
+    #    prebuilt --rad-dir as-is (IBUG: its set is the repo .radchunk_cs,
+    #    produced by an earlier pipeline, not a PLY this script builds).
+    if args.rad_dir:
+        rd = Path(args.rad_dir)
+        mans = sorted(rd.glob("*-lod.rad"))
+        assert len(mans) == 1, f"expected exactly one *-lod.rad in {rd}, found {len(mans)}"
+        manifest = mans[0]
+        radc = sorted(rd.glob("*.radc"))
+        assert radc, f"no .radc in {rd}"
+        _h = hashlib.sha256()
+        with open(manifest, "rb") as _fh:
+            for _c in iter(lambda: _fh.read(1 << 20), b""):
+                _h.update(_c)
+        bkey = "b" + _h.hexdigest()[:16]   # stable per manifest content
+        print(f"[{slug}] prebuilt set: {rd} ({manifest.name} + {len(radc)} .radc)", flush=True)
+    else:
+        ply = Path(args.ply)
+        assert ply.is_file(), f"source PLY not found: {ply}"
+        print(f"[{slug}] source PLY: {ply} ({ply.stat().st_size/1e9:.2f} GB)", flush=True)
+        _xf = [f"--within-dist={args.crop_within}"] if args.crop_within else None
+        print(f"[{slug}] build-lod --quality --rad-chunked --cluster-sh"
+              f"{(' ' + _xf[0]) if _xf else ''} ...", flush=True)
+        manifest = build(ply, quality=True, chunked=True, cluster_sh=True,
+                         extra_flags=_xf,
+                         on_progress=lambda l: print(f"  {l}", flush=True), spark_repo=SPARK_REPO)
+        rd = manifest.parent
+        radc = sorted(rd.glob("*.radc"))
+        assert radc, f"no .radc next to {manifest}"
+        # bkey MUST be unique per (PLY + build flags), not just PLY content —
+        # else a rebuild of the same PLY with different flags (e.g. adding
+        # --within-dist) reuses the subfolder and OVERWRITES .rad/.radc in
+        # place → Bunny edge-cache corruption (the exact thing fresh
+        # subfolders prevent). cache_dir.name = <sha256[:16]>-<rev>-<flags>,
+        # so hash the whole thing.
+        bkey = "b" + hashlib.sha256(rd.name.encode()).hexdigest()[:16]
     total_mb = (manifest.stat().st_size + sum(p.stat().st_size for p in radc)) / 1e6
-    print(f"[{slug}] built: {len(radc)} .radc, {total_mb:.0f} MB → subfolder {bkey}/", flush=True)
+    print(f"[{slug}] {len(radc)} .radc, {total_mb:.0f} MB -> subfolder {bkey}/", flush=True)
 
     # 2. STAGE: stable root files + versioned b<key>/ subfolder
     stage = Path(f".scene_deploy_{slug}").resolve()
@@ -128,21 +184,33 @@ def main() -> int:
         cfg.setdefault("spark_render", {})["move_speed_mult"] = args.move_speed_mult
     if args.splat_budget is not None:
         cfg["splat_budget"] = args.splat_budget
+    # THE build pointer lives here (viewer-config.json is fetched no-store →
+    # always fresh), NOT hardcoded in the 30-day-edge-cached index.html.
+    # Redeploy = new subfolder + this fresh pointer; the permanent /slug/
+    # URL never serves a stale subfolder reference.
+    cfg["primary_asset"] = f"{bkey}/scene.rad"
     (stage / "viewer-config.json").write_text(json.dumps(cfg, indent=2), encoding="utf-8")
-    print(f"[{slug}] cfg: clip_xy={cfg.get('spark_render',{}).get('clip_xy')} "
+    print(f"[{slug}] cfg: primary_asset={cfg['primary_asset']} "
+          f"clip_xy={cfg.get('spark_render',{}).get('clip_xy')} "
           f"move_speed_mult={cfg.get('spark_render',{}).get('move_speed_mult')} "
           f"splat_budget={cfg.get('splat_budget')}", flush=True)
 
-    # 4. index.html — stable URL, PRIMARY_ASSET points into the versioned subfolder
+    # 4. index.html — BUILD-AGNOSTIC (no b<key> baked in → identical every
+    #    deploy → its 30-day Bunny edge cache is harmless). The real pointer
+    #    is cfg.primary_asset in the no-store viewer-config.json (set above);
+    #    the viewer's `_PRIMARY` reads that, falling back to this constant.
     share_url = f"{cdn}/{slug}/index.html"
     share_image = f"{cdn}/{slug}/preview.jpg"
     desc = args.desc or NEUTRAL_DESC
-    html = html_for(args.scene, primary_asset=f"{bkey}/scene.rad", paged=True,
+    html = html_for(args.scene, primary_asset="scene.rad", paged=True,
                     share_url=share_url, share_image=share_image, description=desc)
     (stage / "index.html").write_text(html, encoding="utf-8")
+    _cfg_back = json.loads((stage / "viewer-config.json").read_text(encoding="utf-8"))
     checks = {
         "fork_rcf2": "_sparkfork-rcf2" in html,
-        "primary_asset_subfolder": f"'{bkey}/scene.rad'" in html,
+        "cfg_has_pointer": _cfg_back.get("primary_asset") == f"{bkey}/scene.rad",
+        "html_reads_cfg_pointer": "typeof cfg.primary_asset === 'string'" in html,
+        "html_build_agnostic": bkey not in html,   # b<key> must NOT be in the cached index
         "share_card_abs": (f'content="{share_image}"' in html and f'content="{share_url}"' in html),
         "no_brace_mangle": chr(8) not in html,
         "desc_not_fabricated": not any(w in html for w in
@@ -151,9 +219,24 @@ def main() -> int:
     print(f"[{slug}] index.html ({len(html)} B) checks: {json.dumps(checks)}", flush=True)
     assert all(checks.values()), f"self-checks failed: {checks}"
 
-    # 5. DEPLOY to the stable slug
-    print(f"[{slug}] uploading to {cdn}/{slug}/ ...", flush=True)
-    gen = deploy_to_bunny(slug, stage, env, workers=12, purge=True)
+    # 5. DEPLOY to the stable slug.
+    #    purge=False is REQUIRED, not an optimisation. purge=True →
+    #    _purge_bunny_folder issues a Bunny *recursive directory DELETE*
+    #    on <slug>/<b...>/ that returns immediately but runs
+    #    ASYNCHRONOUSLY server-side. The re-upload then writes the same
+    #    paths (a stable bkey — e.g. --rad-dir's sha256(manifest) — maps
+    #    to the SAME subfolder every deploy), so the lagging async delete
+    #    eats the freshly-uploaded chunks AND clobbers the re-PUT
+    #    index.html/viewer-config.json (observed: IBUG redeploy left OLD
+    #    index + a config with no primary_asset, 480/0 "uploaded"). This
+    #    is the [[project-bunny-rad-edgecache-corruption]] family: never
+    #    delete-then-reupload the same Bunny path. With purge=False the
+    #    two tiny top-level text files overwrite cleanly (the Edge Rule
+    #    keeps them edge-fresh) and chunks live in immutable b<key>/
+    #    subfolders; stale old subfolders are pruned deliberately in #85,
+    #    never mid-deploy.
+    print(f"[{slug}] uploading to {cdn}/{slug}/ (purge=False — no async-delete race) ...", flush=True)
+    gen = deploy_to_bunny(slug, stage, env, workers=12, purge=False)
     result = None
     try:
         last = 0
@@ -172,11 +255,23 @@ def main() -> int:
     # 6. purge the stable root files (small text — safe) so the new build shows
     purge_bunny_cache(api, [share_url, f"{cdn}/{slug}/viewer-config.json"]) if api else None
 
-    # 7. delete stale prior b*/ build subfolders (keep only the current bkey)
-    for d in _list_subdirs(zone, pw, slug):
-        if d.startswith("b") and d != bkey:
-            n = _purge_bunny_folder(zone, pw, f"{slug}/{d}")
-            print(f"[{slug}] cleaned stale build subfolder {d}/ ({n} files)", flush=True)
+    # 7. delete stale prior b*/ build subfolders (keep only the current bkey).
+    #    OFF unless --prune-stale: an OLD-design index.html still in Bunny's
+    #    30-day edge cache hardcodes a b<key>/ and has no cfg pointer to fall
+    #    back on — deleting that subfolder mid-transition blanks the scene for
+    #    every cached client. Keep all subfolders until the cache TTL has
+    #    passed; the deliberate #85 consolidation prunes with full knowledge.
+    if args.prune_stale:
+        for d in _list_subdirs(zone, pw, slug):
+            if d.startswith("b") and d != bkey:
+                n = _purge_bunny_folder(zone, pw, f"{slug}/{d}")
+                print(f"[{slug}] cleaned stale build subfolder {d}/ ({n} files)", flush=True)
+    else:
+        kept = [d for d in _list_subdirs(zone, pw, slug)
+                if d.startswith("b") and d != bkey]
+        if kept:
+            print(f"[{slug}] kept {len(kept)} prior subfolder(s) {kept} "
+                  f"(no --prune-stale; protects 30-day-cached old index)", flush=True)
 
     print(f"\n[{slug}] DEPLOY RESULT: {json.dumps(summ)}", flush=True)
     print(f"[{slug}] PERMANENT URL: {share_url}", flush=True)
