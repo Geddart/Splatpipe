@@ -1116,11 +1116,20 @@ _VIEWER_TEMPLATE = """\
     const k = camera.position.x.toFixed(2)+','+camera.position.y.toFixed(2)+','+camera.position.z.toFixed(2)
             +'|'+camera.quaternion.x.toFixed(3)+','+camera.quaternion.y.toFixed(3)+','+camera.quaternion.z.toFixed(3);
     if (k === _afKey && _afSet) return;        // camera unchanged & focus already applied
-    _afLast = now; _afKey = k;
+    // Stamp the throttle NOW (so a persistent miss retries at ~5 Hz, not
+    // every frame) but DO NOT commit _afKey here — committing the pose
+    // before the raycast means a centre-ray miss (common right after a
+    // fast move: centre over still-coarse geometry / a gap / sky) marks
+    // the resting pose "handled", and since the camera is now stopped the
+    // guard above latches forever → focus frozen at the last in-motion
+    // point, resting-view chunks never demanded. _afKey is committed only
+    // after a focus is actually applied (below), so a miss/degenerate
+    // return leaves _afKey stale and the next tick retries until it hits.
+    _afLast = now;
     _ndc.set(0, 0);
     _raycaster.setFromCamera(_ndc, camera);
     const hits = _raycaster.intersectObject(splat, false);
-    if (!hits.length) return;  // transient miss → keep the last good focus (don't drop centre priority)
+    if (!hits.length) return;  // miss → keep last good focus; _afKey NOT yet committed so the next tick re-tries (until the rest view is hit)
     const hp = hits[0].point;
     _afDir.subVectors(hp, camera.position);
     const D = _afDir.length();
@@ -1139,6 +1148,9 @@ _VIEWER_TEMPLATE = """\
     spark.lodPosOverride.copy(_afPos);
     spark.lodQuatOverride.copy(camera.quaternion);
     _afSet = true;
+    _afKey = k;   // commit "pose handled" ONLY now (a focus was applied); any
+                  // miss/degenerate return above leaves _afKey stale so the
+                  // next tick re-tries — fixes fast-move→stop "chunks don't LOD in"
   }}
 
   // ---- Toggleable on-screen settings HUD (press 'H') ----
