@@ -18,7 +18,9 @@ consumer change. ``--desc`` defaults to a neutral, non-fabricated line; pass
 real user copy verbatim.
 """
 
+import re
 from pathlib import Path
+from urllib.request import Request, urlopen
 
 import typer
 from rich.console import Console
@@ -119,7 +121,10 @@ def publish(
             console.print("[red]--slug is required in standalone mode[/red]")
             raise typer.Exit(1)
         slug = slug.strip("/").lower()
-        scene = scene or slug
+        # NOTE: do NOT default `scene = scene or slug` here. On a redeploy of
+        # an existing slug that would clobber the live display name/title to
+        # the bare slug. The default is applied below, only AFTER trying to
+        # recover the real name from the live scene.
         env_path = env_file or (Path(__file__).parent.parent.parent.parent / ".env")
 
     env = load_bunny_env(env_path)
@@ -127,6 +132,39 @@ def publish(
         console.print("[red]Missing Bunny CDN credentials[/red]")
         console.print("Set BUNNY_STORAGE_ZONE and BUNNY_STORAGE_PASSWORD in .env")
         raise typer.Exit(1)
+
+    # Redeploy-safe defaults (standalone only; project mode already has the
+    # real name/config). If --scene / --desc were omitted AND this slug is
+    # already live, recover the display name + description from the live
+    # index.html so a re-publish never clobbers the title to the bare slug
+    # or resets a curated description. New slug / offline → fall back to the
+    # slug name / NEUTRAL, exactly as before. Best-effort; never fatal.
+    if proj is None and (scene is None or desc is None):
+        cdn = env.get("BUNNY_CDN_URL", "").rstrip("/")
+        if cdn:
+            try:
+                live = urlopen(
+                    Request(f"{cdn}/{slug}/index.html",
+                            headers={"Cache-Control": "no-cache"}),
+                    timeout=20,
+                ).read().decode("utf-8", "replace")
+                if scene is None:
+                    m = re.search(
+                        r'<meta property="og:title" content='
+                        r'"(.+?) — interactive 3D scene"', live)
+                    if m:
+                        scene = m.group(1)
+                        console.print(f"  [dim]recovered name from live "
+                                      f"slug: {scene!r}[/dim]")
+                if desc is None:
+                    d = re.search(
+                        r'<meta name="description" content="([^"]*)"', live)
+                    if d:
+                        desc = d.group(1)
+            except Exception:
+                pass  # new slug / offline → slug-name default below
+    if scene is None:
+        scene = slug   # genuine first-time / unrecoverable → slug is the name
 
     console.print(f"[bold]Publishing[/bold] [cyan]{scene}[/cyan] -> "
                   f"{env.get('BUNNY_CDN_URL', '').rstrip('/')}/{slug}/")
@@ -156,8 +194,8 @@ def publish(
             task = progress.add_task("Publishing", total=1.0)
             gen = publish_scene(
                 **pub_kw,
-                on_build_line=lambda l: progress.update(
-                    task, description=(l.strip()[:80] or "building")),
+                on_build_line=lambda ln: progress.update(
+                    task, description=(ln.strip()[:80] or "building")),
             )
             try:
                 while True:
@@ -173,7 +211,7 @@ def publish(
         # build-lod line + every publish ProgressEvent is printed live.
         gen = publish_scene(
             **pub_kw,
-            on_build_line=lambda l: print(f"  {l.rstrip()}", flush=True),
+            on_build_line=lambda ln: print(f"  {ln.rstrip()}", flush=True),
         )
         try:
             while True:

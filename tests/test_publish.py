@@ -218,3 +218,60 @@ def test_cli_arg_validation():
     r = runner.invoke(app, ["publish", "--rad-dir", "b/", "--crop-within",
                             "0,0,0,1", "--slug", "s"])
     assert r.exit_code == 1 and "crop-within only applies" in r.output
+
+
+class _Resp:
+    def __init__(self, b): self._b = b
+    def read(self): return self._b
+
+
+def _fake_publish(captured):
+    def _gen(**kw):
+        captured.update(kw)
+        yield ProgressEvent(step="publish", progress=1.0, message="done")
+        return StepResult(step="publish", success=True, summary={
+            "slug": kw["slug"], "viewer_url": "u", "embed_url": "u?embed=1",
+            "bkey": "babc", "uploaded": 1, "total_mb": 1.0, "chunks": 1,
+            "kept_subfolders": []})
+    return _gen
+
+
+_FAKE_ENV = {"BUNNY_STORAGE_ZONE": "z", "BUNNY_STORAGE_PASSWORD": "p",
+             "BUNNY_CDN_URL": "https://cdn"}
+
+
+def test_cli_redeploy_recovers_name_and_desc(tmp_path):
+    """Standalone redeploy with --scene/--desc omitted recovers the live
+    display name + description (the title-clobber footgun is gone)."""
+    ply = tmp_path / "x.ply"
+    ply.write_bytes(b"P")
+    live = ('<meta property="og:title" content="My Real Name '
+            '— interactive 3D scene">'
+            '<meta name="description" content="Real Desc Here">').encode()
+    cap = {}
+    with patch("splatpipe.cli.publish_cmd.load_bunny_env", return_value=_FAKE_ENV), \
+         patch("splatpipe.cli.publish_cmd.urlopen", lambda *a, **k: _Resp(live)), \
+         patch("splatpipe.cli.publish_cmd.publish_scene", _fake_publish(cap)):
+        r = runner.invoke(app, ["publish", "--ply", str(ply), "--slug", "ibug"])
+    assert r.exit_code == 0, r.output
+    assert cap["scene_name"] == "My Real Name"   # NOT "ibug"
+    assert cap["desc"] == "Real Desc Here"
+    assert cap["slug"] == "ibug"
+
+
+def test_cli_new_slug_falls_back_to_slug_name(tmp_path):
+    """A genuinely new slug (live fetch fails) still defaults name=slug."""
+    ply = tmp_path / "x.ply"
+    ply.write_bytes(b"P")
+
+    def _boom(*a, **k):
+        raise OSError("404 not found")
+
+    cap = {}
+    with patch("splatpipe.cli.publish_cmd.load_bunny_env", return_value=_FAKE_ENV), \
+         patch("splatpipe.cli.publish_cmd.urlopen", _boom), \
+         patch("splatpipe.cli.publish_cmd.publish_scene", _fake_publish(cap)):
+        r = runner.invoke(app, ["publish", "--ply", str(ply), "--slug", "brandnew"])
+    assert r.exit_code == 0, r.output
+    assert cap["scene_name"] == "brandnew"   # slug fallback, no crash
+    assert cap["desc"] is None               # → publish_scene applies NEUTRAL
