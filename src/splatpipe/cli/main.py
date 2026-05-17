@@ -1,6 +1,21 @@
-"""Splatpipe CLI — Typer application with subcommands."""
+"""Splatpipe CLI - Typer application with subcommands."""
+
+import sys
 
 import typer
+
+# Make CLI stdout/stderr robust on a non-UTF-8 (Windows cp1252) console.
+# Commands stream external tool output verbatim (e.g. build-lod prints lines
+# containing '->' U+2192 and other non-cp1252 glyphs); without this, a
+# backgrounded / piped run crashes with UnicodeEncodeError mid-build. UTF-8
+# with errors='replace' = no crash, output still readable. (This is the same
+# guard the pre-productization deploy script always had; losing it regressed
+# `splatpipe publish` twice.)
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
 
 from .init_cmd import init
 from .clean_cmd import clean
