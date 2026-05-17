@@ -2,23 +2,23 @@
 deploy it to a **permanent Bunny slug URL that never changes across rebuilds.**
 
 This is the productised form of what was the `.codex-run/deploy_scene_cs.py`
-scratch script. The hard-won, load-bearing invariants (don't break these —
+scratch script. The hard-won, load-bearing invariants (don't break these -
 six live production scenes depend on them; see the project memories
 `project_bunny_viewer_config_cache` and `project_bunny_purge_reupload_race`):
 
-  * **Build-agnostic `index.html`** — `html_for(primary_asset="scene.rad")`,
+  * **Build-agnostic `index.html`** - `html_for(primary_asset="scene.rad")`,
     NEVER the per-build `b<key>/scene.rad`. The viewer's `_PRIMARY` JS reads
     the real pointer from the no-store `viewer-config.json`.
-  * **`viewer-config.json` carries `primary_asset = "<bkey>/scene.rad"`** —
+  * **`viewer-config.json` carries `primary_asset = "<bkey>/scene.rad"`** -
     the always-fresh small file is the single source of truth for which
     immutable build subfolder to load.
-  * **`deploy_to_bunny(..., purge=False)`** — purge=True issues a Bunny
+  * **`deploy_to_bunny(..., purge=False)`** - purge=True issues a Bunny
     recursive directory DELETE that runs async server-side and races the
     re-upload of the same paths (observed clobbering a live scene).
-  * **Edge Rule asserted every run** — the pull zone force-caches 30 days
+  * **Edge Rule asserted every run** - the pull zone force-caches 30 days
     and overrides client `cache:'no-store'`; the rule keeps the two small
     text files edge+browser fresh while chunks stay long-cached.
-  * **Selective purge** — only `index.html` + `viewer-config.json`, never
+  * **Selective purge** - only `index.html` + `viewer-config.json`, never
     the immutable `b<key>/` chunks.
 
 Layout per slug (e.g. ``speicher``):
@@ -58,7 +58,7 @@ from .deploy import (
 #: Neutral, never-fabricated share-card description (see the project memory
 #: `feedback_no_fabricated_scene_descriptions`). Pass real user copy to
 #: override; never invent scene specifics.
-NEUTRAL_DESC = "Interactive 3D photogrammetry scene — explore it in your browser."
+NEUTRAL_DESC = "Interactive 3D photogrammetry scene - explore it in your browser."
 
 #: Words that, if present in a generated card, indicate a fabricated
 #: description slipped in. The self-check rejects them unless an explicit
@@ -178,7 +178,7 @@ def publish_scene(
         # <sha256[:16]>-<rev>-<flags>, so hash the whole name.
         bkey = "b" + hashlib.sha256(rd.name.encode()).hexdigest()[:16]
         yield _ev(0.42, f"Built {len(radc)} .radc"
-                        + (f" — {_last[-1]}" if _last else ""))
+                        + (f" - {_last[-1]}" if _last else ""))
 
     total_mb = (manifest.stat().st_size
                 + sum(p.stat().st_size for p in radc)) / 1e6
@@ -191,7 +191,7 @@ def publish_scene(
         for rc in radc:                       # original basenames (manifest refs them)
             shutil.copy2(rc, stage / bkey / rc.name)
 
-        # 4. viewer-config.json — inherit (project scene_config or live slug),
+        # 4. viewer-config.json - inherit (project scene_config or live slug),
         #    apply per-scene overrides, then the primary_asset pointer.
         if base_config is not None:
             cfg = copy.deepcopy(base_config)
@@ -211,7 +211,7 @@ def publish_scene(
         (stage / "viewer-config.json").write_text(
             json.dumps(cfg, indent=2), encoding="utf-8")
 
-        # 5. index.html — BUILD-AGNOSTIC (no b<key> baked in).
+        # 5. index.html - BUILD-AGNOSTIC (no b<key> baked in).
         share_url = f"{cdn}/{slug}/index.html"
         share_image = f"{cdn}/{slug}/preview.jpg"
         eff_desc = desc or NEUTRAL_DESC
@@ -239,7 +239,7 @@ def publish_scene(
         yield _ev(0.50, f"Staged {bkey}/ ({len(radc)} chunks, {total_mb:.0f} MB), "
                         f"checks OK", detail=json.dumps(checks))
 
-        # 6. Deploy (purge=False — the async-delete race fix).
+        # 6. Deploy (purge=False - the async-delete race fix).
         yield _ev(0.52, f"Uploading to {cdn}/{slug}/ (purge=False)")
         gen = deploy_to_bunny(slug, stage, env, workers=12, purge=False)
         dresult: StepResult | None = None
@@ -272,7 +272,7 @@ def publish_scene(
                 yield _ev(0.98, f"Pruned stale subfolder {d}/ ({n} files)")
         elif subs:
             kept_note = (f"kept {len(subs)} prior subfolder(s) {subs} "
-                         f"(no prune_stale — protects 30-day-cached old index)")
+                         f"(no prune_stale - protects 30-day-cached old index)")
             yield _ev(0.98, kept_note)
 
         summary = {
@@ -286,7 +286,7 @@ def publish_scene(
             "kept_subfolders": subs if not prune_stale else [],
             "checks": checks,
         }
-        yield _ev(1.0, f"Published {slug} → {share_url}")
+        yield _ev(1.0, f"Published {slug} -> {share_url}")
         return StepResult(step=STEP_PUBLISH, success=True, summary=summary)
     finally:
         shutil.rmtree(stage, ignore_errors=True)

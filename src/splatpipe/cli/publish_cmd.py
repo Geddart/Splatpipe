@@ -1,4 +1,4 @@
-"""splatpipe publish — build/stage a scene and deploy it to a PERMANENT
+"""splatpipe publish - build/stage a scene and deploy it to a PERMANENT
 Bunny slug URL that never changes across rebuilds.
 
 Two modes:
@@ -13,7 +13,7 @@ Two modes:
     existing live slug via ``--live`` if given, else starts empty.
 
 The public URL is forever ``https://<cdn>/<slug>/index.html`` (+ ``?embed=1``)
-— embed it once; re-running ``publish`` swaps the build behind it with zero
+- embed it once; re-running ``publish`` swaps the build behind it with zero
 consumer change. ``--desc`` defaults to a neutral, non-fabricated line; pass
 real user copy verbatim.
 """
@@ -67,7 +67,7 @@ def publish(
         help="build-lod --within-dist crop 'x,y,z,radius' (drops training-"
              "outlier splats at source). Only valid with --ply."),
     desc: str = typer.Option(
-        None, "--desc", help="Share-card description — REAL user copy only, never invented."),
+        None, "--desc", help="Share-card description - REAL user copy only, never invented."),
     prune_stale: bool = typer.Option(
         False, "--prune-stale",
         help="Delete prior b*/ build subfolders after deploy. OFF by default: "
@@ -94,7 +94,7 @@ def publish(
     src_rad: Path | None = rad_dir
 
     if project is not None or (ply is None and rad_dir is None):
-        # Project mode (explicit -p, or neither source → auto-detect project)
+        # Project mode (explicit -p, or neither source -> auto-detect project)
         proj = Project(project) if project else Project.find()
         review_dir = proj.get_folder(FOLDER_REVIEW)
         enabled = [lod for lod in proj.lod_levels if lod.get("enabled", True)]
@@ -128,7 +128,7 @@ def publish(
         console.print("Set BUNNY_STORAGE_ZONE and BUNNY_STORAGE_PASSWORD in .env")
         raise typer.Exit(1)
 
-    console.print(f"[bold]Publishing[/bold] [cyan]{scene}[/cyan] → "
+    console.print(f"[bold]Publishing[/bold] [cyan]{scene}[/cyan] -> "
                   f"{env.get('BUNNY_CDN_URL', '').rstrip('/')}/{slug}/")
     if proj is not None:
         console.print(f"  source: {src_ply.name} (project {proj.name})")
