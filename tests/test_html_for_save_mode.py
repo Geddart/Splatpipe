@@ -320,22 +320,44 @@ def _excise(text: str, start_anchor: str, end_token: str,
 #        # remainder/full fingerprint. A future Task-14..18 author would
 #        # then silently re-pin this byte-lock to a CORRUPT value and the
 #        # guard is permanently, silently disabled. The COMMITTED template
-#        # is LF-only and this lock is CRLF-sensitive BY DESIGN. Instead use
-#        # `git show <rev>:<path> | Set-Content -Encoding utf8 -NoNewline
-#        # file` (LF preserved, no BOM/CRLF), OR compute the hash IN-PROCESS
-#        # straight from `git show` bytes (never touch the filesystem):
-#        $src = (git show "<HEAD>:src/splatpipe/viewers/spark/template.py" `
-#                  | Out-String)
-#        git show "<HEAD>:src/splatpipe/viewers/spark/template.py" `
-#          | Set-Content -Encoding utf8 -NoNewline "$env:TEMP\t.py"
-#        python - @'
-#        import hashlib, importlib.util, tempfile, os
-#        p=os.path.join(tempfile.gettempdir(),'t.py')
-#        s=importlib.util.spec_from_file_location('t',p)
-#        m=importlib.util.module_from_spec(s); s.loader.exec_module(m)
-#        h=m.html_for('HarnessScene')
-#        print(len(h), hashlib.sha256(h.encode()).hexdigest())
-#        '@
+#        # is LF-only and this lock is CRLF-sensitive BY DESIGN.
+#        #
+#        # ROOT CAUSE (do NOT round-trip the template through ANY PowerShell
+#        # pipeline): on Windows PowerShell, piping a native command's stdout
+#        # (`git show ...`) splits it into an ARRAY OF LINES with their
+#        # terminators STRIPPED. So both of these CORRUPT the bytes:
+#        #   * `... | Set-Content [-NoNewline]` -- joins the line array with
+#        #     NOTHING -> every newline destroyed, plus a UTF-8 BOM is added
+#        #     (empirically 189648 -> 185892 bytes, 0 CR, 0 LF, +BOM: the
+#        #     dumped module is one line -> import SyntaxError -> html_for()
+#        #     cannot even be computed).
+#        #   * `... | Out-String` -- re-joins the line array with CRLF, NOT
+#        #     the LF-only committed bytes -> wrong fingerprint.
+#        # Use a BYTE-FAITHFUL path instead (no PS line-array round-trip):
+#        #   (a) PowerShell, byte-exact (process-level redirection):
+#        #       Start-Process git -ArgumentList `
+#        #         'cat-file blob <HEAD>:src/splatpipe/viewers/spark/template.py' `
+#        #         -RedirectStandardOutput "$env:TEMP\t.py" -NoNewWindow -Wait
+#        #   (b) or `cmd` (its `>` IS byte-exact, unlike PowerShell `>`):
+#        #       cmd /c "git show <HEAD>:src/splatpipe/viewers/spark/template.py > %TEMP%\t.py"
+#        #   then run the step-1 `python - ...` snippet against that file.
+#        #   (c) or hash TRULY in-process -- read the raw bytes straight from
+#        #       `git cat-file blob`/`git show` via a Python subprocess with
+#        #       stdout=PIPE and hash those bytes; NEVER capture through any
+#        #       PowerShell string handling:
+#        #       python - <<'PY'
+#        #       import subprocess, hashlib, importlib.util, tempfile, os
+#        #       raw = subprocess.run(
+#        #           ['git','cat-file','blob',
+#        #            '<HEAD>:src/splatpipe/viewers/spark/template.py'],
+#        #           stdout=subprocess.PIPE, check=True).stdout  # raw LF-only bytes
+#        #       p=os.path.join(tempfile.gettempdir(),'t.py')
+#        #       open(p,'wb').write(raw)
+#        #       s=importlib.util.spec_from_file_location('t',p)
+#        #       m=importlib.util.module_from_spec(s); s.loader.exec_module(m)
+#        #       h=m.html_for('HarnessScene')
+#        #       print(len(h), hashlib.sha256(h.encode()).hexdigest())
+#        #       PY
 #        # (Do NOT add a .gitattributes to "fix" this -- repo-wide
 #        # line-ending renormalization mid-build is unsafe around the
 #        # template.py surgical-staging; this caveat IS the whole fix.)
