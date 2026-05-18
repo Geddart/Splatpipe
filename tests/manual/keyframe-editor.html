@@ -57,6 +57,22 @@
       • ?embed=1      -> the existing chrome strip ALSO hides #author-root
         and #user-transport (embed still wins; both containers CSS-gated,
         never JS add/removed -> no layout flash, same approach as embed).
+
+    Task 13 contract asserted here (cinematic loading-blur + intro fade):
+      • not-ready (scene-less = the loading panel is still up) in usermode:
+        #loading carries the blurred preview.jpg backdrop (a #loading-blur
+        child with background-image url(preview.jpg) + a blur() filter).
+      • intro=fade (default/short ms): #intro-fade is present; once the
+        REAL ready signal fires (#loading gets `.hidden`) it transitions
+        opacity 1 -> 0 and AFTERWARDS is non-blocking (computed
+        pointer-events:none AND display:none / removed) so the scene can
+        never be trapped; THEN the auto-start tour begins (#path-time
+        ticks only after the fade, not during loading).
+      • intro=none: #intro-fade is NEVER shown; the tour starts immediately
+        on ready (no fade gate).
+      • ?embed=1 strips the loading-blur + #intro-fade chrome (same
+        ModeManager/CSS strip as the other chrome) — embed = no cinematic
+        intro.
   -->
   <style>
     html, body { height: 100%; margin: 0; padding: 0;
@@ -111,6 +127,14 @@
     <div class="pane">
       <div class="lbl">Task 11: mid-key interp=stepped (expect held value before next t)</div>
       <iframe id="f-step" src="./_viewer_step/index.html" title="interp stepped"></iframe>
+    </div>
+    <div class="pane">
+      <div class="lbl">Task 13: intro=fade (loading-blur, #intro-fade 1→0, tour after)</div>
+      <iframe id="f-intro" src="./_viewer_intro/index.html" title="intro fade"></iframe>
+    </div>
+    <div class="pane">
+      <div class="lbl">Task 13: intro=none (no #intro-fade, tour immediately)</div>
+      <iframe id="f-intronone" src="./_viewer_intronone/index.html" title="intro none"></iframe>
     </div>
   </div>
 
@@ -673,6 +697,217 @@
           (dStepFromB === null ? JSON.stringify(stR)
             : dStepFromB.toFixed(5) + ' (expect ~0); dist to C = ' +
               dStepFromC.toFixed(3) + ' (expect >> 0)'));
+
+      // ── Task 13: cinematic loading-blur + intro fade ─────────────────
+      // The cinematic shell is the END-USER path: in usermode the loading
+      // panel wears a blurred preview.jpg backdrop while the scene is not
+      // ready, then a full-screen #intro-fade fades 1→0 on the REAL ready
+      // signal (#loading gaining `.hidden`) and ONLY THEN does the tour
+      // auto-start. intro=none skips the fade (tour immediately). embed
+      // strips the whole cinematic layer (like all other chrome).
+      //
+      // All observed off the REAL generated viewer — no injected clock:
+      // the scene-less harness IS the not-ready state, and with no real
+      // scene.rad #loading still gains `.hidden` on its own ~4 s hard
+      // fallback, so the fade + tour fire on the real code path.
+
+      // computed-style helpers (cross into the iframe document).
+      function csOf(win, sel, prop) {
+        try {
+          const el = win.document.querySelector(sel);
+          if (!el) return null;
+          return win.getComputedStyle(el).getPropertyValue(prop);
+        } catch (e) { return null; }
+      }
+      function existsVisible(win, sel) {
+        try {
+          const el = win.document.querySelector(sel);
+          if (!el) return false;
+          const cs = win.getComputedStyle(el);
+          return cs.display !== 'none' && cs.visibility !== 'hidden';
+        } catch (e) { return false; }
+      }
+      // Wait until `pred(win)` is truthy or `capMs` elapses (real time).
+      function waitUntil(win, pred, capMs) {
+        return new Promise((resolve) => {
+          const t0 = Date.now();
+          (function poll() {
+            let v = false;
+            try { v = !!pred(win); } catch (e) { v = false; }
+            if (v) return resolve(true);
+            if (Date.now() - t0 > capMs) return resolve(false);
+            setTimeout(poll, 100);
+          })();
+        });
+      }
+      const introWin = frameWin('f-intro');
+      const introNoneWin = frameWin('f-intronone');
+
+      // (a) usermode not-ready: #loading has a blurred preview.jpg backdrop.
+      //     userWin's config is scene-less → #loading is still up (the
+      //     not-ready state) → the blur backdrop must be present + styled.
+      if (userWin) {
+        const bg = csOf(userWin, '#loading-blur', 'background-image');
+        const flt = csOf(userWin, '#loading-blur', 'filter');
+        const loadingUp = existsVisible(userWin, '#loading');
+        T('Task 13(a): usermode loading screen shows a blurred ' +
+          'preview.jpg backdrop while not ready',
+          loadingUp && typeof bg === 'string' &&
+            bg.indexOf('preview.jpg') !== -1 &&
+            typeof flt === 'string' && flt.indexOf('blur') !== -1,
+          'loading-up=' + loadingUp + ' bg=' + JSON.stringify(bg) +
+            ' filter=' + JSON.stringify(flt));
+      } else {
+        T('Task 13(a): usermode loading screen shows a blurred ' +
+          'preview.jpg backdrop while not ready', false,
+          'no user iframe window');
+      }
+
+      // (b) intro=fade: #intro-fade present; on the REAL ready signal it
+      //     fades 1→0 then becomes NON-BLOCKING (pointer-events:none AND
+      //     display:none / removed) so the scene can never be trapped;
+      //     and the tour starts ONLY AFTER (not during loading).
+      async function introFadeCheck() {
+        const win = introWin;
+        if (!win) return { ok: false, reason: 'no f-intro window' };
+        // Wait for module init (the #intro-fade DOM exists from the start;
+        // wait for the viewer to have booted so the controller is live).
+        const booted = await waitUntil(win,
+          (w) => { try { return !!w.__sceneview; } catch (e) { return false; } },
+          30000);
+        if (!booted) return { ok: false, reason: 'viewer never booted' };
+
+        const introPresent = !!(function () {
+          try { return win.document.getElementById('intro-fade'); }
+          catch (e) { return null; }
+        })();
+        // While #loading is still up (NOT yet `.hidden`), the tour must
+        // NOT have started — #path-time absent or untouched. The fade
+        // gates the tour; it must not run during loading.
+        const loadingHidden = () => {
+          try {
+            const l = win.document.getElementById('loading');
+            return !!(l && l.classList.contains('hidden'));
+          } catch (e) { return false; }
+        };
+        const pathTimeText = () => {
+          try {
+            const te = win.document.getElementById('path-time');
+            return te ? (te.textContent || '') : '';
+          } catch (e) { return ''; }
+        };
+        // Sample the pre-ready state a few times: loading still up AND the
+        // player not advanced (text still the initial "0.00s" / empty).
+        let preTourQuiet = true;
+        for (let i = 0; i < 6; i++) {
+          if (loadingHidden()) break;        // ready already; stop sampling
+          const tt = pathTimeText();
+          const m = /([\d.]+)s/.exec(tt);
+          if (m && parseFloat(m[1]) > 0.05) { preTourQuiet = false; break; }
+          await new Promise(r => setTimeout(r, 150));
+        }
+
+        // Wait for the REAL ready signal: #loading gains `.hidden`
+        // (its ~4 s hard fallback fires even with no real scene).
+        const becameReady = await waitUntil(win, loadingHidden, 20000);
+        if (!becameReady) return { ok: false, reason: '#loading never hid' };
+
+        // After the fade (intro.ms is short in the harness config) the
+        // overlay MUST be non-blocking: pointer-events:none AND
+        // display:none (or removed). Hard fail-safe so the scene is
+        // reachable. Generous cap = fade ms + slack.
+        const nonBlocking = await waitUntil(win, (w) => {
+          const el = w.document.getElementById('intro-fade');
+          if (!el) return true;             // removed == cannot trap
+          const cs = w.getComputedStyle(el);
+          return cs.pointerEvents === 'none' && cs.display === 'none';
+        }, 8000);
+
+        // …and the tour auto-starts AFTER the fade (#path-time ticks).
+        const tourStarted = await waitUntil(win, (w) => {
+          try {
+            const te = w.document.getElementById('path-time');
+            return te && /[\d.]+s/.test(te.textContent || '');
+          } catch (e) { return false; }
+        }, 8000);
+
+        return { ok: introPresent && preTourQuiet && nonBlocking &&
+                     tourStarted,
+                 introPresent: introPresent, preTourQuiet: preTourQuiet,
+                 nonBlocking: nonBlocking, tourStarted: tourStarted };
+      }
+      const ifc = await introFadeCheck();
+      T('Task 13(b): intro=fade — #intro-fade present, fades to ' +
+        'non-blocking (pointer-events:none + display:none) on the real ' +
+        'ready signal, tour starts only AFTER',
+        ifc.ok === true, JSON.stringify(ifc));
+
+      // (c) intro=none: #intro-fade is PRESENT in DOM (mirrors the
+      //     #author-root/#user-transport always-present-CSS-gated pattern,
+      //     so a viewer that simply OMITS the element cannot pass this
+      //     vacuously — exactly the inDom guard Task 12(c) added) but is
+      //     NEVER shown, and the tour starts immediately on ready.
+      async function introNoneCheck() {
+        const win = introNoneWin;
+        if (!win) return { ok: false, reason: 'no f-intronone window' };
+        const booted = await waitUntil(win,
+          (w) => { try { return !!w.__sceneview; } catch (e) { return false; } },
+          30000);
+        if (!booted) return { ok: false, reason: 'viewer never booted' };
+        // PRESENCE guard (non-vacuous): #intro-fade must be in the DOM.
+        const introInDom = !!(function () {
+          try { return win.document.getElementById('intro-fade'); }
+          catch (e) { return null; }
+        })();
+        // …and never VISIBLE pre-ready (type:none must not flash it).
+        const introHiddenPre = !existsVisible(win, '#intro-fade');
+        // Wait for ready (#loading `.hidden`) then the tour must start.
+        const ready = await waitUntil(win, (w) => {
+          try {
+            const l = w.document.getElementById('loading');
+            return !!(l && l.classList.contains('hidden'));
+          } catch (e) { return false; }
+        }, 20000);
+        const tourStarted = await waitUntil(win, (w) => {
+          try {
+            const te = w.document.getElementById('path-time');
+            return te && /[\d.]+s/.test(te.textContent || '');
+          } catch (e) { return false; }
+        }, 8000);
+        // Re-confirm #intro-fade still not shown post-ready (type:none
+        // must never flash the overlay, even momentarily on ready).
+        const stillHidden = !existsVisible(win, '#intro-fade');
+        return { ok: introInDom && introHiddenPre && ready &&
+                     tourStarted && stillHidden,
+                 introInDom: introInDom, introHiddenPre: introHiddenPre,
+                 ready: ready, tourStarted: tourStarted,
+                 stillHidden: stillHidden };
+      }
+      const inc = await introNoneCheck();
+      T('Task 13(c): intro=none — #intro-fade present-but-NEVER-shown, ' +
+        'tour starts immediately on ready (no fade gate)',
+        inc.ok === true, JSON.stringify(inc));
+
+      // (d) ?embed=1 strips the cinematic layer. PRESENCE-guarded first
+      //     (mirrors Task 12(c)): both #loading-blur and #intro-fade are
+      //     in the DOM (always-present, CSS-gated like the other chrome)
+      //     but NOT shown under embed — a viewer that simply omits them
+      //     cannot pass this vacuously.
+      if (embedWin) {
+        const blurInDom = inDom(embedWin, '#loading-blur');
+        const fadeInDom = inDom(embedWin, '#intro-fade');
+        const blurShown = existsVisible(embedWin, '#loading-blur');
+        const fadeShown = existsVisible(embedWin, '#intro-fade');
+        T('Task 13(d): ?embed=1 strips the loading-blur + #intro-fade ' +
+          'cinematic chrome (both present in DOM, neither shown)',
+          blurInDom && fadeInDom && !blurShown && !fadeShown,
+          'blur inDom=' + blurInDom + ' shown=' + blurShown +
+            ' | fade inDom=' + fadeInDom + ' shown=' + fadeShown);
+      } else {
+        T('Task 13(d): ?embed=1 strips the loading-blur + #intro-fade ' +
+          'cinematic chrome (both present in DOM, neither shown)',
+          false, 'no embed iframe window');
+      }
 
       // ── Report ───────────────────────────────────────────────────────
       const passCount = results.filter(r => r.pass).length;

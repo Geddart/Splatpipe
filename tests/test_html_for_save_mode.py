@@ -28,51 +28,59 @@ from splatpipe.core.events import ProgressEvent, StepResult
 from splatpipe.steps.publish import publish_scene
 from splatpipe.viewers.spark.template import html_for
 
-# ── Moving baseline (Task 12) ───────────────────────────────────────────
+# ── Moving baseline (Task 13) ───────────────────────────────────────────
 # The byte-identity guard pins the PREVIOUS task's COMMITTED generated
 # output and asserts the only delta is THIS task's deliberate change. The
 # baseline therefore moves forward one commit each task (see the regen
-# recipe below). For Task 12 the pinned baseline is the committed template
-# at HEAD ``4cdaee0`` (the commit BEFORE Task 12's edit -- i.e. Task 11
+# recipe below). For Task 13 the pinned baseline is the committed template
+# at HEAD ``0689e788`` (the commit BEFORE Task 13's edit -- i.e. Task 12
 # committed) -- which ALREADY contains Task 8's inert SAVE_* block, Task
-# 10's two visibilitychange blocks AND Task 11's in-place spline change.
-# ``html_for("HarnessScene")`` there is 171188 bytes.
+# 10's two visibilitychange blocks, Task 11's in-place spline change AND
+# Task 12's three dual-UI regions. ``html_for("HarnessScene")`` there is
+# 173086 bytes.
 #
-# Task 12 (dual-UI author/user gating) touches THREE small, well-anchored
-# regions OUTSIDE the spline: (1) the ``<style>`` block's embed strip +
-# the two new ``body.usermode``/``body.authormode`` rules; (2) two new
-# always-present empty DOM roots ``#author-root`` / ``#user-transport``;
-# (3) ModeManager's class-setting (one extra ``classList.add`` driven off
-# the SAME single resolved ``_mode`` -- A4-unify: NO second ?author parse).
-# Region (1) relocates the ``{ display: none !important; }`` token onto a
-# later selector line (a modify-in-place), so -- exactly like Task 11's
-# spline -- the guard works by EXCISING each deliberately-touched region
-# from BOTH sides and asserting the REMAINDER is byte-for-byte the pinned
-# baseline's same-excision remainder. Each region is bounded by anchors
-# that pre-exist UNCHANGED in BOTH ``4cdaee0`` and the current HTML, so
-# the excision spans the corresponding (smaller) baseline slice and the
-# (larger) current slice; equal remainders ⇒ every byte OUTSIDE the four
-# excised regions (the spline + the three Task-12 regions) is byte-
-# identical to ``4cdaee0`` ⇒ the six live production scenes are untouched
-# everywhere except the deliberate Task-8/10/11/12 changes. Task 8's
-# SAVE_* and Task 10's blocks live OUTSIDE all four regions, so they are
-# in the compared remainder and thus asserted-surviving (explicit
-# `in stripped` checks below pin that contract too -- unchanged). The
-# spline region (Task 11) is STILL excised with its original anchors so
-# Task-11's contract stays asserted-surviving against the moved baseline.
+# Task 13 (cinematic loading-blur + intro fade) adds the END-USER shell.
+# Its CSS (the #loading-blur / #intro-fade rules) lands strictly INSIDE
+# the already-excised Task-12 CSS region ``[body.embed #path-hud, …
+# </style>]`` and its #intro-fade DOM root lands strictly INSIDE the
+# already-excised Task-12 DOM region ``[#path-time span … importmap]`` --
+# so those two additions are absorbed by the EXISTING Task-12 excisions
+# (recipe 2c: region-interior change → no new region, pins unaffected by
+# those two). Task 13 also touches THREE further regions OUTSIDE every
+# prior excision: (T13-LB) the ``#loading`` DOM block (a new #loading-blur
+# child); (T13-AS) the default-path autostart, converted in-place to a
+# deferred ``_introStartTour()`` owned by the intro controller; (T13-IC)
+# the intro controller IIFE itself, inserted between the resize handler
+# and ``tick()``. Each of the three is bounded by a START + END anchor
+# that pre-exists UNCHANGED in BOTH ``0689e788`` and the current HTML, so
+# the same [START..END] excises the corresponding (smaller) baseline slice
+# and the (Task-13-grown) current slice; equal remainders ⇒ every byte
+# OUTSIDE the SEVEN excised regions (the spline + three Task-12 + three
+# Task-13) is byte-identical to ``0689e788`` ⇒ the six live production
+# scenes are untouched everywhere except the deliberate Task-8/10/11/12/13
+# changes. The cinematic intro for the six live (usermode) scenes is a
+# DELIBERATE, byte-lock-excised addition (the intended end-user UX, plan
+# SS-A3) -- NOT a regression: their post-load splat RENDERING is byte-
+# identical (the intro only adds a pre-tour chrome layer that reliably
+# clears). Task 8's SAVE_* and Task 10's blocks live OUTSIDE all seven
+# regions, so they are in the compared remainder and thus asserted-
+# surviving (explicit `in stripped` checks below pin that contract too --
+# never relaxed). The spline (Task 11) + the three Task-12 regions are
+# STILL excised with their original anchors so their contracts stay
+# asserted-surviving against the moved baseline.
 #
-# ``_PRE_TASK12_REMAINDER_*`` = LEN/SHA-256 of the ``4cdaee0`` baseline
-# AFTER excising the SAME four regions with the SAME anchors (computed
-# from ``git show 4cdaee0:…/template.py`` -- NOT the dirty tree).
-_PRE_TASK12_REMAINDER_LEN = 158705
-_PRE_TASK12_REMAINDER_SHA = (
-    "c5c70960bb93aa1956a367b9f1a0bb92e9a2add7bd713d53e05c4356c617110b"
+# ``_PRE_TASK13_REMAINDER_*`` = LEN/SHA-256 of the ``0689e788`` baseline
+# AFTER excising the SAME seven regions with the SAME anchors (computed
+# from ``git show 0689e788:…/template.py`` -- NOT the dirty tree).
+_PRE_TASK13_REMAINDER_LEN = 158018
+_PRE_TASK13_REMAINDER_SHA = (
+    "f50488a3d38df8d07dd8b49a35ec473615ac31eb93317c1cbcfeacff1e72f108"
 )
-# Full ``4cdaee0`` baseline fingerprint (documentation / cross-check; the
+# Full ``0689e788`` baseline fingerprint (documentation / cross-check; the
 # remainder pin above is what the assertion uses).
-_PRE_TASK12_FULL_LEN = 171188
-_PRE_TASK12_FULL_SHA = (
-    "edab460e71b1905cec1fb1287fa4acedeece23d2bebf4adacdcd06aff9b3a146"
+_PRE_TASK13_FULL_LEN = 173086
+_PRE_TASK13_FULL_SHA = (
+    "e9b31d84bae53a661ed6ccb43e785a73f3ba88d62bb56435102e6249b5441f94"
 )
 # The Task-11-modified spline region = the line that immediately precedes
 # it (identical & unique in both baseline and current) through the close
@@ -102,9 +110,13 @@ _SPLINE_REGION_CLOSE_AFTER = "  }"
 
 # ── Task-12 deliberately-touched regions (all OUTSIDE the spline) ───────
 # Each is bounded by a START anchor + END token that pre-exist UNCHANGED
-# in BOTH the ``4cdaee0`` baseline and the current HTML (so excising the
+# in BOTH the ``0689e788`` baseline and the current HTML (so excising the
 # same [START..END] from both removes the corresponding baseline slice
 # and the Task-12-grown current slice; equal remainders ⇒ no OTHER drift).
+# Task 13's CSS additions land strictly INSIDE region (1) and its
+# #intro-fade DOM root strictly INSIDE region (2), so those two Task-13
+# additions are absorbed by these EXISTING excisions (recipe 2c) -- the
+# anchors here are unchanged, only the spans they bound grew.
 #
 # (1) CSS: the embed strip's last pre-existing selector line through the
 #     terminal ``  </style>`` line. Excises the embed strip's tail (now
@@ -128,6 +140,49 @@ _T12_DOM_END = '  <script type="importmap">'
 #     (A4-unify) with no second ?author parse / parallel branch.
 _T12_MM_START = "    document.body.classList.add('mode-' + _mode);\n"
 _T12_MM_END = "if (_mode === 'embed') {"
+
+# ── Task-13 deliberately-touched regions (all OUTSIDE the spline AND ─────
+# OUTSIDE every Task-12 region; the CSS + #intro-fade DOM are instead
+# absorbed by the Task-12 CSS/DOM regions above, recipe 2c). Each of the
+# THREE below is bounded by a START + END anchor that pre-exists UNCHANGED
+# in BOTH ``0689e788`` and the current HTML (verified: each appears
+# exactly once in both), so the same [START..END] excises the
+# corresponding (smaller) baseline slice and the (Task-13-grown) current
+# slice; equal remainders ⇒ no OTHER drift.
+#
+# (T13-LB) DOM: the (unchanged) ``  <div id="loading">`` open through the
+#     (unchanged) ``  <div id="css2d-root"></div>`` line that follows the
+#     loading block. Excises the loading screen (now carrying the new
+#     #loading-blur backdrop child) + the css2d-root line. In the baseline
+#     that span is just the original loading block + css2d-root.
+_T13_LB_START = '  <div id="loading">\n'
+_T13_LB_END = '  <div id="css2d-root"></div>'
+# (T13-AS) JS: the (unchanged, intentionally-kept-inert) default-path
+#     ``  if (cfg.default_path_id) {`` line through the (unchanged)
+#     ``// ---- Bench launchers …`` comment. In ``0689e788`` this span is
+#     the 4-line synchronous autostart + blank; Task 13 grows it in place
+#     to the inert marker `if` + the deferred ``_introStartTour()`` (the
+#     SAME autostart logic, one owner -- the intro controller -- no
+#     parallel autostart). The START anchor is deliberately kept as the
+#     FIRST line of the region (the `if` is now inert but unmoved) so it
+#     pre-exists unchanged; ALL Task-13 autostart additions sit strictly
+#     between it and the END comment. The Task-10 visibilitychange handler
+#     sits ABOVE this START and is therefore NOT excised (its survival is
+#     asserted below -- the region must never widen to swallow it).
+_T13_AS_START = "  if (cfg.default_path_id) {\n"
+_T13_AS_END = (
+    "  // ---- Bench launchers (used by both the URL "
+    "auto-trigger and the button) ----"
+)
+# (T13-IC) JS: the (unchanged) ``  // Resize`` comment through the
+#     (unchanged) ``  tick();`` call. In ``0689e788`` this span is just
+#     the resize handler + blank; Task 13 inserts the intro-controller
+#     IIFE between the resize handler and ``tick()`` (the cinematic
+#     loading-blur + #intro-fade fade-out + deferred tour start, fail-safe
+#     so a stuck overlay can never trap the scene). Both ends pre-exist
+#     unchanged.
+_T13_IC_START = "  // Resize\n"
+_T13_IC_END = "  tick();\n"
 
 # Task 8's SAVE_* anchor (still asserted present by the (a) tests below;
 # kept here so the inert-const contract stays explicitly pinned).
@@ -271,49 +326,69 @@ def _excise(text: str, start_anchor: str, end_token: str,
 #       the region from the current HTML and compares to that remainder pin
 #       → proves every byte OUTSIDE the touched region is byte-identical.
 #   2c. REGION-INTERIOR-ONLY change (e.g. the Task-11 ``// LOCKSTEP:``
-#       banner): if the only delta lands strictly INSIDE an already-excised
-#       region (e.g. AFTER ``_SPLINE_REGION_START`` and before its END), the
-#       compared remainder is unaffected → keep the existing
-#       ``_PRE_TASKnn_*`` pins UNCHANGED (verified, not assumed). Do NOT
-#       move the START anchor onto a newly-added line: a line that does not
-#       exist in the pre-task reference cannot anchor the moving baseline's
-#       excision (it would also pull the unchanged pre-anchor comment lines
-#       out of the remainder). Keep banners BELOW the START anchor.
-#   2d. MULTI-REGION task (like Task 12 — three small touched regions, one
-#       of them a modify-in-place CSS-token relocation, all OUTSIDE the
-#       already-excised spline): apply the 2b recipe ONCE PER REGION. For
-#       each region pick a START + END anchor that PRE-EXIST UNCHANGED in
-#       BOTH ``git show <prev-HEAD>:…`` and the current HTML (so the same
-#       [START..END] excises the corresponding smaller baseline slice and
-#       the grown current slice). Excise ALL regions (the prior task's
-#       region(s) STILL excised with their original anchors so their
-#       contract stays asserted-surviving) from BOTH sides and pin the
-#       baseline's fully-excised LEN/SHA. Equal remainders ⇒ no OTHER
+#       banner; or Task 13's #loading-blur/#intro-fade CSS landing inside
+#       the Task-12 CSS region + its #intro-fade DOM root inside the
+#       Task-12 DOM region): if a delta lands strictly INSIDE an already-
+#       excised region (between that region's START and END), the compared
+#       remainder is unaffected BY THAT DELTA → keep that region's anchors
+#       UNCHANGED; it is absorbed by the existing excision (the span it
+#       bounds simply grew). VERIFY this (don't assume) by recomputing the
+#       pin from the prev-HEAD with the SAME anchors and confirming the
+#       clean post-task remainder equals it. Do NOT move the START anchor
+#       onto a newly-added line: a line that does not exist in the pre-task
+#       reference cannot anchor the moving baseline's excision (it would
+#       also pull unchanged pre-anchor lines out of the remainder). Keep
+#       any new banners/markers BELOW the region START anchor — and if a
+#       task adds content that would otherwise sit ABOVE a region's START
+#       (as Task 13's deferred-autostart wrapper nearly did), keep the
+#       pre-existing START line FIRST and place ALL new content strictly
+#       between it and the END (an inert-but-unmoved anchor line is fine).
+#   2d. MULTI-REGION task (like Task 12 — three regions; or Task 13 —
+#       three NEW regions PLUS two deltas absorbed into Task-12 regions per
+#       2c): apply the 2b recipe ONCE PER NEW REGION. For each pick a START
+#       + END anchor that PRE-EXIST UNCHANGED in BOTH
+#       ``git show <prev-HEAD>:…`` and the current HTML (verify each
+#       appears exactly once in both — fail-loud is enforced by ``_excise``
+#       for the START + non-close_after END). Excise ALL regions (every
+#       prior task's region(s) STILL excised with their original anchors so
+#       their contract stays asserted-surviving) from BOTH sides and pin
+#       the baseline's fully-excised LEN/SHA. Equal remainders ⇒ no OTHER
 #       drift. Adding a region only ever NARROWS what is compared, so it
 #       must be paired with explicit ``in stripped`` survival asserts for
 #       every prior task's anchored content (kept below) — never let the
-#       excision swallow a prior contract silently.
+#       excision swallow a prior contract silently. EMPIRICALLY prove the
+#       guard still bites: clean-committed → byte-lock PASSES; dirty tree
+#       (a stray uncommitted block OUTSIDE the regions) → byte-lock FAILS
+#       (the stray's bytes leak into the remainder → length/SHA mismatch).
 #   Each task's pins are the PREVIOUS task's committed output (a moving
 #   baseline). Do NOT relax the assertion; the regression INTENT must
 #   remain enforced, and prior tasks' anchored blocks must stay
 #   asserted-surviving.
 def test_defaults_are_regression_safe_existing_scenes_byte_identical():
-    """Task 12 (dual-UI author/user gating) touches THREE small regions
-    OUTSIDE the spline: the ``<style>`` embed strip + two new
-    ``body.usermode``/``body.authormode`` rules (a modify-in-place CSS-token
-    relocation), two new always-present empty DOM roots
-    ``#author-root``/``#user-transport``, and ModeManager's class-setting
-    (one extra ``classList.add`` off the SAME single resolved ``_mode`` --
-    A4-unify, NO second ?author parse). Excising each deliberately-touched
-    region (the Task-11 spline + the three Task-12 regions, every one
-    bounded by anchors that pre-exist UNCHANGED in BOTH baseline and
-    current) from the current generated HTML must reproduce the ``4cdaee0``
-    committed template's SAME four-region excision byte-for-byte (same
-    length, same SHA-256) -- hard proof every byte OUTSIDE those four
-    regions (the six live scenes' behaviour, Task 8's SAVE_* block, Task
-    10's two blocks, Task 11's spline) is untouched. Task 8's SAVE_* + Task
-    10's blocks live OUTSIDE all four regions, so they survive the excision
-    and are explicitly asserted-present here (their contracts stay pinned).
+    """Task 13 (cinematic loading-blur + intro fade) adds the END-USER
+    shell. Its #loading-blur/#intro-fade CSS lands strictly INSIDE the
+    Task-12 CSS region and its #intro-fade DOM root strictly INSIDE the
+    Task-12 DOM region (absorbed by those EXISTING excisions, recipe 2c),
+    and it touches THREE further regions OUTSIDE every prior excision:
+    (T13-LB) the ``#loading`` DOM block (a new #loading-blur child),
+    (T13-AS) the default-path autostart converted in-place to a deferred
+    ``_introStartTour()`` (one owner -- the intro controller -- NO parallel
+    autostart), and (T13-IC) the intro-controller IIFE inserted between the
+    resize handler and ``tick()``. Excising every deliberately-touched
+    region (the Task-11 spline + the three Task-12 regions + the three
+    Task-13 regions, each bounded by anchors that pre-exist UNCHANGED in
+    BOTH baseline and current) from the current generated HTML must
+    reproduce the ``0689e788`` committed template's SAME seven-region
+    excision byte-for-byte (same length, same SHA-256) -- hard proof every
+    byte OUTSIDE those seven regions (the six live scenes' post-load
+    RENDERING, Task 8's SAVE_* block, Task 10's two blocks, Task 11's
+    spline, Task 12's dual-UI) is untouched. The six live (usermode) scenes
+    DO get the new cinematic intro -- a DELIBERATE, byte-lock-excised
+    addition (the intended end-user UX, plan SS-A3), not a regression: only
+    a pre-tour chrome layer that reliably clears is added; their splat
+    rendering is byte-identical. Task 8's SAVE_* + Task 10's blocks live
+    OUTSIDE all seven regions, so they survive the excision and are
+    explicitly asserted-present here (their contracts stay pinned).
     """
     import hashlib
 
@@ -332,15 +407,24 @@ def test_defaults_are_regression_safe_existing_scenes_byte_identical():
     assert 'id="user-transport"' in html                 # Task 12 DOM root
     assert "body.usermode #author-root" in html          # Task 12 CSS gate
     assert "body.authormode #user-transport" in html     # Task 12 CSS gate
+    # Task 13's deliberate additions ARE present (gated below by mode class
+    # / driven by the intro controller).
+    assert 'id="loading-blur"' in html                    # Task 13 DOM
+    assert 'id="intro-fade"' in html                       # Task 13 DOM
+    assert "body.usermode #loading-blur" in html           # Task 13 CSS gate
+    assert "function _introStartTour" in html              # Task 13 autostart
+    assert "Intro controller (Task 13" in html             # Task 13 IIFE
 
-    # Excise the FOUR deliberately-touched regions. The Task-11 spline first
-    # (its ORIGINAL anchors, unchanged by Task 12 — keeps Task-11's contract
-    # asserted-surviving against the moved ``4cdaee0`` baseline), then each
-    # Task-12 region. Every START/END anchor pre-exists UNCHANGED in both
-    # the baseline and current, so the same [START..END] removes the
-    # corresponding (smaller) baseline slice and the (Task-12-grown) current
-    # slice; ``_excise`` asserts each START unique + each END present
-    # (fail-loud on a duplicate/missing anchor).
+    # Excise the SEVEN deliberately-touched regions. The Task-11 spline
+    # first (its ORIGINAL anchors, unchanged by Tasks 12/13 — keeps
+    # Task-11's contract asserted-surviving against the moved ``0689e788``
+    # baseline), then each Task-12 region (its CSS/DOM regions grew to also
+    # absorb Task-13's CSS + #intro-fade DOM — same anchors, bigger span),
+    # then each Task-13 region. Every START/END anchor pre-exists UNCHANGED
+    # in both the baseline and current, so the same [START..END] removes
+    # the corresponding (smaller) baseline slice and the grown current
+    # slice; ``_excise`` asserts each START unique + each non-close_after
+    # END unique-after-start (fail-loud on a duplicate/missing anchor).
     stripped = _excise(
         html, _SPLINE_REGION_START, _SPLINE_REGION_END_TOK,
         close_after=_SPLINE_REGION_CLOSE_AFTER,
@@ -348,6 +432,9 @@ def test_defaults_are_regression_safe_existing_scenes_byte_identical():
     stripped = _excise(stripped, _T12_CSS_START, _T12_CSS_END)
     stripped = _excise(stripped, _T12_DOM_START, _T12_DOM_END)
     stripped = _excise(stripped, _T12_MM_START, _T12_MM_END)
+    stripped = _excise(stripped, _T13_LB_START, _T13_LB_END)
+    stripped = _excise(stripped, _T13_AS_START, _T13_AS_END)
+    stripped = _excise(stripped, _T13_IC_START, _T13_IC_END)
 
     # The ENTIRE spline region must be gone → that excision spanned exactly
     # the deliberately-touched code (a leftover means it under-cut and the
@@ -365,28 +452,43 @@ def test_defaults_are_regression_safe_existing_scenes_byte_identical():
     assert "body.authormode #user-transport" not in stripped
     assert "body.embed #author-root" not in stripped      # CSS strip tail
     assert "'authormode' : 'usermode'" not in stripped    # Task 12 MM gone
-    # …while prior tasks' anchored content (OUTSIDE all four regions) is
+    # The THREE Task-13 regions + the two deltas absorbed into the Task-12
+    # CSS/DOM regions must ALSO be fully gone (their excisions spanned
+    # exactly the deliberately-touched code, not a byte more/less). If any
+    # leftover remained the byte compare below would be weakened/meaningless.
+    assert 'id="loading-blur"' not in stripped            # Task 13 DOM gone
+    assert 'id="intro-fade"' not in stripped               # Task 13 DOM gone
+    assert "body.usermode #loading-blur" not in stripped   # Task 13 CSS gone
+    assert "#intro-fade.faded" not in stripped             # Task 13 CSS gone
+    assert "function _introStartTour" not in stripped      # Task 13 AS gone
+    assert "_introTourStarted" not in stripped             # Task 13 AS gone
+    assert "Intro controller (Task 13" not in stripped     # Task 13 IIFE gone
+    assert "_beginFade" not in stripped                    # Task 13 IIFE gone
+    # …while prior tasks' anchored content (OUTSIDE all seven regions) is
     # UNTOUCHED by the excisions (proves we removed only the deliberate
     # regions, not Task 8's / Task 10's baseline content — they must
     # survive; if a future excision widens to swallow one of these this
-    # FAILS loudly rather than silently dropping a prior contract).
+    # FAILS loudly rather than silently dropping a prior contract). The
+    # Task-10 visibilitychange handler in particular sits ABOVE the Task-13
+    # autostart region START and must NOT be swallowed by it.
     assert 'const SAVE_MODE = "cli";' in stripped        # Task 8 survives
     assert 'const SAVE_ENDPOINT = "";' in stripped        # Task 8 survives
     assert _INSERT_ANCHOR in stripped                     # Task 8 survives
     assert "_hidAt" in stripped                           # Task 10 survives
     assert "visibilitychange" in stripped                 # Task 10 survives
 
-    # Byte-for-byte identical to the ``4cdaee0`` committed template with the
-    # SAME four regions excised → NO unintended drift anywhere outside the
-    # deliberate Task-8/10/11/12 changes (would FAIL loudly if e.g. a stray
-    # uncommitted block elsewhere in the template leaked in).
-    assert len(stripped) == _PRE_TASK12_REMAINDER_LEN, (
-        f"length drift: {len(stripped)} != {_PRE_TASK12_REMAINDER_LEN} "
-        "(an UNINTENDED change leaked OUTSIDE the four deliberate regions)"
+    # Byte-for-byte identical to the ``0689e788`` committed template with
+    # the SAME seven regions excised → NO unintended drift anywhere outside
+    # the deliberate Task-8/10/11/12/13 changes (FAILS loudly if e.g. a
+    # stray uncommitted block elsewhere in the template leaked in — this is
+    # exactly how the 4 unstaged strays are kept out of the Task-13 commit).
+    assert len(stripped) == _PRE_TASK13_REMAINDER_LEN, (
+        f"length drift: {len(stripped)} != {_PRE_TASK13_REMAINDER_LEN} "
+        "(an UNINTENDED change leaked OUTSIDE the seven deliberate regions)"
     )
     assert (
         hashlib.sha256(stripped.encode()).hexdigest()
-        == _PRE_TASK12_REMAINDER_SHA
+        == _PRE_TASK13_REMAINDER_SHA
     )
 
 

@@ -61,13 +61,44 @@ _VIEWER_LIN_DIR = _MANUAL_DIR / "_viewer_lin"
 _VIEWER_NOLIN_DIR = _MANUAL_DIR / "_viewer_nolin"
 _VIEWER_STEP_DIR = _MANUAL_DIR / "_viewer_step"
 
+# ── Task-13 variants: cinematic loading-blur + intro fade ────────────────
+# Two more "same generated viewer, only the camera-path/intro config differs"
+# dirs. Both carry an auto-start path (default_path_id) so the harness can
+# assert the tour fires AFTER the intro fade (or immediately for type:none).
+#   • _viewer_intro     (intro {type:"fade", ms:<short>}) → on the REAL
+#       ready signal (#loading gets `.hidden`) #intro-fade fades opacity
+#       1→0 over intro.ms then becomes non-blocking (pointer-events:none
+#       + display:none) and the tour auto-starts.
+#   • _viewer_intronone (intro {type:"none"})            → #intro-fade is
+#       NEVER shown; the tour auto-starts immediately on ready.
+# The fade-out duration is kept SHORT (the harness wants a fast, bounded
+# observation, not a 900 ms wait) — the algorithm is identical regardless
+# of intro.ms; only the timing constant differs.
+# Separate dirs so Task-0's `_viewer/` (its 15 framework checks) + the
+# Task-10/11 path dirs stay byte-identical and unaffected.
+_VIEWER_INTRO_DIR = _MANUAL_DIR / "_viewer_intro"
+_VIEWER_INTRONONE_DIR = _MANUAL_DIR / "_viewer_intronone"
+
+# Short fade so the Playwright observation window is bounded. The intro
+# algorithm (fade-then-start, fail-safe clear) is independent of this value.
+_T13_INTRO_MS = 250
+
 # A trivial straight-line 2-keyframe path. `duration` = max kf.t = 600 s, so
 # the player keeps ticking for the whole test (no early stopPath). Schema
 # matches buildPlayer (sortedKfs needs >= 2 kfs, each with pos[3]; quat[4]
-# optional). `default_path_id` makes init call startPath() synchronously.
+# optional). `default_path_id` makes init auto-start the path player.
+#
+# `intro:{type:"none"}` is deliberate TEST ISOLATION (Task 13): the Task-13
+# cinematic intro defers the auto-start tour until AFTER the fade-out, which
+# is the intended end-user behaviour but is ORTHOGONAL to what the Task-10
+# tab-background-pause check measures (path-player clock mechanics). Opting
+# this fixture out of the fade (a real, supported scene config) restores the
+# immediate auto-start the Task-10 check calibrates against -- the deferred-
+# tour behaviour itself has its OWN fixture (`_viewer_intro`, Task-13(b)).
 _HARNESS_PATH_CONFIG = {
     "annotations": [],
     "default_path_id": "harness-path",
+    "intro": {"type": "none"},
     "camera_paths": [
         {
             "id": "harness-path",
@@ -97,7 +128,13 @@ _T11_C = [20.0, 0.0, 0.0]
 
 
 def _t11_config(mid_interp: str | None) -> dict:
-    """A 3-keyframe auto-start path; ``mid_interp`` (or absent) on key 2."""
+    """A 3-keyframe auto-start path; ``mid_interp`` (or absent) on key 2.
+
+    ``intro:{type:"none"}`` is deliberate TEST ISOLATION (Task 13) -- same
+    reasoning as ``_HARNESS_PATH_CONFIG``: the per-keyframe-interpolation
+    check measures the spline the auto-started player writes; it must not be
+    gated behind the (separately-tested) Task-13 intro fade-out.
+    """
     mid = {"t": 60.0, "pos": list(_T11_B),
            "quat": [0.0, 0.0, 0.0, 1.0], "fov": 60.0}
     if mid_interp is not None:
@@ -105,6 +142,7 @@ def _t11_config(mid_interp: str | None) -> dict:
     return {
         "annotations": [],
         "default_path_id": "t11-path",
+        "intro": {"type": "none"},
         "camera_paths": [
             {
                 "id": "t11-path",
@@ -124,6 +162,40 @@ def _t11_config(mid_interp: str | None) -> dict:
     }
 
 
+def _t13_config(intro: dict | None) -> dict:
+    """Auto-start 2-keyframe path + an optional ``intro`` override.
+
+    ``intro`` is written verbatim as the scene's ``intro`` key (or omitted
+    when None → the viewer must fall back to ``DEFAULT_INTRO``). The path is
+    a long (600 s) straight line like ``_HARNESS_PATH_CONFIG`` so the
+    auto-started player keeps ticking for the whole observation; the harness
+    asserts the tour starts only AFTER the intro fade (or immediately for
+    ``type:"none"``).
+    """
+    cfg: dict = {
+        "annotations": [],
+        "default_path_id": "t13-path",
+        "camera_paths": [
+            {
+                "id": "t13-path",
+                "name": "Task-13 intro auto-start",
+                "loop": False,
+                "smoothness": 1.0,
+                "play_speed": 1.0,
+                "keyframes": [
+                    {"t": 0.0, "pos": [0.0, 0.0, 0.0],
+                     "quat": [0.0, 0.0, 0.0, 1.0], "fov": 60.0},
+                    {"t": 600.0, "pos": [0.0, 0.0, -100.0],
+                     "quat": [0.0, 0.0, 0.0, 1.0], "fov": 60.0},
+                ],
+            }
+        ],
+    }
+    if intro is not None:
+        cfg["intro"] = intro
+    return cfg
+
+
 def generate() -> Path:
     """Write the viewer-under-test (index.html + stub config) and return its dir.
 
@@ -134,6 +206,9 @@ def generate() -> Path:
       * ``_viewer_lin/`` / ``_viewer_nolin/`` / ``_viewer_step/`` —
         auto-starting 3-keyframe path with a `linear` / absent / `stepped`
         middle keyframe; Task-11 per-keyframe-interpolation check.
+      * ``_viewer_intro/`` / ``_viewer_intronone/`` — auto-starting path
+        with an ``intro`` of ``{type:"fade"}`` / ``{type:"none"}``; Task-13
+        cinematic loading-blur + intro-fade check.
     Returns the Task-0 ``_viewer/`` dir (the harness page resolves the rest
     relatively).
     """
@@ -142,6 +217,8 @@ def generate() -> Path:
     _VIEWER_LIN_DIR.mkdir(parents=True, exist_ok=True)
     _VIEWER_NOLIN_DIR.mkdir(parents=True, exist_ok=True)
     _VIEWER_STEP_DIR.mkdir(parents=True, exist_ok=True)
+    _VIEWER_INTRO_DIR.mkdir(parents=True, exist_ok=True)
+    _VIEWER_INTRONONE_DIR.mkdir(parents=True, exist_ok=True)
     # Same generated viewer for ALL variants — only the config differs.
     html = html_for("HarnessScene")
     (_VIEWER_DIR / "index.html").write_text(html, encoding="utf-8")
@@ -149,6 +226,8 @@ def generate() -> Path:
     (_VIEWER_LIN_DIR / "index.html").write_text(html, encoding="utf-8")
     (_VIEWER_NOLIN_DIR / "index.html").write_text(html, encoding="utf-8")
     (_VIEWER_STEP_DIR / "index.html").write_text(html, encoding="utf-8")
+    (_VIEWER_INTRO_DIR / "index.html").write_text(html, encoding="utf-8")
+    (_VIEWER_INTRONONE_DIR / "index.html").write_text(html, encoding="utf-8")
     # A stub config so the no-store fetch succeeds and the viewer takes its
     # normal (non-error) path; no scene.rad is referenced/needed for the
     # framework-init assertions.
@@ -167,6 +246,16 @@ def generate() -> Path:
     )
     (_VIEWER_STEP_DIR / "viewer-config.json").write_text(
         json.dumps(_t11_config("stepped")), encoding="utf-8"
+    )
+    # Task-13: fade (short ms) / none intro variants, each with an
+    # auto-start path so the harness can assert tour-after-fade vs
+    # tour-immediately.
+    (_VIEWER_INTRO_DIR / "viewer-config.json").write_text(
+        json.dumps(_t13_config({"type": "fade", "ms": _T13_INTRO_MS})),
+        encoding="utf-8",
+    )
+    (_VIEWER_INTRONONE_DIR / "viewer-config.json").write_text(
+        json.dumps(_t13_config({"type": "none"})), encoding="utf-8"
     )
     return _VIEWER_DIR
 
@@ -210,7 +299,7 @@ def main(argv: list[str] | None = None) -> int:
     d = generate()
     print(f"generated {d / 'index.html'} ({(d / 'index.html').stat().st_size} bytes)")
     for _vd in (_VIEWER_PATH_DIR, _VIEWER_LIN_DIR, _VIEWER_NOLIN_DIR,
-                _VIEWER_STEP_DIR):
+                _VIEWER_STEP_DIR, _VIEWER_INTRO_DIR, _VIEWER_INTRONONE_DIR):
         print(f"generated {_vd / 'index.html'} "
               f"({(_vd / 'index.html').stat().st_size} bytes)")
     if args.serve is not None:
