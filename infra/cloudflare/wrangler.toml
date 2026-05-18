@@ -1,0 +1,40 @@
+# wrangler.toml — Cloudflare Worker config for save_backend="cloudflare".
+#
+# This is the OPT-IN serverless exemplar (the default save tier is
+# save_backend="cli", which needs no server; "php" is the generic
+# self-hostable adapter). See ./README.md for the one-time setup and the
+# "port to Netlify/Vercel/Lambda" notes.
+#
+# SECRETS ARE NOT IN THIS FILE AND NOT IN GIT. The account-wide Bunny keys
+# (BUNNY_STORAGE_PASSWORD, BUNNY_ACCOUNT_API_KEY) are set via
+# `wrangler secret put` and live only in the Worker runtime `env`. The
+# non-secret config (zone / CDN host / viewer origin) is set via the [vars]
+# block below OR `wrangler secret put` if you prefer to keep them opaque.
+
+name = "splatpipe-scene-save"
+main = "worker.js"
+compatibility_date = "2024-09-23"  # >= 2024-04-02 for structuredClone in Workers
+
+# --- KV: slug -> sha256(per-scene author secret) -------------------------
+# One-time:  wrangler kv namespace create SCENE_SECRETS
+# then paste the printed id below (and a `preview_id` for `wrangler dev`).
+# Populate per scene with the LOWERCASE-HEX sha256 of that scene's secret:
+#   (sha256sum also prints "  -" after the hex — copy only the 64-char hex)
+#   printf %s "<scene-secret>" | sha256sum | cut -c1-64  # -> <64-char hex>
+#   wrangler kv key put --binding=SCENE_SECRETS "<slug>" "<hex>"
+[[kv_namespaces]]
+binding = "SCENE_SECRETS"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"          # from `wrangler kv namespace create SCENE_SECRETS`
+# preview_id = "REPLACE_WITH_KV_PREVIEW_ID"  # from `... --preview` (for `wrangler dev`)
+
+# --- non-secret config ---------------------------------------------------
+# Safe to commit (these are public values, not keys). The two Bunny ACCESS
+# KEYS are NOT here — set them with:
+#   wrangler secret put BUNNY_STORAGE_PASSWORD
+#   wrangler secret put BUNNY_ACCOUNT_API_KEY
+[vars]
+BUNNY_STORAGE_ZONE = "REPLACE_WITH_BUNNY_STORAGE_ZONE"   # Bunny Storage zone name
+BUNNY_CDN_HOST     = "REPLACE_WITH_CDN_HOST"             # e.g. splatpipe-cdn.b-cdn.net
+VIEWER_ORIGIN      = "REPLACE_WITH_VIEWER_ORIGIN"        # e.g. https://splatpipe-cdn.b-cdn.net
+
+# Deploy:  wrangler deploy   (after `wrangler login` / a CF API token)
