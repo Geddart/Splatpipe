@@ -20,6 +20,11 @@ from typing import Callable, Iterable, Literal, TypedDict
 
 # ---- schema ----------------------------------------------------------------
 
+#: Valid per-keyframe interpolation mode names (used by Task-2+ consumers).
+#: "auto_clamped" and "automatic" match Blender's f-curve naming; "bezier",
+#: "linear", "stepped" are the DCC-neutral equivalents.
+VALID_INTERP = ("auto_clamped", "automatic", "linear", "bezier", "stepped")
+
 
 class KeyframeDict(TypedDict, total=False):
     t: float                          # seconds from path start
@@ -30,12 +35,16 @@ class KeyframeDict(TypedDict, total=False):
     easing_out: str                   # "linear" | "easeInOutCubic" | ...
     hold_s: float                     # pause duration after this keyframe
     annotation_id: str | None         # highlight this annotation while passing
+    interp: str                       # per-keyframe interp mode (one of VALID_INTERP); absent => global smoothness
+    in_tan: list[float]               # bezier in-tangent [x, y, z] — used when interp=="bezier"
+    out_tan: list[float]              # bezier out-tangent [x, y, z] — used when interp=="bezier"
 
 
 class PathDict(TypedDict, total=False):
     id: str
     name: str
     loop: bool
+    mode: Literal["keyframe", "rail"]  # "keyframe" = spline through poses (default); "rail" = follow a geometry rail
     interpolation: Literal["catmull", "linear", "bezier"]
     smoothness: float                 # 0.0 = linear (segments), 1.0 = full Catmull-Rom (default)
     play_speed: float                 # playback rate multiplier; 0.5 = half-speed, 2.0 = double-speed
