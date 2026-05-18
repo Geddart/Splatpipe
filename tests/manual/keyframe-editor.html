@@ -90,6 +90,18 @@
       <div class="lbl">Task 10: path player (tab-background pause, not teleport)</div>
       <iframe id="f-path" src="./_viewer_path/index.html" title="path player"></iframe>
     </div>
+    <div class="pane">
+      <div class="lbl">Task 11: mid-key interp=linear (expect straight mid segment)</div>
+      <iframe id="f-lin" src="./_viewer_lin/index.html" title="interp linear"></iframe>
+    </div>
+    <div class="pane">
+      <div class="lbl">Task 11: mid-key interp ABSENT (expect curved mid segment)</div>
+      <iframe id="f-nolin" src="./_viewer_nolin/index.html" title="interp absent"></iframe>
+    </div>
+    <div class="pane">
+      <div class="lbl">Task 11: mid-key interp=stepped (expect held value before next t)</div>
+      <iframe id="f-step" src="./_viewer_step/index.html" title="interp stepped"></iframe>
+    </div>
   </div>
 
   <script>
@@ -383,6 +395,194 @@
           (typeof pbg.delta === 'number'
             ? pbg.delta.toFixed(3) + 's (expect ~0; teleport bug ~5s)'
             : JSON.stringify(pbg)));
+
+      // ── Task 11: per-keyframe spline interpolation ────────────────────
+      // Each `_viewer_{lin,nolin,step}/` iframe auto-starts the SAME
+      // 3-keyframe path (default_path_id). Geometry: A=[0,0,0],
+      // B=[10,16,0] (the MIDDLE key, pulled OFF the A→C line),
+      // C=[20,0,0]; times 0 / 60 / 120 s. The mid segment is t∈(60,120).
+      // We drive the REAL generated path-player JS with the SAME
+      // controllable virtual clock the Task-10 check proved out (every
+      // performance.now() call site reads it fresh), step the path clock
+      // to several path-times inside the mid segment, pump rAF so tick()
+      // writes the spline sample into the live THREE camera, and read
+      // `_spDebug.camera.position`. NO new viewer export — the only
+      // observable is the camera the player itself drives.
+      //   • linear  : mid-segment samples must be COLINEAR (a straight
+      //               p1→p2 LERP — the per-key override fired).
+      //   • absent  : the SAME samples must be CURVED / not colinear
+      //               (today's global-smoothness behavior — proves the
+      //               override is per-key AND that absent == unchanged).
+      //   • stepped : a sample just before the next key's t must HOLD the
+      //               middle key's value B (a step, not interpolated).
+      const T11_B = [10, 16, 0], T11_C = [20, 0, 0];
+
+      // Max perpendicular distance of interior points from the chord
+      // through the first/last sample — 0 ⇒ exactly colinear (straight).
+      function colinErr(samples) {
+        if (samples.length < 3) return null;
+        const a = samples[0], b = samples[samples.length - 1];
+        const ab = [b[0]-a[0], b[1]-a[1], b[2]-a[2]];
+        const L = Math.hypot(ab[0], ab[1], ab[2]) || 1;
+        let mx = 0;
+        for (let k = 1; k < samples.length - 1; k++) {
+          const p = samples[k];
+          const ap = [p[0]-a[0], p[1]-a[1], p[2]-a[2]];
+          const cx = ap[1]*ab[2]-ap[2]*ab[1];
+          const cy = ap[2]*ab[0]-ap[0]*ab[2];
+          const cz = ap[0]*ab[1]-ap[1]*ab[0];
+          mx = Math.max(mx, Math.hypot(cx, cy, cz) / L);
+        }
+        return mx;
+      }
+
+      // Drive one Task-11 iframe: install the virtual clock, then for each
+      // requested path-time advance __vt so (now - _t0) == that time,
+      // pump 2 rAFs, and read the camera position the player wrote.
+      async function sampleInterpFrame(id, pathTimes) {
+        const win = frameWin(id);
+        if (!win) return { ok: false, reason: 'no iframe window: ' + id };
+
+        // Wait until the viewer module finished init (its _spDebug debug
+        // surface appears at the very end, after tick() starts) so the
+        // auto-started player is live and writing the camera each frame.
+        const ready = await new Promise((resolve) => {
+          const t0 = Date.now();
+          (function poll() {
+            let sp, cam;
+            try {
+              sp = win.__sp;
+              cam = win._spDebug && win._spDebug.camera;
+            } catch (e) { sp = undefined; cam = undefined; }
+            if (sp && cam && cam.position) return resolve(true);
+            if (Date.now() - t0 > 30000) return resolve(false);
+            setTimeout(poll, 100);
+          })();
+        });
+        if (!ready) return { ok: false, reason: 'viewer never ready: ' + id };
+
+        const inject = (fn) => win.eval('(' + fn.toString() + ')()');
+        // Virtual clock: from here every performance.now() in the iframe
+        // returns __vt (seeded at the real now so any _t0 the player
+        // captured at startPath() with the real clock stays consistent).
+        // We do NOT assume __vt == _t0: the player's _t0 was taken during
+        // init at an earlier REAL-clock instant, so we instead CALIBRATE
+        // against the player's own published path-time (#path-time, which
+        // is `tNow = (now - _t0)/1000 * speed`). Reading it once tells us
+        // exactly what path-time the current __vt maps to; from there a
+        // pure __vt delta lands any target path-time precisely — no
+        // dependence on the unknown real _t0.
+        inject(function () {
+          var p = window.performance;
+          window.__vt = p.now();
+          p.now = function () { return window.__vt; };
+        });
+        const tickRAF = () => new Promise((res) => {
+          win.requestAnimationFrame(() =>
+            win.requestAnimationFrame(() => res()));
+        });
+        const readCam = () => {
+          const c = win._spDebug.camera.position;
+          return [c.x, c.y, c.z];
+        };
+        // The player writes `tNow.toFixed(2) + 's'` into #path-time every
+        // frame it ticks; parse it back to seconds.
+        const readPathTime = () => {
+          const te = win.document.getElementById('path-time');
+          const m = te && /([\d.]+)s/.exec(te.textContent || '');
+          return m ? parseFloat(m[1]) : null;
+        };
+
+        // Calibrate: pump a frame so #path-time reflects the current __vt,
+        // read it → that is the path-time at the present __vt value.
+        await tickRAF();
+        const baseVt = await win.eval('window.__vt');
+        // Finite-guard the virtual clock: if baseVt is NaN/Infinity the
+        // ``__vt = baseVt + …`` eval below silently yields NaN → the camera
+        // never moves → colinErr ≈ 0 → a SILENT FALSE PASS. Fail loud.
+        if (typeof baseVt !== 'number' || !isFinite(baseVt)) {
+          return { ok: false, reason: 'virtual clock __vt not finite: ' + id };
+        }
+        const basePathT = readPathTime();
+        if (basePathT === null)
+          return { ok: false, reason: 'no #path-time (player not ticking): ' + id };
+
+        const samples = [];
+        for (const pt of pathTimes) {
+          // Move the path clock to EXACTLY path-time `pt`:
+          //   tNow = (now - _t0)/1000 * speed,  speed = 1.0
+          // so Δ(path-time) == Δ(__vt)/1000. Offset from the calibrated
+          // (baseVt, basePathT) pair — independent of the unknown _t0.
+          win.eval('window.__vt = ' + baseVt + ' + ' +
+                   ((pt - basePathT) * 1000));
+          await tickRAF();
+          samples.push({ pos: readCam(), pathT: readPathTime() });
+        }
+        return { ok: true,
+                 samples: samples.map(s => s.pos),
+                 pathTs: samples.map(s => s.pathT) };
+      }
+
+      // Sample several path-times strictly INSIDE the mid segment
+      // (t∈(60,120)) — avoid the exact key times so we measure the
+      // segment's shape, not the (shared) knot endpoints.
+      const MID_TS = [66, 78, 90, 102, 114];
+      const linR = await sampleInterpFrame('f-lin', MID_TS);
+      const noR  = await sampleInterpFrame('f-nolin', MID_TS);
+      // stepped: a sample just before the NEXT key's t (=120). It must be
+      // the held middle value B, NOT interpolated toward C.
+      const stR  = await sampleInterpFrame('f-step', [119.5]);
+
+      const linErr = (linR.ok ? colinErr(linR.samples) : null);
+      const noErr  = (noR.ok ? colinErr(noR.samples) : null);
+      // Distances for the stepped held-value assertion.
+      const stP = (stR.ok && stR.samples[0]) ? stR.samples[0] : null;
+      const dStepFromB = stP
+        ? Math.hypot(stP[0]-T11_B[0], stP[1]-T11_B[1], stP[2]-T11_B[2])
+        : null;
+      const dStepFromC = stP
+        ? Math.hypot(stP[0]-T11_C[0], stP[1]-T11_C[1], stP[2]-T11_C[2])
+        : null;
+
+      // Calibration sanity: every sampled path-time must actually land
+      // inside the mid segment (60,120) — proves the virtual-clock
+      // placement worked (a miscalibrated sample would be a false result).
+      const inMid = (ts) => Array.isArray(ts) && ts.length > 0 &&
+        ts.every(x => typeof x === 'number' && x > 60 && x < 120);
+      const linTs = linR.pathTs, noTs = noR.pathTs, stTs = stR.pathTs;
+
+      // (a) linear mid-key ⇒ mid segment colinear (straight). ε is generous
+      // (0.05 world units) vs the ~5+ unit bulge the curved spline shows.
+      T('Task 11(a): interp="linear" makes the mid segment straight ' +
+        '(colinear samples)',
+        linR.ok && inMid(linTs) && linErr !== null && linErr < 0.05,
+        'mid-seg colinearity error = ' +
+          (linErr === null ? JSON.stringify(linR)
+                           : linErr.toFixed(5) + ' (expect ~0)') +
+          '; path-times ' + JSON.stringify(linTs));
+
+      // (b) interp ABSENT ⇒ the SAME samples are NOT colinear (curved).
+      // This proves the override is PER-KEY and that absent == the
+      // unchanged global-smoothness path (the 6 live scenes' behavior).
+      T('Task 11(b): interp ABSENT keeps the mid segment CURVED ' +
+        '(not colinear — unchanged behavior)',
+        noR.ok && inMid(noTs) && noErr !== null && noErr > 0.5,
+        'mid-seg colinearity error = ' +
+          (noErr === null ? JSON.stringify(noR)
+                          : noErr.toFixed(5) + ' (expect >> 0; curved)') +
+          '; path-times ' + JSON.stringify(noTs));
+
+      // (c) stepped mid-key ⇒ sample just before next t HOLDS B (a step),
+      // i.e. it is at B and far from the interpolated-toward-C value.
+      T('Task 11(c): interp="stepped" HOLDS the keyframe value until ' +
+        'the next t (step, not interpolated)',
+        stR.ok && inMid(stTs) && dStepFromB !== null &&
+          dStepFromB < 0.05 && dStepFromC > 0.5,
+        'sample @path-time ' + JSON.stringify(stTs) +
+          ': dist to B = ' +
+          (dStepFromB === null ? JSON.stringify(stR)
+            : dStepFromB.toFixed(5) + ' (expect ~0); dist to C = ' +
+              dStepFromC.toFixed(3) + ' (expect >> 0)'));
 
       // ── Report ───────────────────────────────────────────────────────
       const passCount = results.filter(r => r.pass).length;

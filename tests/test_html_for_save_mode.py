@@ -28,37 +28,72 @@ from splatpipe.core.events import ProgressEvent, StepResult
 from splatpipe.steps.publish import publish_scene
 from splatpipe.viewers.spark.template import html_for
 
-# Pre-Task-10 ``html_for("HarnessScene")`` fingerprint, captured from the
-# committed template at HEAD f62c12a (the commit BEFORE Task 10's edit;
-# i.e. this baseline ALREADY contains Task 8's inert SAVE_* block but NOT
-# Task 10's visibilitychange rebase): 161816 bytes, this SHA-256.
+# ── Moving baseline (Task 11) ───────────────────────────────────────────
+# The byte-identity guard pins the PREVIOUS task's COMMITTED generated
+# output and asserts the only delta is THIS task's deliberate change. The
+# baseline therefore moves forward one commit each task (see the regen
+# recipe below). For Task 11 the pinned baseline is the committed template
+# at HEAD ``0c377a5`` (the commit BEFORE Task 11's edit) — which ALREADY
+# contains Task 8's inert SAVE_* block AND Task 10's two visibilitychange
+# blocks. ``html_for("HarnessScene")`` there is 163800 bytes.
 #
-# Task 10 adds exactly TWO contiguous, well-anchored blocks to
-# ``_VIEWER_TEMPLATE`` (the path-player tab-background pause):
-#   • BLOCK A — the ``_hidAt`` declaration + its explanatory comment,
-#     inserted right after the ``let _player = null, ...;`` line.
-#   • BLOCK B — the ``visibilitychange`` rebase handler + its comment,
-#     inserted right after the ``scrubEl`` ``input`` listener.
-# Excising EXACTLY those two blocks from the current generated HTML must
-# reproduce the pre-Task-10 fingerprint byte-for-byte → hard proof every
-# existing scene (the six live production scenes included) is otherwise
-# untouched. (Task 8's SAVE_* block is part of this baseline, so it is NOT
-# excised here; its own presence/escaping is asserted by the other tests
-# in this file — that contract is unchanged.)
-_PRE_TASK10_LEN = 161816
-_PRE_TASK10_SHA = (
-    "20d31d2810c5e52127e5a4d2ba1fb9c03028415548f4c1140d12771ac8819b5a"
+# Unlike Tasks 8/10 (purely-additive contiguous blocks → excising them
+# reproduced the pre-add baseline), Task 11 *modifies in place* the spline
+# (``CubicSpline.calcKnots`` per-keyframe interpolation + the small
+# ``buildPlayer`` / ctor / evaluate plumbing it needs). A modify-task can't
+# be reduced to the old bytes by deleting added lines, so the guard works
+# the other way round: excise the WHOLE deliberately-touched spline region
+# (the ``CubicSpline`` class + ``buildPlayer``) from BOTH sides and assert
+# the REMAINDER is byte-for-byte the pinned baseline's remainder. That
+# proves every byte OUTSIDE the spline region is byte-identical to the
+# ``0c377a5`` committed output → the six live production scenes are
+# untouched everywhere except the deliberate spline change. Task 8's
+# SAVE_* and Task 10's blocks live OUTSIDE that region, so they are in the
+# compared remainder and thus asserted-surviving (explicit `in stripped`
+# checks below pin that contract too — unchanged).
+#
+# ``_PRE_TASK11_REMAINDER_*`` = LEN/SHA-256 of the ``0c377a5`` baseline
+# AFTER excising the same spline region with the same anchors (computed
+# from ``git show 0c377a5:…/template.py`` — NOT the dirty tree).
+_PRE_TASK11_REMAINDER_LEN = 158963
+_PRE_TASK11_REMAINDER_SHA = (
+    "5cbf43bed9f911449b62705dacc246e35578bd535d5ff1e4ecc6a30bd7839190"
 )
-# Block A: from the start of its leading comment line up to and including
-# the ``let _hidAt = 0;`` line's trailing newline. The comment's first
-# line is unique in the generated output.
-_BLOCK_A_START = "  // Tab-background pause: timestamp the path-player clock"
-_BLOCK_A_END_TOK = "let _hidAt = 0;"
-# Block B: from the start of its leading comment up to and including the
-# handler's closing ``});`` + trailing newline. Both anchor strings are
-# unique in the generated output.
-_BLOCK_B_START = "  // Pause (don't teleport) the path player when the tab"
-_BLOCK_B_END_TOK = "document.addEventListener('visibilitychange'"
+# Full ``0c377a5`` baseline fingerprint (documentation / cross-check; the
+# remainder pin above is what the assertion uses).
+_PRE_TASK11_FULL_LEN = 163800
+_PRE_TASK11_FULL_SHA = (
+    "649b8c822bd03a43de856244cbce947f81d6d1e4ffd34095f140fd0d5153eefb"
+)
+# The Task-11-modified spline region = the line that immediately precedes
+# it (identical & unique in both baseline and current) through the close
+# of ``buildPlayer``. START anchor is the last camera-path comment line
+# (asserted unique by _excise); END token is ``buildPlayer``'s unique
+# return line; the block closes at the FIRST 2-space ``  }`` after it
+# (``buildPlayer``'s own closer — its body is indented deeper so this is
+# unambiguous). Excising [start, …, that ``  }``] removes exactly the
+# ``CubicSpline`` class + ``buildPlayer`` and nothing else.
+#
+# Infra-hardening (folded into this commit): an in-source ``// LOCKSTEP:``
+# banner was added at the spline-section opening. It is DELIBERATELY placed
+# IMMEDIATELY AFTER this START anchor line (i.e. INSIDE the excised region,
+# right before ``Per-keyframe interp modes`` / ``const KF_LINEAR``) so the
+# compared *remainder* is byte-for-byte unaffected — ``_PRE_TASK11_*`` were
+# verified UNCHANGED (remainder still 158963 / 5cbf43be…). The anchor was
+# therefore NOT moved (moving it onto the new banner line would have pulled
+# the 4 unchanged ``// Same CubicSpline…`` comment lines out of the
+# remainder AND broken the moving-baseline, since the banner line does not
+# exist in the pre-Task-11 ``0c377a5`` reference). A future Tasks-12..18
+# editor MUST keep any spline-section banner BELOW this anchor line for the
+# same reason; ``_excise`` still asserts this anchor stays unique.
+_SPLINE_REGION_START = (
+    "  // camera_paths JSON plays back byte-for-byte in either."
+)
+_SPLINE_REGION_END_TOK = (
+    "return { spline, times, sortedKfs, sourceKf, "
+    "duration, loop: !!p.loop, playSpeed };"
+)
+_SPLINE_REGION_CLOSE_AFTER = "  }"
 
 # Task 8's SAVE_* anchor (still asserted present by the (a) tests below;
 # kept here so the inert-const contract stays explicitly pinned).
@@ -112,6 +147,21 @@ def _excise(text: str, start_anchor: str, end_token: str,
     assert text.count(start_anchor) == 1, (
         f"excision start anchor not unique: {start_anchor!r}"
     )
+    # Fail-loud if the end token (or, when used, the close_after closer)
+    # is missing AFTER the start anchor: a non-unique/absent end_token
+    # silently mis-excises the wrong span (only start_anchor uniqueness
+    # was guarded before). Guards against a future task growing the
+    # template until the end anchor disappears -> silent false PASS.
+    _after = text[text.index(start_anchor):]
+    assert _after.count(end_token) >= 1, (
+        f"excision end_token not found after start anchor: {end_token!r}"
+    )
+    if close_after is not None:
+        _after_end = _after[_after.index(end_token):]
+        assert _after_end.count(close_after) >= 1, (
+            "excision close_after not found after end_token: "
+            f"{close_after!r}"
+        )
     i = text.index(start_anchor)
     k = text.index(end_token, i)
     if close_after is None:
@@ -129,11 +179,10 @@ def _excise(text: str, start_anchor: str, end_token: str,
 
 
 # Regenerating after a LEGITIMATE _VIEWER_TEMPLATE change (each behavioural
-# task — Tasks 10-18 — adds its own well-anchored block): this lock asserts
-# every existing scene (the 6 live production scenes included) stays
-# byte-identical APART FROM that task's deliberate, anchored additions. It
-# is a real "no unintended OTHER drift" guard and must NOT be relaxed or
-# made tautological.
+# task adds/modifies its own well-anchored region): this lock asserts every
+# existing scene (the 6 live production scenes included) stays byte-identical
+# APART FROM that task's deliberate, anchored change. It is a real "no
+# unintended OTHER drift" guard and must NOT be relaxed or made tautological.
 #
 # To update the baseline + excision for the NEXT task:
 #   1. Capture the CURRENT-HEAD (pre-your-task) fingerprint from the
@@ -146,61 +195,95 @@ def _excise(text: str, start_anchor: str, end_token: str,
 #        h=m.html_for('HarnessScene')
 #        print(len(h), hashlib.sha256(h.encode()).hexdigest())
 #        PY
-#      Set _PRE_TASKnn_LEN / _PRE_TASKnn_SHA to those (a moving baseline:
-#      each task's pins are the PREVIOUS task's committed output, so the
-#      excision only ever spans the NEW task's lines).
-#   2. Add unique start/end anchors for YOUR task's block(s) and excise
-#      them too (via _excise) before the byte-for-byte compare.
-#   Do NOT relax the assertion; the regression INTENT must remain enforced.
+#   2a. PURELY-ADDITIVE task (like Tasks 8/10): set the baseline LEN/SHA to
+#       the step-1 fingerprint, add unique anchors for YOUR new block(s),
+#       and EXCISE them from the current HTML; the excised result must equal
+#       that pinned baseline byte-for-byte.
+#   2b. MODIFY-IN-PLACE task (like Task 11 — it rewrites the spline rather
+#       than only adding lines, so deleting added lines can't reproduce the
+#       old bytes): pick stable anchors that bound the WHOLE deliberately-
+#       touched region, excise that SAME region from BOTH the step-1
+#       baseline AND the current HTML, and pin the *baseline's* excised
+#       LEN/SHA (``_PRE_TASKnn_REMAINDER_*``). The assertion excises the
+#       region from the current HTML and compares to that remainder pin →
+#       proves every byte OUTSIDE the touched region is byte-identical.
+#   2c. REGION-INTERIOR-ONLY change (e.g. the Task-11 ``// LOCKSTEP:``
+#       banner folded into this commit): if the only delta lands strictly
+#       INSIDE an already-excised region (here: AFTER ``_SPLINE_REGION_START``
+#       and before its END), the compared remainder is unaffected → keep
+#       the existing ``_PRE_TASKnn_*`` pins UNCHANGED (verified, not
+#       assumed). Do NOT move the START anchor onto a newly-added line: a
+#       line that does not exist in the pre-task reference cannot anchor
+#       the moving baseline's excision (it would also pull the unchanged
+#       pre-anchor comment lines out of the remainder). Keep banners BELOW
+#       the START anchor.
+#   Each task's pins are the PREVIOUS task's committed output (a moving
+#   baseline). Do NOT relax the assertion; the regression INTENT must
+#   remain enforced, and prior tasks' anchored blocks must stay
+#   asserted-surviving.
 def test_defaults_are_regression_safe_existing_scenes_byte_identical():
-    """With defaults the ONLY delta vs the pre-Task-10 committed template
-    (``f62c12a`` — which already carries Task 8's SAVE_* block) is Task 10's
-    two anchored blocks: the ``_hidAt`` declaration (BLOCK A) and the
-    ``visibilitychange`` rebase handler (BLOCK B). Excising EXACTLY those
-    two blocks must reproduce the pre-Task-10 output byte-for-byte (same
-    length, same SHA-256) — hard proof the six live scenes (and every
-    existing scene) are otherwise untouched. Task 8's SAVE_* block is part
-    of this baseline and is therefore (correctly) NOT excised here."""
+    """Task 11 modifies the camera-path spline IN PLACE (per-keyframe
+    interpolation in ``CubicSpline.calcKnots`` + the tiny ``buildPlayer`` /
+    ctor / ``evaluate`` plumbing). Excising the WHOLE deliberately-touched
+    spline region (the ``CubicSpline`` class + ``buildPlayer``) from the
+    current generated HTML must reproduce the ``0c377a5`` committed
+    template's SAME-region excision byte-for-byte (same length, same
+    SHA-256) — hard proof every byte OUTSIDE that region (the six live
+    scenes' behaviour, Task 8's SAVE_* block, Task 10's two blocks) is
+    untouched. Task 8's SAVE_* + Task 10's blocks live OUTSIDE the spline
+    region, so they survive the excision and are explicitly asserted-present
+    here (their contracts stay pinned)."""
     import hashlib
 
     html = html_for("HarnessScene")
 
-    # Sanity: Task 8's SAVE_* block must STILL be present and intact in the
-    # baseline territory (this test no longer excises it; it must survive).
-    assert 'const SAVE_MODE = "cli";' in html
-    assert 'const SAVE_ENDPOINT = "";' in html
-    assert _INSERT_ANCHOR in html
+    # Sanity: prior tasks' anchored content must STILL be present and intact
+    # (this test excises only the spline region; they must survive it).
+    assert 'const SAVE_MODE = "cli";' in html          # Task 8
+    assert 'const SAVE_ENDPOINT = "";' in html          # Task 8
+    assert _INSERT_ANCHOR in html                        # Task 8
+    assert "_hidAt" in html                              # Task 10 BLOCK A
+    assert "visibilitychange" in html                    # Task 10 BLOCK B
 
-    # Excise Task 10's two deliberate blocks (disjoint spans; A precedes B
-    # but order is irrelevant). Block A is a single-line decl block; Block
-    # B is the multi-line visibilitychange handler — its self-contained
-    # closer is the first 2-space-indented "});" after the addEventListener
-    # opening (the body is indented deeper). Anchors asserted unique inside
-    # _excise.
-    stripped = _excise(html, _BLOCK_A_START, _BLOCK_A_END_TOK)
+    # Excise the Task-11-modified region: the ``CubicSpline`` class +
+    # ``buildPlayer``. START anchor (last camera-path comment line) is
+    # asserted unique inside _excise; END token is ``buildPlayer``'s unique
+    # return line; the block closes at the FIRST 2-space ``  }`` after it
+    # (``buildPlayer``'s own closer — its body is indented deeper, so this
+    # is unambiguous).
     stripped = _excise(
-        stripped, _BLOCK_B_START, _BLOCK_B_END_TOK, close_after="  });"
+        html, _SPLINE_REGION_START, _SPLINE_REGION_END_TOK,
+        close_after=_SPLINE_REGION_CLOSE_AFTER,
     )
 
-    # After excision NOTHING from Task 10 survives → the two blocks are the
-    # SOLE additions (any leftover token means the excision under-cut and
-    # the byte compare below would be meaningless).
-    assert "_hidAt" not in stripped
-    assert "visibilitychange" not in stripped
-    assert "Tab-background pause" not in stripped
-    assert "Pause (don't teleport)" not in stripped
-    # …while Task 8's SAVE_* block is UNTOUCHED by the excision (proves we
-    # removed only Task 10's lines, not Task 8's baseline content).
-    assert 'const SAVE_MODE = "cli";' in stripped
-    assert 'const SAVE_ENDPOINT = "";' in stripped
+    # The ENTIRE spline region must be gone → the excision spanned exactly
+    # the deliberately-touched code (any leftover means it under-cut and the
+    # byte compare below would be meaningless / weakened).
+    assert "class CubicSpline" not in stripped
+    assert "function buildPlayer" not in stripped
+    assert "calcKnots" not in stripped
+    assert "_kfMeta" not in stripped
+    assert "KF_AUTO_CLAMPED" not in stripped
+    # …while prior tasks' anchored content (OUTSIDE the spline region) is
+    # UNTOUCHED by the excision (proves we removed only the spline region,
+    # not Task 8's / Task 10's baseline content — they must survive).
+    assert 'const SAVE_MODE = "cli";' in stripped        # Task 8 survives
+    assert 'const SAVE_ENDPOINT = "";' in stripped        # Task 8 survives
+    assert "_hidAt" in stripped                           # Task 10 survives
+    assert "visibilitychange" in stripped                 # Task 10 survives
 
-    # Byte-for-byte identical to the pre-Task-10 *committed* generated
-    # viewer → no unintended drift anywhere else in the template.
-    assert len(stripped) == _PRE_TASK10_LEN, (
-        f"length drift: {len(stripped)} != {_PRE_TASK10_LEN} "
-        "(an UNINTENDED change leaked outside Task 10's two blocks)"
+    # Byte-for-byte identical to the ``0c377a5`` committed template with the
+    # SAME spline region excised → NO unintended drift anywhere outside the
+    # deliberate Task-11 spline change (would FAIL loudly if e.g. a stray
+    # uncommitted block elsewhere in the template leaked in).
+    assert len(stripped) == _PRE_TASK11_REMAINDER_LEN, (
+        f"length drift: {len(stripped)} != {_PRE_TASK11_REMAINDER_LEN} "
+        "(an UNINTENDED change leaked OUTSIDE Task 11's spline region)"
     )
-    assert hashlib.sha256(stripped.encode()).hexdigest() == _PRE_TASK10_SHA
+    assert (
+        hashlib.sha256(stripped.encode()).hexdigest()
+        == _PRE_TASK11_REMAINDER_SHA
+    )
 
 
 # --------------------------------------------------------------------------

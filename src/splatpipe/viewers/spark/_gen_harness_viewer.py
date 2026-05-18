@@ -40,6 +40,27 @@ _VIEWER_DIR = _MANUAL_DIR / "_viewer"
 # identical and unaffected.
 _VIEWER_PATH_DIR = _MANUAL_DIR / "_viewer_path"
 
+# ── Task-11 variants: per-keyframe spline interpolation ──────────────────
+# Three more "same generated viewer, only the camera-path config differs"
+# dirs. Each auto-starts (default_path_id) a 3-keyframe path whose MIDDLE
+# keyframe is pulled OFF the A→C straight line so a curved spline visibly
+# bulges through the mid segment. The shared harness drives the REAL
+# generated path-player (virtual clock → reads `_spDebug.camera.position`)
+# and asserts:
+#   • _viewer_lin   (mid `interp:"linear"`)  → mid-segment samples COLINEAR
+#   • _viewer_nolin (mid interp ABSENT)      → SAME samples NOT colinear
+#                                              (curved == today's behavior;
+#                                               proves per-key override +
+#                                               absent==unchanged)
+#   • _viewer_step  (mid `interp:"stepped"`) → sample just before the next
+#                                              keyframe t HOLDS the middle
+#                                              keyframe's value (a step)
+# Separate dirs so Task-0's `_viewer/` (15 checks) + Task-10's
+# `_viewer_path/` stay byte-identical and unaffected.
+_VIEWER_LIN_DIR = _MANUAL_DIR / "_viewer_lin"
+_VIEWER_NOLIN_DIR = _MANUAL_DIR / "_viewer_nolin"
+_VIEWER_STEP_DIR = _MANUAL_DIR / "_viewer_step"
+
 # A trivial straight-line 2-keyframe path. `duration` = max kf.t = 600 s, so
 # the player keeps ticking for the whole test (no early stopPath). Schema
 # matches buildPlayer (sortedKfs needs >= 2 kfs, each with pos[3]; quat[4]
@@ -64,21 +85,70 @@ _HARNESS_PATH_CONFIG = {
     ],
 }
 
+# Task-11 3-keyframe path. Middle key (t=60) is at y=16 — well OFF the
+# straight A([0,0,0])→C([20,0,0]) line — so a Catmull/global-smoothness
+# spline bulges through the mid segment (t∈(60,120)) and is demonstrably
+# NOT colinear, while `interp:"linear"` forces that segment to the straight
+# p1→p2 LERP. Long duration (120 s) keeps the auto-started player ticking
+# for the whole virtual-clock walk.
+_T11_A = [0.0, 0.0, 0.0]
+_T11_B = [10.0, 16.0, 0.0]
+_T11_C = [20.0, 0.0, 0.0]
+
+
+def _t11_config(mid_interp: str | None) -> dict:
+    """A 3-keyframe auto-start path; ``mid_interp`` (or absent) on key 2."""
+    mid = {"t": 60.0, "pos": list(_T11_B),
+           "quat": [0.0, 0.0, 0.0, 1.0], "fov": 60.0}
+    if mid_interp is not None:
+        mid["interp"] = mid_interp
+    return {
+        "annotations": [],
+        "default_path_id": "t11-path",
+        "camera_paths": [
+            {
+                "id": "t11-path",
+                "name": "Task-11 per-keyframe interp",
+                "loop": False,
+                "smoothness": 1.0,
+                "play_speed": 1.0,
+                "keyframes": [
+                    {"t": 0.0, "pos": list(_T11_A),
+                     "quat": [0.0, 0.0, 0.0, 1.0], "fov": 60.0},
+                    mid,
+                    {"t": 120.0, "pos": list(_T11_C),
+                     "quat": [0.0, 0.0, 0.0, 1.0], "fov": 60.0},
+                ],
+            }
+        ],
+    }
+
 
 def generate() -> Path:
     """Write the viewer-under-test (index.html + stub config) and return its dir.
 
-    Also writes a sibling ``_viewer_path/`` variant (same generated HTML, a
-    config with an auto-starting 2-keyframe camera path) used by the shared
-    harness's Task-10 tab-background check. Returns the Task-0 ``_viewer/``
-    dir (the harness page resolves both relatively).
+    Also writes sibling variant dirs (all the SAME generated HTML; only the
+    viewer-config.json differs):
+      * ``_viewer_path/`` — auto-starting 2-keyframe path; Task-10
+        tab-background check.
+      * ``_viewer_lin/`` / ``_viewer_nolin/`` / ``_viewer_step/`` —
+        auto-starting 3-keyframe path with a `linear` / absent / `stepped`
+        middle keyframe; Task-11 per-keyframe-interpolation check.
+    Returns the Task-0 ``_viewer/`` dir (the harness page resolves the rest
+    relatively).
     """
     _VIEWER_DIR.mkdir(parents=True, exist_ok=True)
     _VIEWER_PATH_DIR.mkdir(parents=True, exist_ok=True)
-    # Same generated viewer for both variants — only the config differs.
+    _VIEWER_LIN_DIR.mkdir(parents=True, exist_ok=True)
+    _VIEWER_NOLIN_DIR.mkdir(parents=True, exist_ok=True)
+    _VIEWER_STEP_DIR.mkdir(parents=True, exist_ok=True)
+    # Same generated viewer for ALL variants — only the config differs.
     html = html_for("HarnessScene")
     (_VIEWER_DIR / "index.html").write_text(html, encoding="utf-8")
     (_VIEWER_PATH_DIR / "index.html").write_text(html, encoding="utf-8")
+    (_VIEWER_LIN_DIR / "index.html").write_text(html, encoding="utf-8")
+    (_VIEWER_NOLIN_DIR / "index.html").write_text(html, encoding="utf-8")
+    (_VIEWER_STEP_DIR / "index.html").write_text(html, encoding="utf-8")
     # A stub config so the no-store fetch succeeds and the viewer takes its
     # normal (non-error) path; no scene.rad is referenced/needed for the
     # framework-init assertions.
@@ -87,6 +157,16 @@ def generate() -> Path:
     )
     (_VIEWER_PATH_DIR / "viewer-config.json").write_text(
         json.dumps(_HARNESS_PATH_CONFIG), encoding="utf-8"
+    )
+    # Task-11: linear / absent(no-interp) / stepped middle-keyframe variants.
+    (_VIEWER_LIN_DIR / "viewer-config.json").write_text(
+        json.dumps(_t11_config("linear")), encoding="utf-8"
+    )
+    (_VIEWER_NOLIN_DIR / "viewer-config.json").write_text(
+        json.dumps(_t11_config(None)), encoding="utf-8"
+    )
+    (_VIEWER_STEP_DIR / "viewer-config.json").write_text(
+        json.dumps(_t11_config("stepped")), encoding="utf-8"
     )
     return _VIEWER_DIR
 
@@ -129,8 +209,10 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     d = generate()
     print(f"generated {d / 'index.html'} ({(d / 'index.html').stat().st_size} bytes)")
-    print(f"generated {_VIEWER_PATH_DIR / 'index.html'} "
-          f"({(_VIEWER_PATH_DIR / 'index.html').stat().st_size} bytes)")
+    for _vd in (_VIEWER_PATH_DIR, _VIEWER_LIN_DIR, _VIEWER_NOLIN_DIR,
+                _VIEWER_STEP_DIR):
+        print(f"generated {_vd / 'index.html'} "
+              f"({(_vd / 'index.html').stat().st_size} bytes)")
     if args.serve is not None:
         serve(args.serve)
     return 0
