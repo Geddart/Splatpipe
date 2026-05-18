@@ -86,6 +86,10 @@
       <div class="lbl">?embed=1 (expect mode=embed, chrome hidden)</div>
       <iframe id="f-embed" src="./_viewer/index.html?embed=1" title="embed mode"></iframe>
     </div>
+    <div class="pane">
+      <div class="lbl">Task 10: path player (tab-background pause, not teleport)</div>
+      <iframe id="f-path" src="./_viewer_path/index.html" title="path player"></iframe>
+    </div>
   </div>
 
   <script>
@@ -252,6 +256,133 @@
         T('user mode keeps #header visible (no over-hiding)',
           !isHidden(userWin, '#header'));
       }
+
+      // ── Task 10: path player pauses (not teleports) on tab-background ──
+      // The `_viewer_path/` iframe auto-starts a 600 s 2-keyframe path
+      // (default_path_id). The player advances from
+      // `(performance.now() - _t0)/1000 * speed` every rAF and writes that
+      // into `#path-time`. We install a CONTROLLABLE virtual clock into
+      // that iframe's `performance.now` (every call site reads it fresh —
+      // no module-load alias), let the player settle, then simulate the
+      // tab going hidden ~5 s and back:
+      //   • document.hidden faked true  + dispatch 'visibilitychange'
+      //   • advance the virtual clock +5000 ms  (the hidden gap)
+      //   • document.hidden faked false + dispatch 'visibilitychange'
+      // PRE-FIX  `_t0` is untouched → on return `#path-time` TELEPORTS
+      //          ~5 s down the spline (the bug).
+      // POST-FIX the visibilitychange handler rebases `_t0 += now-_hidAt`
+      //          → `#path-time` is ≈ unchanged across the hidden gap
+      //          (playback paused, then resumed where it left off).
+      // Robust + deterministic: a virtual clock (no real waiting on a
+      // backgrounded tab, no rAF-throttle assumptions) drives the REAL
+      // generated path-player JS; the only observable asserted is the
+      // player's own `#path-time` DOM output.
+      async function pathBackgroundCheck() {
+        const win = frameWin('f-path');
+        if (!win) return { ok: false, reason: 'no path iframe window' };
+
+        // Wait until the viewer module finished init (its __sp debug
+        // surface appears at the very end, after tick() starts) so the
+        // auto-started player is live and ticking #path-time.
+        const ready = await new Promise((resolve) => {
+          const t0 = Date.now();
+          (function poll() {
+            let sp, te;
+            try {
+              sp = win.__sp;
+              te = win.document && win.document.getElementById('path-time');
+            } catch (e) { sp = undefined; te = null; }
+            // #path-time only gets a value once the player has ticked at
+            // least once (proves _player !== null + the clock is running).
+            if (sp && te && /[\d.]+s/.test(te.textContent || '')) {
+              return resolve(true);
+            }
+            if (Date.now() - t0 > 30000) return resolve(false);
+            setTimeout(poll, 100);
+          })();
+        });
+        if (!ready) return { ok: false, reason: 'path player never started' };
+
+        // Install the virtual clock. Seed at the real now so any cached
+        // _t0 (captured with the real clock during init) stays consistent;
+        // from here every performance.now() in the iframe is `_V`.
+        const inject = (fn, arg) =>
+          win.eval('(' + fn.toString() + ')(' + JSON.stringify(arg) + ')');
+
+        inject(function () {
+          var p = window.performance;
+          window.__vt = p.now();           // virtual time, seeded = real now
+          p.now = function () { return window.__vt; };
+        });
+
+        const readT = () => {
+          const te = win.document.getElementById('path-time');
+          const m = te && /([\d.]+)s/.exec(te.textContent || '');
+          return m ? parseFloat(m[1]) : null;
+        };
+        const tickRAF = () => new Promise((res) => {
+          // Two rAFs so the player's tick() definitely recomputes
+          // #path-time off the (possibly advanced) virtual clock.
+          win.requestAnimationFrame(() =>
+            win.requestAnimationFrame(() => res()));
+        });
+
+        // Let the player run a little on the virtual clock so it is
+        // mid-path (advance virtual time, pump frames).
+        inject(function () { window.__vt += 2000; });   // +2 s of playback
+        await tickRAF();
+        const tBefore = readT();
+
+        // Fake the tab going HIDDEN and fire the real event.
+        inject(function () {
+          Object.defineProperty(win0.document, 'hidden',
+            { configurable: true, get: function () { return true; } });
+          Object.defineProperty(win0.document, 'visibilityState',
+            { configurable: true, get: function () { return 'hidden'; } });
+          win0.document.dispatchEvent(new Event('visibilitychange'));
+        }.toString().replace(/win0/g, 'window'));
+
+        // The "hidden gap": real wall-clock would advance while rAF is
+        // paused. We advance the virtual clock by 5 s WITHOUT pumping
+        // frames (mirrors a backgrounded tab — no rAF, no #path-time
+        // write — while time marches on).
+        inject(function () { window.__vt += 5000; });
+
+        // Tab becomes VISIBLE again → fire the real event. The fixed
+        // handler rebases `_t0` here; the buggy one does nothing.
+        inject(function () {
+          Object.defineProperty(win0.document, 'hidden',
+            { configurable: true, get: function () { return false; } });
+          Object.defineProperty(win0.document, 'visibilityState',
+            { configurable: true, get: function () { return 'visible'; } });
+          win0.document.dispatchEvent(new Event('visibilitychange'));
+        }.toString().replace(/win0/g, 'window'));
+
+        // Pump frames so the player recomputes #path-time post-resume.
+        await tickRAF();
+        const tAfter = readT();
+
+        if (tBefore == null || tAfter == null) {
+          return { ok: false, reason: 'could not read #path-time',
+                   tBefore: tBefore, tAfter: tAfter };
+        }
+        // The ONLY virtual time that elapsed with frames pumping is the
+        // 0 ms across the hidden gap (we advanced __vt but did not tick
+        // during it). So a correct player advances ≈0 s; the teleport bug
+        // advances ≈5 s. Tolerance 1 s comfortably separates the two.
+        const delta = tAfter - tBefore;
+        return { ok: Math.abs(delta) < 1.0, delta: delta,
+                 tBefore: tBefore, tAfter: tAfter };
+      }
+
+      const pbg = await pathBackgroundCheck();
+      T('path player does NOT teleport across a 5 s tab-background ' +
+        '(visibilitychange rebases the clock)',
+        pbg.ok === true,
+        'Δt across hidden gap = ' +
+          (typeof pbg.delta === 'number'
+            ? pbg.delta.toFixed(3) + 's (expect ~0; teleport bug ~5s)'
+            : JSON.stringify(pbg)));
 
       // ── Report ───────────────────────────────────────────────────────
       const passCount = results.filter(r => r.pass).length;

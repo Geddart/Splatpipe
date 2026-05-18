@@ -1833,6 +1833,13 @@ _VIEWER_TEMPLATE = """\
   }}
 
   let _player = null, _t0 = 0, _activePathId = null, _lastTriggeredAnnotation = null;
+  // Tab-background pause: timestamp the path-player clock was frozen at
+  // (0 = not currently hidden). The per-frame advance is raw
+  // `performance.now() - _t0`, which keeps marching while the tab is
+  // backgrounded and rAF is paused; without rebasing _t0 the camera would
+  // TELEPORT the whole hidden interval down the spline on return. See the
+  // visibilitychange handler below.
+  let _hidAt = 0;
 
   const hud = document.getElementById('path-hud');
   const selEl = document.getElementById('path-select');
@@ -1885,6 +1892,33 @@ _VIEWER_TEMPLATE = """\
     }}
     const t = (parseFloat(scrubEl.value) / 1000) * _player.duration;
     _t0 = performance.now() - (t / (_player.playSpeed || 1.0)) * 1000;
+  }});
+  // Pause (don't teleport) the path player when the tab is backgrounded.
+  // The per-frame advance is `(performance.now() - _t0)/1000 * speed`;
+  // performance.now() keeps advancing while the tab is hidden but rAF
+  // (and thus the tick() camera write) is paused, so on return the raw
+  // delta would have grown by the whole hidden interval and the camera
+  // would jump that many seconds down the spline. Rebasing _t0 by the
+  // hidden duration cancels exactly that gap → playback RESUMES where it
+  // paused. Scoped strictly to the path-player clock: it only adjusts
+  // _t0, only while a path is actually playing (`_player` truthy — the
+  // same gate every `if (_player)` reads); bench/scrub/free-look clocks
+  // are untouched. A no-op when nothing is playing. No existing
+  // visibilitychange listener to unify with (the only document/window
+  // visibility hooks are the `blur` key/look resets, a different
+  // concern), so this is the single owner of this event.
+  document.addEventListener('visibilitychange', () => {{
+    if (!_player) {{ _hidAt = 0; return; }}  // not playing → harmless no-op
+    if (document.hidden) {{
+      // Going hidden: freeze the clock reference (only the first hidden
+      // event in a hidden streak counts; later ones keep the original).
+      if (!_hidAt) _hidAt = performance.now();
+    }} else if (_hidAt) {{
+      // Becoming visible again: advance _t0 by exactly the time spent
+      // hidden so (performance.now() - _t0) is unchanged across the gap.
+      _t0 += performance.now() - _hidAt;
+      _hidAt = 0;
+    }}
   }});
   if (cfg.default_path_id) {{
     selEl.value = cfg.default_path_id;

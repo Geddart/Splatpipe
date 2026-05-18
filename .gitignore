@@ -47,3 +47,4 @@ tools/dcc-bridge/splatpipe_bridge.mzp
 # Generated viewer-under-test for the Playwright harness
 # (re-build via `python -m splatpipe.viewers.spark._gen_harness_viewer`)
 tests/manual/_viewer/
+tests/manual/_viewer_path/
