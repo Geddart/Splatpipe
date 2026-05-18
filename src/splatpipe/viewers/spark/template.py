@@ -324,7 +324,8 @@ _VIEWER_TEMPLATE = """\
     body.embed #stats,
     body.embed #controls-hint,
     body.embed #safari-hint,
-    body.embed #path-hud {{ display: none !important; }}
+    body.embed #path-hud,
+    body.embed #sp-hud {{ display: none !important; }}
   </style>
 </head>
 <body>
@@ -427,13 +428,227 @@ _VIEWER_TEMPLATE = """\
   const STOCK = new URLSearchParams(location.search).get('stock') === '1';
   if (STOCK) console.info('[Splatpipe] STOCK mode: all perf mods disabled');
 
-  // ?embed=1 — clean canvas-only mode for <iframe> embedding (e.g. the
-  // geddart.de portfolio): a <body> class hides all Splatpipe chrome via
-  // CSS (header, budget/bench buttons, stats, hints, path HUD). The scene,
-  // annotations and camera-path playback are unchanged. CSS-driven so
-  // there's no per-element JS or layout flash.
-  const EMBED = new URLSearchParams(location.search).get('embed') === '1';
-  if (EMBED) {{ document.body.classList.add('embed'); console.info('[Splatpipe] EMBED mode (chrome hidden for iframe)'); }}
+  // ============================================================
+  //  Unified SceneView framework (Task 0 — FOUNDATION)
+  // ------------------------------------------------------------
+  //  ONE place that owns: which mode we're in, the single 3D
+  //  overlay group, who owns the pointer/camera right now, and
+  //  the 2D panel layout. Every current and future editor /
+  //  cinematic feature (trajectory, frustums, gizmo, 3D titles,
+  //  annotation anchors, ghost cam, cut-LOD-prefetch, …) plugs
+  //  into THESE four objects — never its own ad-hoc DOM/handlers.
+  //  User directive (msg 6477): "structure the 3D View from the
+  //  top and unify — avoid similar-but-different solutions."
+  //
+  //  Task 0 is a PURE REFACTOR: no feature is added. The existing
+  //  ?embed=1 body-class, the OrbitControls / _player / _looking
+  //  pointer guards and the HUD / controls-hint are routed THROUGH
+  //  these objects with byte-identical behavior. window.__sceneview
+  //  is the test surface every later Playwright task asserts on.
+  // ============================================================
+
+  // ---- ModeManager: single source of truth for the view mode ----
+  // Resolves user|author|embed from the URL ONCE. ?embed=1 wins
+  // (clean iframe embed), then ?author=1 (the editor), else 'user'
+  // (the default cinematic/end-user view). One <body> class switch
+  // so every UI element can declare the modes it appears in via
+  // CSS instead of scattering per-feature `if (author)` in JS.
+  const ModeManager = (() => {{
+    const _qs = new URLSearchParams(location.search);
+    const _mode = (_qs.get('embed') === '1') ? 'embed'
+                : (_qs.get('author') === '1') ? 'author'
+                : 'user';
+    const _subs = [];
+    // ONE class switch. `mode-<x>` is the generic, declarative hook
+    // for current+future CSS gating. The legacy `embed` class is
+    // ALSO kept for embed mode so the existing `body.embed …` rules
+    // (unchanged) keep hiding chrome byte-identically — pure-additive,
+    // zero behavior change. (Task 8 layers usermode/authormode +
+    // chrome gating on top of this; T0 only lands the resolver.)
+    document.body.classList.add('mode-' + _mode);
+    if (_mode === 'embed') {{
+      document.body.classList.add('embed');
+      console.info('[Splatpipe] EMBED mode (chrome hidden for iframe)');
+    }}
+    return {{
+      get mode() {{ return _mode; }},
+      is(m) {{ return _mode === m; }},
+      // modes==undefined/empty → visible in ALL modes (today's default).
+      matches(modes) {{
+        return !modes || modes.length === 0 || modes.indexOf(_mode) !== -1;
+      }},
+      onChange(fn) {{ if (typeof fn === 'function') _subs.push(fn); }},
+      // Mode is resolved once from the URL and never mutates in T0.
+      // The change fan-out to `_subs` (used by OverlayScene/HudLayer
+      // via onChange) stays internal — it is intentionally NOT exposed
+      // on the public `window.__sceneview` surface; a future in-viewer
+      // mode toggle wires its own internal path to it.
+    }};
+  }})();
+  // Back-compat alias — `EMBED` was the old gate; some call sites and
+  // future diffs read it. Derived from ModeManager so there's still
+  // exactly one source of truth.
+  const EMBED = ModeManager.is('embed');
+
+  // ---- OverlayScene: the ONE 3D overlay group ----
+  // A single THREE.Group added to the scene that holds ALL editor /
+  // cinematic 3D overlays. Features call register(layer)/unregister
+  // — they never add a parallel scene/group. One update(t) tick fans
+  // out to layers; one show/hide registry keyed by ModeManager; one
+  // depth/scale policy in one place. In Task 0 it has zero layers
+  // (pure framework); Tasks 12/14/etc. add the trajectory, frustums,
+  // gizmo, 3D titles, ghost cam, … as layers here.
+  //
+  //   layer = {{ id?, modes?:string[], node?:THREE.Object3D,
+  //             update?(t), onShow?(), onHide?() }}
+  // `node` (if given) is parented under the overlay group; `modes`
+  // (if given) restricts the layer to those modes (absent = all).
+  const OverlayScene = (() => {{
+    const group = new THREE.Group();
+    group.name = 'sceneview-overlay';
+    // One depth/scale policy lives HERE so no feature re-decides it:
+    // overlays draw on top of the splat (renderOrder) and are NOT
+    // raycast by the scene-content raycaster (InteractionManager owns
+    // overlay picking later). Identity transform — overlays author in
+    // world space. Centralised so Tasks 12/14 don't each reinvent it.
+    group.renderOrder = 10;
+    const _layers = [];
+    function _applyVisibility(layer) {{
+      const vis = ModeManager.matches(layer.modes);
+      const wasVis = layer._lastVis;
+      layer._lastVis = vis;
+      if (layer.node) layer.node.visible = vis;
+      // Fire onShow/onHide ONLY on a real transition. _lastVis starts
+      // undefined, so: first register-while-visible fires onShow once
+      // (undefined !== true), first register-while-hidden fires NOTHING
+      // (undefined === true is false), a true shown->hidden fires onHide,
+      // hidden->shown fires onShow, same-state never fires, and a mode
+      // round-trip never double-fires onShow.
+      if (vis && wasVis !== true && typeof layer.onShow === 'function') {{ try {{ layer.onShow(); }} catch (e) {{}} }}
+      if (!vis && wasVis === true && typeof layer.onHide === 'function') {{ try {{ layer.onHide(); }} catch (e) {{}} }}
+    }}
+    ModeManager.onChange(() => {{ for (const l of _layers) _applyVisibility(l); }});
+    return {{
+      group,
+      register(layer) {{
+        if (!layer || _layers.indexOf(layer) !== -1) return layer;
+        _layers.push(layer);
+        if (layer.node && layer.node.parent !== group) group.add(layer.node);
+        _applyVisibility(layer);
+        return layer;
+      }},
+      unregister(layer) {{
+        const i = _layers.indexOf(layer);
+        if (i === -1) return;
+        _layers.splice(i, 1);
+        if (layer.node && layer.node.parent === group) group.remove(layer.node);
+      }},
+      // ONE tick — called once per frame from the render loop; fans
+      // out to every registered, mode-visible layer.
+      update(t) {{
+        for (const l of _layers) {{
+          if (typeof l.update === 'function' && ModeManager.matches(l.modes)) {{
+            try {{ l.update(t); }} catch (e) {{}}
+          }}
+        }}
+      }},
+      layers() {{ return _layers.slice(); }},
+    }};
+  }})();
+
+  // ---- InteractionManager: ONE pointer/camera arbitration layer ----
+  // Brokers WHO owns the canvas pointer + camera right now. Today
+  // that ownership is scattered across OrbitControls-vs-`_player`-vs-
+  // `_looking`-vs-touch-zoom guards. Task 0 centralises the *query*:
+  // path playback / bench acquire 'player'; the existing `_player` /
+  // `_looking` variables remain the actual per-handler gates (so
+  // behavior is byte-identical), but the manager mirrors them and is
+  // the single point future tools (TransformControls, annotation
+  // place, click-interrupt) ask "can I take the pointer?". Priority:
+  // the path/bench owner ('player') is exclusive — it wins over
+  // free-look/orbit, exactly as the existing `if (_player) return`
+  // guards already enforce.
+  const InteractionManager = (() => {{
+    let _owner = null;          // null = free (OrbitControls/look/zoom)
+    const EXCLUSIVE = {{ player: true }};  // owners that lock out others
+    return {{
+      // Returns true if granted. While an *exclusive* owner (path/
+      // bench 'player') holds it, any other owner is refused — mirrors
+      // today's hard rule that nothing preempts an active path/bench
+      // (the `if (_player) return` guards). A non-exclusive owner
+      // (look/orbit/future tools) freely takes it when nothing
+      // exclusive is active. NOTE: in T0 nothing READS this — the live
+      // gates are still `_player`/`_looking` — so this arbitration is
+      // inert for behavior; it defines the contract later tasks query.
+      requestPointer(owner) {{
+        if (!owner) return false;
+        if (_owner && _owner !== owner && EXCLUSIVE[_owner]) {{
+          return false;
+        }}
+        _owner = owner;
+        return true;
+      }},
+      releasePointer(owner) {{
+        if (_owner === owner || owner == null) _owner = null;
+      }},
+      currentOwner() {{ return _owner; }},
+      // Convenience the ported guards use instead of bare `_player`:
+      // "is some exclusive owner (path/bench) driving the camera?"
+      isCameraOwned() {{ return !!(_owner && EXCLUSIVE[_owner]); }},
+    }};
+  }})();
+
+  // ---- HudLayer: ONE declarative 2D panel container ----
+  // Registered 2D panels (HUDs, transports, popovers, hints). The
+  // layer tracks them and applies ModeManager visibility; panels
+  // keep their own CSS positioning for now (migrating the existing
+  // settings-HUD + controls-hint changes nothing visually — they
+  // register with no `modes` so they show in every mode exactly as
+  // today). Tasks 11/13/14 register the user transport + timeline +
+  // popovers HERE rather than each doing bespoke DOM/positioning.
+  //
+  //   panel = {{ id?, el:HTMLElement, modes?:string[] }}
+  const HudLayer = (() => {{
+    const _panels = [];
+    function _apply(p) {{
+      if (!p.el) return;
+      // T0: panels register with no `modes` → matches() is true in
+      // every mode → we never touch their display, so the existing
+      // HUD/controls-hint render byte-identically. A future moded
+      // panel gets show/hidden here, in ONE place.
+      if (p.modes && p.modes.length) {{
+        p.el.style.display = ModeManager.matches(p.modes) ? '' : 'none';
+      }}
+    }}
+    ModeManager.onChange(() => {{ for (const p of _panels) _apply(p); }});
+    return {{
+      register(panel) {{
+        if (!panel || !panel.el || _panels.indexOf(panel) !== -1) return panel;
+        _panels.push(panel);
+        _apply(panel);
+        return panel;
+      }},
+      unregister(panel) {{
+        const i = _panels.indexOf(panel);
+        if (i !== -1) _panels.splice(i, 1);
+      }},
+      panels() {{ return _panels.slice(); }},
+    }};
+  }})();
+
+  // ---- window.__sceneview: the test/extension surface ----
+  // Every later Playwright task asserts on this; later feature code
+  // also reaches the four managers through it. Mirrors the existing
+  // window.__sp / window._spDebug convention. Harmless, always on.
+  try {{
+    window.__sceneview = {{
+      get mode() {{ return ModeManager.mode; }},
+      modes: ModeManager,
+      overlay: OverlayScene,
+      interaction: InteractionManager,
+      hud: HudLayer,
+    }};
+  }} catch (e) {{}}
 
   // ?bench=<value> auto-triggers a benchmark recording.
   //   ?bench=1               → 30 s static recording (user drives the camera or
@@ -633,6 +848,10 @@ _VIEWER_TEMPLATE = """\
   }}
 
   const scene = new THREE.Scene();
+  // The ONE overlay group (Task 0). Empty in T0 — no layers added yet
+  // — so adding it is a pure no-op visually; later features register
+  // layers into OverlayScene rather than scene.add()-ing their own.
+  scene.add(OverlayScene.group);
   const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.01, 1000);
   // Pick a sensible initial camera position: an explicit saved start_view
   // wins over everything; then first kf of the default path, first kf of
@@ -1003,6 +1222,11 @@ _VIEWER_TEMPLATE = """\
   canvas.addEventListener('pointerdown', (e) => {{
     if (e.button !== 2 || _player) return;
     _looking = true;
+    // Mirror right-drag look ownership into the single broker (Task 0).
+    // `_looking` stays the live gate (this handler + the moves read it),
+    // so behavior is byte-identical; 'look' is non-exclusive so the
+    // call never blocks — it just makes ownership queryable.
+    InteractionManager.requestPointer('look');
     _lookLastX = e.clientX; _lookLastY = e.clientY;
     try {{ canvas.setPointerCapture(e.pointerId); }} catch (err) {{ /* ignore */ }}
   }});
@@ -1033,13 +1257,14 @@ _VIEWER_TEMPLATE = """\
     if (!_looking) return;
     if (e && e.button !== undefined && e.button !== 2) return;
     _looking = false;
+    InteractionManager.releasePointer('look');
     if (e && e.pointerId !== undefined) {{
       try {{ canvas.releasePointerCapture(e.pointerId); }} catch (err) {{ /* ignore */ }}
     }}
   }};
   canvas.addEventListener('pointerup', _endLook);
   canvas.addEventListener('pointercancel', _endLook);
-  window.addEventListener('blur', () => {{ _looking = false; }});
+  window.addEventListener('blur', () => {{ _looking = false; InteractionManager.releasePointer('look'); }});
 
   // ---- Double-click / double-tap pivot (Spark first-class raycast) ----
   // SplatMesh implements three.js's raycast() hook with `raycastable: true`,
@@ -1160,6 +1385,17 @@ _VIEWER_TEMPLATE = """\
     + 'background:rgba(0,0,0,.72);color:#0f8;font:12px/1.5 monospace;padding:8px 11px;'
     + 'border-radius:7px;white-space:pre;pointer-events:none;';
   document.body.appendChild(_hud);
+  // Register the existing 2D panels through the ONE HudLayer (Task 0).
+  // No `modes` ⇒ HudLayer never touches their display ⇒ byte-identical
+  // to today (the settings HUD's own H-toggle still owns its
+  // visibility; #controls-hint keeps its CSS; embed still hides them
+  // via the unchanged `body.embed` rules). This just makes them part
+  // of the single panel registry future panels also join.
+  HudLayer.register({{ id: 'settings-hud', el: _hud }});
+  {{
+    const _ch = document.getElementById('controls-hint');
+    if (_ch) HudLayer.register({{ id: 'controls-hint', el: _ch }});
+  }}
   let _hudOn = false, _hudF = 0, _hudT = performance.now(), _hudFps = 0;
   function _hudTick() {{
     if (_hudOn) {{
@@ -1601,10 +1837,16 @@ _VIEWER_TEMPLATE = """\
     _t0 = performance.now();
     _activePathId = pathId;
     controls.enabled = false;
+    // Route the existing camera-ownership through InteractionManager
+    // (Task 0). `_player` stays the live per-handler gate so every
+    // `if (_player) return` is byte-identical; this just mirrors the
+    // same ownership into the single queryable broker.
+    InteractionManager.requestPointer('player');
   }}
   function stopPath() {{
     _player = null; _activePathId = null; _lastTriggeredAnnotation = null;
     controls.enabled = true;
+    InteractionManager.releasePointer('player');
     markerObjs.forEach(m => m.el.querySelector('.ann-dot').classList.remove('path-active'));
     // If a path-driven bench was tied to this path, end its recording too.
     if (_benchActive && (_benchAutoMode === 'path' || _benchAutoMode === 'cold' || _benchAutoMode === 'probe' || _benchAutoMode === 'rotate')) _benchStop();
@@ -2711,6 +2953,24 @@ _VIEWER_TEMPLATE = """\
     // Auto view-tracking focus + HUD (both no-ops when disabled).
     _autoFocusTick(_nowMs);
     _hudTick();
+
+    // Keep InteractionManager's pointer-owner in sync with `_player`
+    // for ALL camera-driving paths (the bench launchers + scrub set
+    // `_player` directly, not via startPath). `_player` stays the one
+    // live gate every `if (_player)` reads — this only mirrors the
+    // same fact into the single queryable broker (nothing reads it in
+    // T0, so behavior is byte-identical). One chokepoint instead of
+    // touching every bench function.
+    if (_player && InteractionManager.currentOwner() !== 'player') {{
+      InteractionManager.requestPointer('player');
+    }} else if (!_player && InteractionManager.currentOwner() === 'player') {{
+      InteractionManager.releasePointer('player');
+    }}
+
+    // The ONE overlay tick (Task 0). No-op in T0 (no layers); later
+    // features' per-frame overlay work fans out from here, not from
+    // bespoke hooks in this loop.
+    OverlayScene.update(_nowMs);
 
     // Camera bounds clamp (conditional on cfg.camera.enabled)
     if (cam && cam.enabled === true) {{
