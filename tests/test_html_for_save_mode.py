@@ -28,59 +28,74 @@ from splatpipe.core.events import ProgressEvent, StepResult
 from splatpipe.steps.publish import publish_scene
 from splatpipe.viewers.spark.template import html_for
 
-# ── Moving baseline (Task 13) ───────────────────────────────────────────
+# ── Moving baseline (Task 14) ───────────────────────────────────────────
 # The byte-identity guard pins the PREVIOUS task's COMMITTED generated
 # output and asserts the only delta is THIS task's deliberate change. The
 # baseline therefore moves forward one commit each task (see the regen
-# recipe below). For Task 13 the pinned baseline is the committed template
-# at HEAD ``0689e788`` (the commit BEFORE Task 13's edit -- i.e. Task 12
+# recipe below). For Task 14 the pinned baseline is the committed template
+# at HEAD ``842b50f`` (the commit BEFORE Task 14's edit -- i.e. Task 13
 # committed) -- which ALREADY contains Task 8's inert SAVE_* block, Task
-# 10's two visibilitychange blocks, Task 11's in-place spline change AND
-# Task 12's three dual-UI regions. ``html_for("HarnessScene")`` there is
-# 173086 bytes.
+# 10's two visibilitychange blocks, Task 11's in-place spline change,
+# Task 12's three dual-UI regions AND Task 13's three regions (loading-
+# blur DOM, deferred autostart, intro IIFE). ``html_for("HarnessScene")``
+# there is 183025 bytes.
 #
-# Task 13 (cinematic loading-blur + intro fade) adds the END-USER shell.
-# Its CSS (the #loading-blur / #intro-fade rules) lands strictly INSIDE
-# the already-excised Task-12 CSS region ``[body.embed #path-hud, …
-# </style>]`` and its #intro-fade DOM root lands strictly INSIDE the
-# already-excised Task-12 DOM region ``[#path-time span … importmap]`` --
-# so those two additions are absorbed by the EXISTING Task-12 excisions
-# (recipe 2c: region-interior change → no new region, pins unaffected by
-# those two). Task 13 also touches THREE further regions OUTSIDE every
-# prior excision: (T13-LB) the ``#loading`` DOM block (a new #loading-blur
-# child); (T13-AS) the default-path autostart, converted in-place to a
-# deferred ``_introStartTour()`` owned by the intro controller; (T13-IC)
-# the intro controller IIFE itself, inserted between the resize handler
-# and ``tick()``. Each of the three is bounded by a START + END anchor
-# that pre-exists UNCHANGED in BOTH ``0689e788`` and the current HTML, so
-# the same [START..END] excises the corresponding (smaller) baseline slice
-# and the (Task-13-grown) current slice; equal remainders ⇒ every byte
-# OUTSIDE the SEVEN excised regions (the spline + three Task-12 + three
-# Task-13) is byte-identical to ``0689e788`` ⇒ the six live production
-# scenes are untouched everywhere except the deliberate Task-8/10/11/12/13
-# changes. The cinematic intro for the six live (usermode) scenes is a
-# DELIBERATE, byte-lock-excised addition (the intended end-user UX, plan
-# SS-A3) -- NOT a regression: their post-load splat RENDERING is byte-
-# identical (the intro only adds a pre-tour chrome layer that reliably
-# clears). Task 8's SAVE_* and Task 10's blocks live OUTSIDE all seven
-# regions, so they are in the compared remainder and thus asserted-
-# surviving (explicit `in stripped` checks below pin that contract too --
-# never relaxed). The spline (Task 11) + the three Task-12 regions are
-# STILL excised with their original anchors so their contracts stay
-# asserted-surviving against the moved baseline.
+# Task 14 (multi-camera Camera-Cuts tour + next-cut LOD pre-warm)
+# generalises the single deferred default-path autostart into an ordered
+# ``ClipPlayer`` sequence and adds a next-cut LOD prewarm guard-twin. It
+# touches TWO regions:
+#   (T13-AS, MODIFIED IN PLACE, recipe 2b): the deferred-autostart region
+#     -- bounded by the UNCHANGED ``  if (cfg.default_path_id) {`` START
+#     and the UNCHANGED ``// ---- Bench launchers …`` END that pre-exist
+#     in BOTH ``842b50f`` and the current HTML -- now also contains the
+#     whole ClipPlayer (class-like block, _clipStart/_clipFinish, the
+#     prewarm scheduler, the OverlayScene clip layer, the generalised
+#     ``_introStartTour`` and the Stop-button guard). The SAME [START..END]
+#     excises the (smaller) ``842b50f`` slice and the (Task-14-grown)
+#     current slice. The 6 live scenes have NO cfg.clips/cfg.cameras so
+#     they take the byte-behaviourally-identical ``startPath(
+#     cfg.default_path_id)`` fallback -- the no-clips regression the spec
+#     hard-requires.
+#   (T14-PW, NEW additive region, recipe 2a): the next-cut LOD prewarm
+#     retention guard-twin, a sibling of the root-chunk eviction guard,
+#     inserted strictly BETWEEN the UNCHANGED root-guard ``console.info(
+#     '[Splatpipe] root-chunk eviction guard active …')`` line (START) and
+#     the UNCHANGED ``    // ---- Front-load phase (pillar V) ----`` line
+#     (END) -- both pre-exist exactly once in BOTH ``842b50f`` and the
+#     current HTML, and ALL Task-14 prewarm-guard lines sit strictly
+#     between them, so excising [START..END] from ``842b50f`` removes ONLY
+#     the unchanged bounding lines while excising it from current removes
+#     those SAME bounding lines PLUS the new guard-twin -> equal
+#     remainders.
+# Excising BOTH regions (PLUS the still-excised Task-11 spline + three
+# Task-12 + three Task-13 regions, every one with its ORIGINAL anchors so
+# its contract stays asserted-surviving) from the current generated HTML
+# reproduces the ``842b50f`` committed template's SAME eight-region
+# excision byte-for-byte -- hard proof every byte OUTSIDE those eight
+# regions (the six live scenes' post-load RENDERING, Task 8's SAVE_*,
+# Task 10's two blocks, Task 11's spline, Task 12's dual-UI, Task 13's
+# cinematic shell) is untouched. The Camera-Cuts tour is a DELIBERATE,
+# byte-lock-excised addition (the multi-camera end-user UX, plan SS-C) --
+# NOT a regression for the six live single-camera scenes: they have no
+# clips/cameras so their generated bytes take the identical pre-Task-14
+# single-tour fallback. Task 8's SAVE_* + Task 10's blocks live OUTSIDE
+# all eight regions, so they are in the compared remainder and thus
+# asserted-surviving (explicit `in stripped` checks below pin that
+# contract too -- never relaxed).
 #
-# ``_PRE_TASK13_REMAINDER_*`` = LEN/SHA-256 of the ``0689e788`` baseline
-# AFTER excising the SAME seven regions with the SAME anchors (computed
-# from ``git show 0689e788:…/template.py`` -- NOT the dirty tree).
-_PRE_TASK13_REMAINDER_LEN = 158018
-_PRE_TASK13_REMAINDER_SHA = (
-    "f50488a3d38df8d07dd8b49a35ec473615ac31eb93317c1cbcfeacff1e72f108"
+# ``_PRE_TASK14_REMAINDER_*`` = LEN/SHA-256 of the ``842b50f`` baseline
+# AFTER excising the SAME eight regions with the SAME anchors (computed
+# from ``git cat-file blob 842b50f:…/template.py`` byte-faithfully --
+# NOT the dirty tree).
+_PRE_TASK14_REMAINDER_LEN = 157876
+_PRE_TASK14_REMAINDER_SHA = (
+    "6d92acbfa54cd04740d13470a265577467355027a81726e33e739ac63c21a442"
 )
-# Full ``0689e788`` baseline fingerprint (documentation / cross-check; the
+# Full ``842b50f`` baseline fingerprint (documentation / cross-check; the
 # remainder pin above is what the assertion uses).
-_PRE_TASK13_FULL_LEN = 173086
-_PRE_TASK13_FULL_SHA = (
-    "e9b31d84bae53a661ed6ccb43e785a73f3ba88d62bb56435102e6249b5441f94"
+_PRE_TASK14_FULL_LEN = 183025
+_PRE_TASK14_FULL_SHA = (
+    "57c4177c1664557274a253d951109b0233c0415d234e65da135bb937e0de3152"
 )
 # The Task-11-modified spline region = the line that immediately precedes
 # it (identical & unique in both baseline and current) through the close
@@ -157,17 +172,24 @@ _T12_MM_END = "if (_mode === 'embed') {"
 #     that span is just the original loading block + css2d-root.
 _T13_LB_START = '  <div id="loading">\n'
 _T13_LB_END = '  <div id="css2d-root"></div>'
-# (T13-AS) JS: the (unchanged, intentionally-kept-inert) default-path
+# (T13-AS / T14, MODIFIED IN PLACE again — recipe 2b) JS: the (unchanged,
+#     intentionally-kept-anchor-stable) default-path
 #     ``  if (cfg.default_path_id) {`` line through the (unchanged)
-#     ``// ---- Bench launchers …`` comment. In ``0689e788`` this span is
-#     the 4-line synchronous autostart + blank; Task 13 grows it in place
-#     to the inert marker `if` + the deferred ``_introStartTour()`` (the
-#     SAME autostart logic, one owner -- the intro controller -- no
-#     parallel autostart). The START anchor is deliberately kept as the
-#     FIRST line of the region (the `if` is now inert but unmoved) so it
-#     pre-exists unchanged; ALL Task-13 autostart additions sit strictly
-#     between it and the END comment. The Task-10 visibilitychange handler
-#     sits ABOVE this START and is therefore NOT excised (its survival is
+#     ``// ---- Bench launchers …`` comment. In ``0689e788`` this span was
+#     the 4-line synchronous autostart + blank; Task 13 grew it in place
+#     to the inert marker `if` + the deferred ``_introStartTour()``; TASK
+#     14 grows it FURTHER, still in place, to also contain the whole
+#     ClipPlayer (the class-like block + _clipStart/_clipFinish + the
+#     next-cut prewarm scheduler + the OverlayScene clip layer), the
+#     GENERALISED ``_introStartTour`` (clip-sequence when cfg.clips/
+#     cfg.cameras present; the byte-behaviourally-identical
+#     ``startPath(cfg.default_path_id)`` fallback otherwise -- the
+#     no-clips regression) and the Stop-button clip guard. The START
+#     anchor is STILL the FIRST line of the region (the `if` is unmoved)
+#     so it pre-exists UNCHANGED in BOTH ``842b50f`` and current; ALL
+#     Task-13 AND Task-14 additions sit strictly between it and the
+#     UNCHANGED END comment. The Task-10 visibilitychange handler sits
+#     ABOVE this START and is therefore NOT excised (its survival is
 #     asserted below -- the region must never widen to swallow it).
 #     NOTE: "inert" here means byte-lock-anchor-stable, NOT dead code --
 #     the ``if`` body still runs a live ``selEl.value = cfg.default_path_id;``
@@ -189,9 +211,29 @@ _T13_AS_END = (
 #     IIFE between the resize handler and ``tick()`` (the cinematic
 #     loading-blur + #intro-fade fade-out + deferred tour start, fail-safe
 #     so a stuck overlay can never trap the scene). Both ends pre-exist
-#     unchanged.
+#     unchanged (Task 14 does NOT touch this region).
 _T13_IC_START = "  // Resize\n"
 _T13_IC_END = "  tick();\n"
+# (T14-PW) JS — NEW additive region (recipe 2a): the next-cut LOD
+#     prewarm RETENTION guard-twin (a sibling of the root-chunk eviction
+#     guard). START = the (UNCHANGED) root-guard
+#     ``console.info('[Splatpipe] root-chunk eviction guard active …')``
+#     line; END = the (UNCHANGED) ``    // ---- Front-load phase (pillar
+#     V) ----`` comment. Both pre-exist EXACTLY ONCE in BOTH ``842b50f``
+#     and the current HTML, and EVERY Task-14 prewarm-guard line sits
+#     strictly between them, so excising [START..END] from ``842b50f``
+#     removes ONLY the unchanged bounding lines (root-guard closer +
+#     blank + the Front-load comment) while excising it from current
+#     removes those SAME bounding lines PLUS the new guard-twin -> equal
+#     remainders (the additive-region invariant). ``_excise`` asserts the
+#     START unique + the (non-close_after) END unique-after-start, so a
+#     future template edit that duplicates/moves either fails LOUD rather
+#     than silently mis-excising.
+_T14_PW_START = (
+    "      console.info('[Splatpipe] root-chunk eviction "
+    "guard active (no per-frame re-pin)');\n"
+)
+_T14_PW_END = "    // ---- Front-load phase (pillar V) ----"
 
 # Task 8's SAVE_* anchor (still asserted present by the (a) tests below;
 # kept here so the inert-const contract stays explicitly pinned).
@@ -421,30 +463,35 @@ def _excise(text: str, start_anchor: str, end_token: str,
 #   remain enforced, and prior tasks' anchored blocks must stay
 #   asserted-surviving.
 def test_defaults_are_regression_safe_existing_scenes_byte_identical():
-    """Task 13 (cinematic loading-blur + intro fade) adds the END-USER
-    shell. Its #loading-blur/#intro-fade CSS lands strictly INSIDE the
-    Task-12 CSS region and its #intro-fade DOM root strictly INSIDE the
-    Task-12 DOM region (absorbed by those EXISTING excisions, recipe 2c),
-    and it touches THREE further regions OUTSIDE every prior excision:
-    (T13-LB) the ``#loading`` DOM block (a new #loading-blur child),
-    (T13-AS) the default-path autostart converted in-place to a deferred
-    ``_introStartTour()`` (one owner -- the intro controller -- NO parallel
-    autostart), and (T13-IC) the intro-controller IIFE inserted between the
-    resize handler and ``tick()``. Excising every deliberately-touched
-    region (the Task-11 spline + the three Task-12 regions + the three
-    Task-13 regions, each bounded by anchors that pre-exist UNCHANGED in
-    BOTH baseline and current) from the current generated HTML must
-    reproduce the ``0689e788`` committed template's SAME seven-region
-    excision byte-for-byte (same length, same SHA-256) -- hard proof every
-    byte OUTSIDE those seven regions (the six live scenes' post-load
-    RENDERING, Task 8's SAVE_* block, Task 10's two blocks, Task 11's
-    spline, Task 12's dual-UI) is untouched. The six live (usermode) scenes
-    DO get the new cinematic intro -- a DELIBERATE, byte-lock-excised
-    addition (the intended end-user UX, plan SS-A3), not a regression: only
-    a pre-tour chrome layer that reliably clears is added; their splat
-    rendering is byte-identical. Task 8's SAVE_* + Task 10's blocks live
-    OUTSIDE all seven regions, so they survive the excision and are
-    explicitly asserted-present here (their contracts stay pinned).
+    """Task 14 (multi-camera Camera-Cuts tour + next-cut LOD pre-warm)
+    generalises the single deferred default-path autostart into an ordered
+    ``ClipPlayer`` sequence and adds a next-cut LOD prewarm guard-twin. It
+    touches TWO regions: (T13-AS, MODIFIED-IN-PLACE again, recipe 2b) the
+    deferred-autostart region -- the SAME unchanged
+    ``if (cfg.default_path_id) {`` START / ``// ---- Bench launchers …``
+    END that bounded Task 13's deferred autostart now also bounds the whole
+    ClipPlayer + the generalised ``_introStartTour`` + the Stop-button clip
+    guard; and (T14-PW, NEW additive region, recipe 2a) the next-cut LOD
+    prewarm retention guard-twin, inserted strictly between the UNCHANGED
+    root-chunk-guard ``console.info('… root-chunk eviction guard active …')``
+    line and the UNCHANGED ``// ---- Front-load phase (pillar V) ----``
+    line. Excising every deliberately-touched region (the Task-11 spline +
+    the three Task-12 regions + the three Task-13 regions + the Task-14
+    prewarm region, each bounded by anchors that pre-exist UNCHANGED and
+    appear exactly once in BOTH the ``842b50f`` baseline and the current
+    HTML) from the current generated HTML must reproduce the ``842b50f``
+    committed template's SAME eight-region excision byte-for-byte (same
+    length, same SHA-256) -- hard proof every byte OUTSIDE those eight
+    regions (the six live scenes' post-load RENDERING, Task 8's SAVE_*
+    block, Task 10's two blocks, Task 11's spline, Task 12's dual-UI,
+    Task 13's cinematic shell) is untouched. The six live single-camera
+    scenes have NO cfg.clips/cfg.cameras so the generalised
+    ``_introStartTour`` takes the byte-behaviourally-identical
+    ``startPath(cfg.default_path_id)`` fallback -- the multi-camera tour is
+    a DELIBERATE, byte-lock-excised addition (plan SS-C), NOT a regression
+    for them. Task 8's SAVE_* + Task 10's blocks live OUTSIDE all eight
+    regions, so they survive the excision and are explicitly asserted-
+    present here (their contracts stay pinned -- never relaxed).
     """
     import hashlib
 
@@ -468,19 +515,28 @@ def test_defaults_are_regression_safe_existing_scenes_byte_identical():
     assert 'id="loading-blur"' in html                    # Task 13 DOM
     assert 'id="intro-fade"' in html                       # Task 13 DOM
     assert "body.usermode #loading-blur" in html           # Task 13 CSS gate
-    assert "function _introStartTour" in html              # Task 13 autostart
+    assert "function _introStartTour" in html              # Task 13/14 AS
     assert "Intro controller (Task 13" in html             # Task 13 IIFE
+    # Task 14's deliberate additions ARE present (the ClipPlayer lives in
+    # the grown T13-AS region; the prewarm guard-twin in the new T14-PW
+    # region — both are excised below, so they must be present here first).
+    assert "ClipPlayer (Task 14" in html                   # Task 14 ClipPlayer
+    assert "function _clipStart" in html                   # Task 14 ClipPlayer
+    assert "window.__clip" in html                          # Task 14 surface
+    assert "__spClipPrewarmGuard" in html                   # Task 14 prewarm
+    assert "next-cut prewarm retention guard active" in html  # Task 14 T14-PW
 
-    # Excise the SEVEN deliberately-touched regions. The Task-11 spline
-    # first (its ORIGINAL anchors, unchanged by Tasks 12/13 — keeps
-    # Task-11's contract asserted-surviving against the moved ``0689e788``
-    # baseline), then each Task-12 region (its CSS/DOM regions grew to also
-    # absorb Task-13's CSS + #intro-fade DOM — same anchors, bigger span),
-    # then each Task-13 region. Every START/END anchor pre-exists UNCHANGED
-    # in both the baseline and current, so the same [START..END] removes
-    # the corresponding (smaller) baseline slice and the grown current
-    # slice; ``_excise`` asserts each START unique + each non-close_after
-    # END unique-after-start (fail-loud on a duplicate/missing anchor).
+    # Excise the EIGHT deliberately-touched regions. The Task-11 spline
+    # first (its ORIGINAL anchors, unchanged by Tasks 12/13/14 — keeps
+    # Task-11's contract asserted-surviving against the moved ``842b50f``
+    # baseline), then each Task-12 region, then each Task-13 region
+    # (T13-AS now GROWN by Task 14, same anchors), then the NEW Task-14
+    # prewarm guard-twin region (T14-PW). Every START/END anchor pre-exists
+    # UNCHANGED and exactly once in both the ``842b50f`` baseline and
+    # current, so the same [START..END] removes the corresponding (smaller)
+    # baseline slice and the grown/added current slice; ``_excise`` asserts
+    # each START unique + each non-close_after END unique-after-start
+    # (fail-loud on a duplicate/missing anchor).
     stripped = _excise(
         html, _SPLINE_REGION_START, _SPLINE_REGION_END_TOK,
         close_after=_SPLINE_REGION_CLOSE_AFTER,
@@ -491,6 +547,7 @@ def test_defaults_are_regression_safe_existing_scenes_byte_identical():
     stripped = _excise(stripped, _T13_LB_START, _T13_LB_END)
     stripped = _excise(stripped, _T13_AS_START, _T13_AS_END)
     stripped = _excise(stripped, _T13_IC_START, _T13_IC_END)
+    stripped = _excise(stripped, _T14_PW_START, _T14_PW_END)
 
     # The ENTIRE spline region must be gone → that excision spanned exactly
     # the deliberately-touched code (a leftover means it under-cut and the
@@ -516,10 +573,29 @@ def test_defaults_are_regression_safe_existing_scenes_byte_identical():
     assert 'id="intro-fade"' not in stripped               # Task 13 DOM gone
     assert "body.usermode #loading-blur" not in stripped   # Task 13 CSS gone
     assert "#intro-fade.faded" not in stripped             # Task 13 CSS gone
-    assert "function _introStartTour" not in stripped      # Task 13 AS gone
-    assert "_introTourStarted" not in stripped             # Task 13 AS gone
+    assert "function _introStartTour" not in stripped      # Task 13/14 AS gone
+    assert "_introTourStarted" not in stripped             # Task 13/14 AS gone
     assert "Intro controller (Task 13" not in stripped     # Task 13 IIFE gone
     assert "_beginFade" not in stripped                    # Task 13 IIFE gone
+    # The Task-14 ClipPlayer (inside the grown T13-AS region) + the
+    # prewarm guard-twin (the new T14-PW region) must ALSO be fully gone —
+    # their excisions spanned exactly the deliberately-touched code, not a
+    # byte more/less (a leftover would weaken/void the byte compare below).
+    assert "ClipPlayer (Task 14" not in stripped           # T13-AS grown gone
+    assert "function _clipStart" not in stripped           # ClipPlayer gone
+    assert "function _buildClipPlayer" not in stripped     # ClipPlayer gone
+    assert "window.__clip" not in stripped                  # surface gone
+    assert "_clipPrewarm" not in stripped                   # prewarm gone
+    assert "__spClipPrewarmGuard" not in stripped           # T14-PW gone
+    assert ("next-cut prewarm retention guard active"
+            not in stripped)                                # T14-PW gone
+    # Regression-critical: the root-chunk eviction guard itself is the
+    # T14-PW START anchor LINE, so it is excised WITH the region — but its
+    # SIBLING machinery just ABOVE the START (the PINNED_ROOT_CHUNK_COUNT
+    # wrap) is OUTSIDE T14-PW and MUST survive (proves T14-PW did not widen
+    # upward into the pre-existing root guard).
+    assert "PINNED_ROOT_CHUNK_COUNT" in stripped           # root guard kept
+    assert "__spRootGuard" in stripped                      # root guard kept
     # …while prior tasks' anchored content (OUTSIDE all seven regions) is
     # UNTOUCHED by the excisions (proves we removed only the deliberate
     # regions, not Task 8's / Task 10's baseline content — they must
@@ -533,18 +609,20 @@ def test_defaults_are_regression_safe_existing_scenes_byte_identical():
     assert "_hidAt" in stripped                           # Task 10 survives
     assert "visibilitychange" in stripped                 # Task 10 survives
 
-    # Byte-for-byte identical to the ``0689e788`` committed template with
-    # the SAME seven regions excised → NO unintended drift anywhere outside
-    # the deliberate Task-8/10/11/12/13 changes (FAILS loudly if e.g. a
+    # Byte-for-byte identical to the ``842b50f`` committed template with
+    # the SAME eight regions excised → NO unintended drift anywhere outside
+    # the deliberate Task-8/10/11/12/13/14 changes (FAILS loudly if e.g. a
     # stray uncommitted block elsewhere in the template leaked in — this is
-    # exactly how the 4 unstaged strays are kept out of the Task-13 commit).
-    assert len(stripped) == _PRE_TASK13_REMAINDER_LEN, (
-        f"length drift: {len(stripped)} != {_PRE_TASK13_REMAINDER_LEN} "
-        "(an UNINTENDED change leaked OUTSIDE the seven deliberate regions)"
+    # exactly how the 4 unstaged strays are kept out of the Task-14 commit;
+    # the pagedExtSplats stray, OUTSIDE all eight regions, makes this FAIL
+    # in the dirty tree BY DESIGN → the guard still bites).
+    assert len(stripped) == _PRE_TASK14_REMAINDER_LEN, (
+        f"length drift: {len(stripped)} != {_PRE_TASK14_REMAINDER_LEN} "
+        "(an UNINTENDED change leaked OUTSIDE the eight deliberate regions)"
     )
     assert (
         hashlib.sha256(stripped.encode()).hexdigest()
-        == _PRE_TASK13_REMAINDER_SHA
+        == _PRE_TASK14_REMAINDER_SHA
     )
 
 

@@ -2149,16 +2149,417 @@ _VIEWER_TEMPLATE = """\
     // lock region START stays on a line that pre-exists unchanged.
     selEl.value = cfg.default_path_id;
   }}
+
+  // ============================================================
+  //  ClipPlayer (Task 14 -- multi-camera Camera-Cuts tour)
+  // ------------------------------------------------------------
+  //  Generalises the single deferred default-path tour into an
+  //  ORDERED clip sequence over virtual cameras. Data model
+  //  (core/scene_cuts.py, plan SS-C):
+  //    cfg.cameras = [{{ id, name, path_id, orbit_pivot? }}]
+  //    cfg.clips   = [{{ id, camera_id, clip_start, duration, in }}]
+  //  Each clip plays its camera's `path_id` sampled from `clip.in`
+  //  for `clip.duration`, then HARD-CUTS (instant pose snap, no
+  //  blend) to the next clip. NO cfg.clips  ->  EXACT pre-Task-14
+  //  behaviour: one implicit clip == startPath(cfg.default_path_id)
+  //  (today's single-tour autostart, byte-behaviourally identical;
+  //  a hard-required regression). Reuses buildPlayer/sampleAt (the
+  //  SuperSplat cubic-Hermite spline, lockstep with the editor) --
+  //  no spline math is reimplemented here. Registers as an
+  //  OverlayScene layer + an InteractionManager 'player' owner
+  //  (Task 0): the layer's update() is the SOLE clip-boundary
+  //  authority (it does NOT add a parallel render hook). Clip
+  //  ordering consumes the JS mirror of scene_cuts.ordered_clips
+  //  (ascending clip_start, stable, input not mutated).
+  //
+  //  Hard-cut mechanics (no render-loop edit, no stopPath wrap):
+  //  per clip a clip-bounded RETIMED path is synthesised from the
+  //  camera's path keyframes (slice [clip.in, clip.in+duration],
+  //  retimed to start at t=0) and fed to the existing buildPlayer,
+  //  so its `.duration` == clip.duration and the existing render
+  //  loop auto-ends it (`tNow > _player.duration`) at exactly the
+  //  clip boundary -- showing clip A's final pose for that one
+  //  frame. The OverlayScene update() (runs every frame, AFTER the
+  //  render-loop _player block) detects that auto-stop transition
+  //  (_player went null while a sequence is active) and starts the
+  //  NEXT clip the same frame, so clip B's start pose is written on
+  //  the very next frame. That <=1-frame hold of A's last pose IS
+  //  the hard cut (a discontinuous pose snap with zero tween) -- it
+  //  is instantaneous and intentionally NOT blended. Gated by
+  //  `!_benchActive` (a bench fully owns the camera -> no advance)
+  //  and `_clipUserStopped` (the Stop button ends the tour, it does
+  //  not advance) so only the natural clip-end advances.
+  // ============================================================
+  // JS mirror of core.scene_cuts.ordered_clips: ascending
+  // clip_start, input list NOT mutated (slice() first).
+  function _orderedClips(clips) {{
+    return (clips || []).slice().sort(
+      (a, b) => ((a && a.clip_start) || 0) - ((b && b.clip_start) || 0));
+  }}
+  const _clipCameras = Array.isArray(cfg.cameras) ? cfg.cameras : [];
+  const _clipSeq = _orderedClips(
+    Array.isArray(cfg.clips) ? cfg.clips : []);
+  // A scene is multi-clip only when BOTH cameras and >=1 clip are
+  // present; otherwise the degenerate single-tour path runs (the 6
+  // live scenes have neither -> byte-behaviourally unchanged).
+  const _clipMode = _clipCameras.length > 0 && _clipSeq.length > 0;
+  let _clipState = {{ active: false, idx: -1, clip: null }};
+  let _clipUserStopped = false;
+  // Test/extension surface (mirrors window.__sp / __sceneview): lets
+  // the harness assert clip scheduling + prewarm/guard lifecycle.
+  // Harmless, always on.
+  try {{
+    window.__clip = {{
+      get mode() {{ return _clipMode; }},
+      get state() {{ return _clipState; }},
+      clips: _clipSeq,
+      cameras: _clipCameras,
+      get prewarm() {{ return _clipPrewarm; }},
+      // TEST-ONLY deterministic restart (Playwright drives the live
+      // ClipPlayer under a virtual clock -- the auto-started tour may
+      // already be mid/-past-sequence by the time the harness attaches,
+      // which is non-deterministic w.r.t. CDN load time). Re-runs the
+      // sequence from clip 0 NOW so the harness gets a controlled t=0
+      // start under the frozen clock. No-op when not in clip mode.
+      // _clipStart is a hoisted function declaration so it is callable
+      // here even though it is defined textually below.
+      restart() {{
+        if (!_clipMode) return false;
+        _clipUserStopped = false;
+        _clipPrewarmRelease();
+        _clipStart(0);
+        return true;
+      }},
+    }};
+  }} catch (e) {{}}
+
+  // Resolve a clip -> its camera -> that camera's camera_paths entry.
+  function _clipPath(clip) {{
+    if (!clip) return null;
+    const cam = _clipCameras.find(c => c && c.id === clip.camera_id);
+    if (!cam) return null;
+    return (cfg.camera_paths || []).find(p => p && p.id === cam.path_id)
+           || null;
+  }}
+  // Synthesise a clip-bounded, retimed sub-path: keep only the
+  // keyframes inside [in, in+duration] (plus the bracketing keys so
+  // the spline still has its surrounding control points) and shift
+  // them so the clip starts at t=0. `buildPlayer` then yields a
+  // player whose `.duration` == clip.duration with correct spline /
+  // times / sourceKf so sampleAt(player, 0-based tNow) and the
+  // annotation trigger work exactly like a normal path. If the
+  // window has < 2 keys we synthesise a 2-key hold at the boundary
+  // so a degenerate clip still snaps cleanly (never extrapolates).
+  function _buildClipPlayer(clip) {{
+    const path = _clipPath(clip);
+    if (!path) return null;
+    const inT = (typeof clip.in === 'number' && clip.in > 0) ? clip.in : 0;
+    const dur = (typeof clip.duration === 'number' && clip.duration > 0)
+      ? clip.duration : 0;
+    if (dur <= 0) return null;
+    // Build the SOURCE path's player once (the real SuperSplat cubic-
+    // Hermite spline over the full path), then RESAMPLE it uniformly
+    // across the clip window [in, in+duration] into a dense retimed
+    // keyframe set whose own t runs 0..duration. This guarantees the
+    // returned player's `.duration` is EXACTLY clip.duration (so the
+    // existing render-loop auto-stop fires at precisely the clip
+    // boundary regardless of where the source keyframes sit) and the
+    // pose at clip-relative t == the source path's pose at (in + t)
+    // -- the spline math is reused verbatim, never reimplemented. The
+    // hold-tail copy in buildPlayer is harmless here (we feed plain
+    // dense keys, no hold_s). ~24 samples/s keeps the resampled curve
+    // visually indistinguishable from the source spline for any sane
+    // clip while staying cheap (a short clip => few keys).
+    const srcPlayer = buildPlayer(path);
+    let player = null;
+    if (srcPlayer) {{
+      const SAMPLES_PER_S = 24;
+      const n = Math.max(2, Math.ceil(dur * SAMPLES_PER_S));
+      const keys = [];
+      for (let i = 0; i <= n; i++) {{
+        const ct = (i / n) * dur;            // clip-relative time
+        const s = sampleAt(srcPlayer, inT + ct);
+        keys.push({{
+          t: ct,
+          pos: [s.pos[0], s.pos[1], s.pos[2]],
+          quat: [s.quat[0], s.quat[1], s.quat[2], s.quat[3]],
+          fov: s.fov,
+        }});
+      }}
+      player = buildPlayer({{
+        id: 'clip:' + (clip.id || '?'), name: 'clip', loop: false,
+        // The dense resample already encodes the curve shape; a
+        // straight (smoothness 0) re-spline through it reproduces it
+        // faithfully and avoids double-smoothing overshoot.
+        smoothness: 0.0, play_speed: 1.0,
+        keyframes: keys,
+      }});
+    }}
+    if (!player) {{
+      // Source path unbuildable (< 2 keys): hold the camera's first
+      // pose for the clip duration so the clip still hard-cuts cleanly
+      // (a constant 2-key player; never extrapolates).
+      const k0 = ((path.keyframes || [])[0]) ||
+        {{ pos: [0, 0, 0], quat: [0, 0, 0, 1], fov: 60 }};
+      const q0 = (k0.quat && k0.quat.length === 4)
+        ? k0.quat : [0, 0, 0, 1];
+      const f0 = (typeof k0.fov === 'number') ? k0.fov : 60;
+      player = buildPlayer({{
+        id: 'clip:' + (clip.id || '?'), name: 'clip', loop: false,
+        smoothness: 0.0, play_speed: 1.0,
+        keyframes: [
+          {{ t: 0, pos: k0.pos, quat: q0, fov: f0 }},
+          {{ t: dur, pos: k0.pos, quat: q0, fov: f0 }},
+        ],
+      }});
+    }}
+    return player;
+  }}
+  // Start clip `idx` (drives the same _player/_t0/controls path the
+  // bench launchers use directly -- NOT startPath, which is hard-
+  // wired to cfg.camera_paths/cfg.default_path_id). On a missing /
+  // unbuildable clip, skip forward so one bad clip can't wedge the
+  // whole tour; if none remain, finalise.
+  function _clipStart(idx) {{
+    while (idx < _clipSeq.length) {{
+      const clip = _clipSeq[idx];
+      const player = _buildClipPlayer(clip);
+      if (player) {{
+        _player = player;
+        _t0 = performance.now();
+        _activePathId = 'clip:' + (clip.id || idx);
+        _lastTriggeredAnnotation = null;
+        controls.enabled = false;
+        InteractionManager.requestPointer('player');
+        _clipState = {{ active: true, idx: idx, clip: clip }};
+        // A new clip just became current -> the previous clip's
+        // prewarm pin is no longer needed: RELEASE immediately so
+        // only ever ONE next-cut set is pinned at a time.
+        _clipPrewarmRelease();
+        console.info('[Splatpipe] clip', idx + 1, '/', _clipSeq.length,
+          '- camera', clip && clip.camera_id, '- dur',
+          clip && clip.duration);
+        return;
+      }}
+      console.warn('[Splatpipe] clip', idx, 'unresolvable -- skipping');
+      idx++;
+    }}
+    _clipFinish();
+  }}
+  function _clipFinish() {{
+    _clipState = {{ active: false, idx: -1, clip: null }};
+    _clipPrewarmRelease();
+    if (_player) stopPath();   // last clip ended -> normal teardown
+  }}
+
+  // ---- Next-cut LOD pre-warm (Task 14 Step B) ----
+  // PREFETCH_LEAD_S before the current clip ends, pick the next
+  // NOT-yet-resident clip (NOT strictly idx+1 -- a clip shorter than
+  // the lead may already be resident; we want the next one whose
+  // start-pose chunks are still missing), build its player, and on a
+  // throttled ~400 ms cadence (mirrors the orbit-walk's
+  // ORBIT_SAMPLE_DWELL_MS) set spark.lodPosOverride/Quat to
+  // sampleAt(nextPlayer, 0) for a single LoD traversal so Spark's
+  // own driveFetchers enqueues that pose's chunks. The live tour
+  // camera still drives EVERY other frame (the player tick never
+  // sets the override -> no contention; _autoFocusTick already self-
+  // clears the override while _player is active). The chunks are
+  // RETAINED by the driveFetchers-wrap guard-twin installed beside
+  // the root-chunk guard (look for __spClipPrewarmGuard); this just
+  // declares the pose + the chunk set to pin. Released immediately
+  // after the cut by _clipStart (only one next-cut set ever pinned).
+  // ?prefetchLead=N overrides the lead (same pattern as ?focusAhead=
+  // / ?budget=). _clipTier lets ?tier=phone exercise the mobile
+  // path in Playwright without a real device (scoped to clip
+  // prewarm only -- it does NOT override the global _deviceProfile).
+  const _clipTier =
+    new URLSearchParams(location.search).get('tier') ||
+    _deviceProfile.tier;
+  const _clipIsPhone = _clipTier === 'phone';
+  const PREFETCH_LEAD_S = (() => {{
+    const _pl = parseFloat(
+      new URLSearchParams(location.search).get('prefetchLead'));
+    if (Number.isFinite(_pl)) return Math.min(Math.max(_pl, 0), 30);
+    return _clipIsPhone ? 1.5 : 2.5;   // shorter lead on phone
+  }})();
+  // Mobile mitigation: allow disabling prewarm on phone entirely if
+  // an empirical real-scene Playwright phone-tier run shows pool
+  // pressure (the project_spark_refetch_storm methodology). Until
+  // that run, phone uses the bounded short-lead path; ?clipPrewarm=0
+  // is the kill switch the empirical decision will pin if needed.
+  const _clipPrewarmOff =
+    new URLSearchParams(location.search).get('clipPrewarm') === '0';
+  // Prewarm bookkeeping. `pose` (when non-null) is the next-cut
+  // start-pose the override is parked at; `chunks` is the set the
+  // guard-twin pins (snapshotted from fetchPriority while parked);
+  // `phoneShallow` tells the guard-twin to pin only a coarse/root-
+  // tier slice on phone (shallow traversal, mandatory mobile
+  // mitigation). All cleared on release.
+  let _clipPrewarm = {{
+    active: false, pose: null, quat: null, nextIdx: -1,
+    chunks: [], lastSampleMs: 0, phoneShallow: _clipIsPhone,
+  }};
+  function _clipPrewarmRelease() {{
+    if (!_clipPrewarm.active && _clipPrewarm.pose === null) return;
+    _clipPrewarm = {{
+      active: false, pose: null, quat: null, nextIdx: -1,
+      chunks: [], lastSampleMs: 0, phoneShallow: _clipIsPhone,
+    }};
+    // Stop driving the LoD override for the (now consumed) next cut.
+    // _autoFocusTick re-owns the override once _player keeps driving;
+    // we only clear OUR prewarm parking, never the live focus.
+    if (_clipPrewarmDroveOverride) {{
+      try {{ spark.lodPosOverride = undefined;
+             spark.lodQuatOverride = undefined; }} catch (e) {{}}
+      _clipPrewarmDroveOverride = false;
+    }}
+  }}
+  let _clipPrewarmDroveOverride = false;
+  let _clipNextPlayer = null;
+  // True when the next not-yet-resident clip's start-pose chunks are
+  // all already resident -> nothing to prewarm (handles a clip
+  // shorter than the lead whose chunks the live camera already
+  // fetched). Best-effort: if the pager surface is unavailable
+  // (scene-less harness) we DON'T claim resident (return false) so
+  // the scheduling path is still exercised + observable.
+  function _clipPoseResident(pl) {{
+    try {{
+      const pager = spark.pager;
+      if (!pager || !splat.paged || !pl) return false;
+      // We cannot cheaply map an arbitrary pose -> its chunk ids
+      // without Spark internals; treat "the next clip already had
+      // its prewarm pin satisfied this cycle" as the resident
+      // signal (the guard-twin sets _clipPrewarm.chunks once Spark
+      // has enqueued them). Conservative: only true after a full
+      // cadence parked on this pose with a non-empty pinned set all
+      // resident.
+      if (!_clipPrewarm.chunks.length) return false;
+      return _clipPrewarm.chunks.every(c =>
+        pager.getSplatsChunk &&
+        pager.getSplatsChunk(splat.paged, c.chunk));
+    }} catch (e) {{ return false; }}
+  }}
+  // Pick the next clip AFTER `fromIdx` whose start-pose is not yet
+  // resident (NOT strictly fromIdx+1). Returns {{ idx, player }} or
+  // null when there is no further clip to prewarm.
+  function _clipPickNext(fromIdx) {{
+    for (let j = fromIdx + 1; j < _clipSeq.length; j++) {{
+      const pl = _buildClipPlayer(_clipSeq[j]);
+      if (!pl) continue;
+      if (_clipPoseResident(pl)) continue;   // already in cache -> skip
+      return {{ idx: j, player: pl }};
+    }}
+    return null;
+  }}
+  // The clip-boundary authority + prewarm scheduler, fanned out from
+  // the ONE OverlayScene.update() tick (Task 0) -- no parallel rAF.
+  // No `modes` (it owns playback, not chrome) so OverlayScene never
+  // touches visibility; node-less (pure logic layer).
+  const _clipLayer = {{
+    id: 'clip-player',
+    update() {{
+      if (!_clipMode || !_clipState.active) return;
+      // (1) Detect the render loop's natural clip-end auto-stop.
+      //     The render-loop _player block runs BEFORE this update();
+      //     at the boundary it called stopPath() -> _player === null.
+      //     A bench takeover / Stop button also nulls _player, but
+      //     those must END the tour, not advance: gate on
+      //     !_benchActive && !_clipUserStopped.
+      if (!_player) {{
+        if (_benchActive || _clipUserStopped) {{ _clipFinish(); return; }}
+        // Natural clip end -> HARD CUT to the next clip (or finish).
+        _clipStart(_clipState.idx + 1);
+        return;
+      }}
+      // (2) Pre-warm scheduling. tNow is the SAME clock the render
+      //     loop uses for this clip (_t0 reset per clip).
+      if (_clipPrewarmOff) return;
+      const clip = _clipState.clip;
+      const dur = (clip && typeof clip.duration === 'number')
+        ? clip.duration : 0;
+      if (dur <= 0) return;
+      const tNow = (performance.now() - _t0) / 1000;
+      const remaining = dur - tNow;
+      if (remaining > PREFETCH_LEAD_S) {{
+        // Not in the lead window yet -> ensure no stale pin lingers.
+        if (_clipPrewarm.active) _clipPrewarmRelease();
+        return;
+      }}
+      // In the lead window: lock onto the next not-yet-resident clip.
+      if (!_clipPrewarm.active) {{
+        const pick = _clipPickNext(_clipState.idx);
+        if (!pick) return;            // nothing further to prewarm
+        _clipNextPlayer = pick.player;
+        const s0 = sampleAt(_clipNextPlayer, 0);
+        _clipPrewarm = {{
+          active: true,
+          pose: [s0.pos[0], s0.pos[1], s0.pos[2]],
+          quat: [s0.quat[0], s0.quat[1], s0.quat[2], s0.quat[3]],
+          nextIdx: pick.idx, chunks: [], lastSampleMs: 0,
+          phoneShallow: _clipIsPhone,
+        }};
+      }}
+      // Throttled ~400 ms cadence (mirrors ORBIT_SAMPLE_DWELL_MS):
+      // park the LoD override at the next-cut start pose for a
+      // single traversal so Spark's driveFetchers enqueues its
+      // chunks. The player tick NEVER sets the override (no
+      // contention); we only touch it here, briefly, for the next
+      // cut. The guard-twin retains the resulting chunk set.
+      const CLIP_PREWARM_DWELL_MS = 400;
+      const nowMs = performance.now();
+      if (nowMs - _clipPrewarm.lastSampleMs >= CLIP_PREWARM_DWELL_MS &&
+          _clipPrewarm.pose) {{
+        try {{
+          if (!spark.lodPosOverride)
+            spark.lodPosOverride = new THREE.Vector3();
+          if (!spark.lodQuatOverride)
+            spark.lodQuatOverride = new THREE.Quaternion();
+          spark.lodPosOverride.set(
+            _clipPrewarm.pose[0], _clipPrewarm.pose[1],
+            _clipPrewarm.pose[2]);
+          spark.lodQuatOverride.set(
+            _clipPrewarm.quat[0], _clipPrewarm.quat[1],
+            _clipPrewarm.quat[2], _clipPrewarm.quat[3]);
+          _clipPrewarmDroveOverride = true;
+        }} catch (e) {{}}
+        _clipPrewarm.lastSampleMs = nowMs;
+      }}
+    }},
+  }};
+  OverlayScene.register(_clipLayer);
+
   // SAME autostart logic, called exactly once -- the `_introTourStarted`
   // guard makes any double-invoke a harmless no-op (e.g. the fade-done
   // path AND the hard-fallback timer both firing). There is NO second
   // autostart path: one function, one owner (the intro controller).
+  // Task 14: when the scene declares cameras + clips it auto-starts
+  // the CLIP SEQUENCE; otherwise it is the EXACT pre-Task-14 single
+  // default-path tour (byte-behaviourally identical -- the hard-
+  // required no-clips regression).
   let _introTourStarted = false;
   function _introStartTour() {{
-    if (_introTourStarted || !cfg.default_path_id) return;
+    if (_introTourStarted) return;
+    if (_clipMode) {{
+      _introTourStarted = true;
+      _clipUserStopped = false;
+      _clipStart(0);
+      return;
+    }}
+    if (!cfg.default_path_id) return;
     _introTourStarted = true;
     selEl.value = cfg.default_path_id;
     startPath(cfg.default_path_id);
+  }}
+  // The Stop button must END a clip tour (not advance to the next
+  // clip). stopPath() nulls _player; without this the clip layer's
+  // update() would treat that as a natural clip-end and resume. An
+  // ADDITIONAL listener (addEventListener stacks; this runs after the
+  // pre-existing `stopBtn -> stopPath` binding) records the user
+  // intent so the next update() finalises instead of advancing.
+  if (typeof stopBtn !== 'undefined' && stopBtn) {{
+    stopBtn.addEventListener('click', () => {{
+      if (_clipMode) {{ _clipUserStopped = true; }}
+    }});
   }}
 
   // ---- Bench launchers (used by both the URL auto-trigger and the button) ----
@@ -3481,6 +3882,98 @@ _VIEWER_TEMPLATE = """\
       }};
       pager.__spRootGuard = true;
       console.info('[Splatpipe] root-chunk eviction guard active (no per-frame re-pin)');
+    }}
+
+    // ---- Next-cut LOD pre-warm retention guard (Task 14 Step B) ----
+    // A TWIN of the root-chunk eviction guard above, scoped to the
+    // ClipPlayer's next-cut prewarm window. While _clipPrewarm.active
+    // (the clip scheduler has parked spark.lodPosOverride at the next
+    // cut's start pose -- see the ClipPlayer block), Spark's own
+    // driveFetchers enqueues that pose's chunks; this wrap RETAINS
+    // them so they cannot be evicted before the cut fires:
+    //   1. Snapshot the chunks Spark is currently fetching for the
+    //      paged splat into _clipPrewarm.chunks (the "next-cut chunk
+    //      set"), capped on phone (shallow / coarse-tier only --
+    //      mandatory mobile mitigation) so the 64-page phone pool is
+    //      never overcommitted.
+    //   2. Re-append any of that set still missing to the END of
+    //      fetchPriority (END so it never preempts the LIVE tour
+    //      camera's in-view detail -- identical policy to the root
+    //      guard) so a transient drop is re-requested.
+    //   3. After the real driveFetchers, drop those resident pages
+    //      out of freeablePages so allocateFreeable() can't evict
+    //      them before the cut.
+    // Inert whenever _clipPrewarm.active is false (released the
+    // instant the cut fires -> only ever ONE next-cut set pinned).
+    // Single chained wrap (the root guard already rebound
+    // driveFetchers; we wrap THAT) -- no second monkey-patch race.
+    if (pager && typeof pager.driveFetchers === 'function' &&
+        !pager.__spClipPrewarmGuard) {{
+      const _prevDrive = pager.driveFetchers.bind(pager);
+      // Phone shallow cap: pin at most this many prewarm chunks on
+      // the phone tier (coarse coverage only) so the next-cut set
+      // can never pressure the small mobile pool. Desktop/tablet
+      // pin the full demanded set (ample pool).
+      const CLIP_PREWARM_PHONE_MAX = 16;
+      pager.driveFetchers = function() {{
+        const pw = (typeof _clipPrewarm !== 'undefined') ? _clipPrewarm
+                                                          : null;
+        if (!pw || !pw.active || !splat.paged) {{ _prevDrive(); return; }}
+        if (!this.fetchPriority) this.fetchPriority = [];
+        // (1) Snapshot the next-cut chunk set: whatever Spark is
+        //     currently fetching / has queued for the paged splat
+        //     because the override is parked at the next-cut pose.
+        const want = [];
+        const seen = {{}};
+        const _add = (sc) => {{
+          if (!sc || sc.splats !== splat.paged) return;
+          if (seen[sc.chunk]) return;
+          seen[sc.chunk] = 1;
+          want.push({{ splats: splat.paged, chunk: sc.chunk }});
+        }};
+        (this.fetchers || []).forEach(_add);
+        (this.fetchPriority || []).forEach(_add);
+        (this.fetched || []).forEach(_add);
+        let pinSet = want;
+        if (pw.phoneShallow && want.length > CLIP_PREWARM_PHONE_MAX) {{
+          // Coarse/root-tier slice only (lowest chunk ids == top LoD
+          // levels) -> shallow traversal retained on phone.
+          pinSet = want.slice()
+            .sort((a, b) => a.chunk - b.chunk)
+            .slice(0, CLIP_PREWARM_PHONE_MAX);
+        }}
+        pw.chunks = pinSet;
+        // (2) Re-append still-missing pinned chunks at the END so the
+        //     LIVE tour camera keeps full priority + all fetch slots.
+        for (let i = 0; i < pinSet.length; i++) {{
+          const ch = pinSet[i].chunk;
+          if (this.getSplatsChunk &&
+              this.getSplatsChunk(splat.paged, ch)) continue;
+          const queued =
+            this.fetchPriority.some(
+              p => p.splats === splat.paged && p.chunk === ch) ||
+            (this.fetchers || []).some(
+              f => f.splats === splat.paged && f.chunk === ch) ||
+            (this.fetched || []).some(
+              f => f.splats === splat.paged && f.chunk === ch);
+          if (!queued)
+            this.fetchPriority.push({{ splats: splat.paged, chunk: ch }});
+        }}
+        _prevDrive();
+        // (3) Make resident pinned pages non-evictable until the cut.
+        if (this.freeablePages && this.freeablePages.length &&
+            pinSet.length) {{
+          const pin = {{}};
+          for (let i = 0; i < pinSet.length; i++)
+            pin[pinSet[i].chunk] = 1;
+          this.freeablePages = this.freeablePages.filter(pg => {{
+            const sc = this.pageToSplatsChunk[pg];
+            return !(sc && sc.splats === splat.paged && pin[sc.chunk]);
+          }});
+        }}
+      }};
+      pager.__spClipPrewarmGuard = true;
+      console.info('[Splatpipe] next-cut prewarm retention guard active');
     }}
 
     // ---- Front-load phase (pillar V) ----

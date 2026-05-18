@@ -83,6 +83,109 @@ _VIEWER_INTRONONE_DIR = _MANUAL_DIR / "_viewer_intronone"
 # algorithm (fade-then-start, fail-safe clear) is independent of this value.
 _T13_INTRO_MS = 250
 
+# ── Task-14 variants: multi-camera Camera-Cuts tour + next-cut prewarm ───
+# Two more "same generated viewer, only the scene config differs" dirs:
+#   • _viewer_clips  — TWO cameras (each its own 2-keyframe straight path,
+#       at clearly-separated world positions) + TWO clips. The shared
+#       harness drives the REAL generated ClipPlayer (virtual clock →
+#       reads `_spDebug.camera.position` + `window.__clip`) and asserts:
+#       clip A plays its camera's path, HARD-CUTS to camera B's path at
+#       the clip boundary (instant pose discontinuity, no tween), the tour
+#       completes, and the next-cut prewarm SCHEDULING + guard lifecycle
+#       are observable (override parked at the next clip's start pose on
+#       the ~400 ms cadence within PREFETCH_LEAD_S of the cut; released
+#       immediately after). `intro:{type:"none"}` is the SAME deliberate
+#       TEST ISOLATION as the Task-10/11 fixtures (the Task-13 fade-out is
+#       separately tested; the clip-sequence check measures ClipPlayer
+#       mechanics, not the intro gate).
+#   • _viewer_noclips — `default_path_id` set, NO cameras/clips: proves
+#       the generalised _introStartTour falls back to the EXACT pre-Task-14
+#       single-tour behaviour (the hard-required no-clips regression).
+# `?tier=phone` is appended to the _viewer_clips iframe URL in the harness
+# (the scoped Task-14 phone test hook) to exercise the mobile prewarm
+# mitigations without a real device.
+# Separate dirs so the Task-0/10/11/13 fixture dirs stay byte-identical.
+_VIEWER_CLIPS_DIR = _MANUAL_DIR / "_viewer_clips"
+_VIEWER_NOCLIPS_DIR = _MANUAL_DIR / "_viewer_noclips"
+
+# Two cameras, two clips. Camera A path = a long straight line near the
+# origin; camera B path = a long straight line far away on +X so the
+# A→B hard-cut is an unmistakable position discontinuity (no spline
+# could tween between them within the harness sampling). Clip A plays
+# camera A's path from in=0 for CLIP_A_DUR s; clip B (clip_start after
+# A) plays camera B's path. Both underlying paths are long (600 s) so a
+# clip's [in, in+duration] window is always inside the path. Durations
+# are short so the Playwright observation (virtual clock) is bounded.
+_T14_CLIP_A_DUR = 8.0
+_T14_CLIP_B_DUR = 8.0
+_T14_CAM_A_P0 = [0.0, 0.0, 0.0]
+_T14_CAM_A_P1 = [0.0, 0.0, -60.0]
+_T14_CAM_B_P0 = [500.0, 0.0, 0.0]
+_T14_CAM_B_P1 = [500.0, 0.0, -60.0]
+
+
+def _t14_clips_config() -> dict:
+    """2 cameras + 2 clips (ordered by clip_start) auto-start sequence."""
+    return {
+        "annotations": [],
+        "intro": {"type": "none"},
+        "cameras": [
+            {"id": "camA", "name": "Camera A", "path_id": "pathA"},
+            {"id": "camB", "name": "Camera B", "path_id": "pathB"},
+        ],
+        "clips": [
+            {"id": "clipA", "camera_id": "camA",
+             "clip_start": 0.0, "duration": _T14_CLIP_A_DUR, "in": 0.0},
+            {"id": "clipB", "camera_id": "camB",
+             "clip_start": _T14_CLIP_A_DUR,
+             "duration": _T14_CLIP_B_DUR, "in": 0.0},
+        ],
+        "camera_paths": [
+            {
+                "id": "pathA", "name": "Path A", "loop": False,
+                "smoothness": 1.0, "play_speed": 1.0,
+                "keyframes": [
+                    {"t": 0.0, "pos": list(_T14_CAM_A_P0),
+                     "quat": [0.0, 0.0, 0.0, 1.0], "fov": 60.0},
+                    {"t": 600.0, "pos": list(_T14_CAM_A_P1),
+                     "quat": [0.0, 0.0, 0.0, 1.0], "fov": 60.0},
+                ],
+            },
+            {
+                "id": "pathB", "name": "Path B", "loop": False,
+                "smoothness": 1.0, "play_speed": 1.0,
+                "keyframes": [
+                    {"t": 0.0, "pos": list(_T14_CAM_B_P0),
+                     "quat": [0.0, 0.0, 0.0, 1.0], "fov": 60.0},
+                    {"t": 600.0, "pos": list(_T14_CAM_B_P1),
+                     "quat": [0.0, 0.0, 0.0, 1.0], "fov": 60.0},
+                ],
+            },
+        ],
+    }
+
+
+def _t14_noclips_config() -> dict:
+    """`default_path_id` only, NO cameras/clips → must behave EXACTLY
+    like the pre-Task-14 single-tour autostart (no-clips regression)."""
+    return {
+        "annotations": [],
+        "default_path_id": "solo-path",
+        "intro": {"type": "none"},
+        "camera_paths": [
+            {
+                "id": "solo-path", "name": "Solo straight line",
+                "loop": False, "smoothness": 1.0, "play_speed": 1.0,
+                "keyframes": [
+                    {"t": 0.0, "pos": [0.0, 0.0, 0.0],
+                     "quat": [0.0, 0.0, 0.0, 1.0], "fov": 60.0},
+                    {"t": 600.0, "pos": [0.0, 0.0, -100.0],
+                     "quat": [0.0, 0.0, 0.0, 1.0], "fov": 60.0},
+                ],
+            }
+        ],
+    }
+
 # A trivial straight-line 2-keyframe path. `duration` = max kf.t = 600 s, so
 # the player keeps ticking for the whole test (no early stopPath). Schema
 # matches buildPlayer (sortedKfs needs >= 2 kfs, each with pos[3]; quat[4]
@@ -209,6 +312,10 @@ def generate() -> Path:
       * ``_viewer_intro/`` / ``_viewer_intronone/`` — auto-starting path
         with an ``intro`` of ``{type:"fade"}`` / ``{type:"none"}``; Task-13
         cinematic loading-blur + intro-fade check.
+      * ``_viewer_clips/`` / ``_viewer_noclips/`` — a 2-camera/2-clip
+        Camera-Cuts sequence / a `default_path_id`-only no-clips scene;
+        Task-14 multi-camera tour + next-cut prewarm + the no-clips
+        single-tour regression.
     Returns the Task-0 ``_viewer/`` dir (the harness page resolves the rest
     relatively).
     """
@@ -219,6 +326,8 @@ def generate() -> Path:
     _VIEWER_STEP_DIR.mkdir(parents=True, exist_ok=True)
     _VIEWER_INTRO_DIR.mkdir(parents=True, exist_ok=True)
     _VIEWER_INTRONONE_DIR.mkdir(parents=True, exist_ok=True)
+    _VIEWER_CLIPS_DIR.mkdir(parents=True, exist_ok=True)
+    _VIEWER_NOCLIPS_DIR.mkdir(parents=True, exist_ok=True)
     # Same generated viewer for ALL variants — only the config differs.
     html = html_for("HarnessScene")
     (_VIEWER_DIR / "index.html").write_text(html, encoding="utf-8")
@@ -228,6 +337,8 @@ def generate() -> Path:
     (_VIEWER_STEP_DIR / "index.html").write_text(html, encoding="utf-8")
     (_VIEWER_INTRO_DIR / "index.html").write_text(html, encoding="utf-8")
     (_VIEWER_INTRONONE_DIR / "index.html").write_text(html, encoding="utf-8")
+    (_VIEWER_CLIPS_DIR / "index.html").write_text(html, encoding="utf-8")
+    (_VIEWER_NOCLIPS_DIR / "index.html").write_text(html, encoding="utf-8")
     # A stub config so the no-store fetch succeeds and the viewer takes its
     # normal (non-error) path; no scene.rad is referenced/needed for the
     # framework-init assertions.
@@ -256,6 +367,14 @@ def generate() -> Path:
     )
     (_VIEWER_INTRONONE_DIR / "viewer-config.json").write_text(
         json.dumps(_t13_config({"type": "none"})), encoding="utf-8"
+    )
+    # Task-14: a 2-camera/2-clip Camera-Cuts sequence, and the
+    # `default_path_id`-only no-clips regression scene.
+    (_VIEWER_CLIPS_DIR / "viewer-config.json").write_text(
+        json.dumps(_t14_clips_config()), encoding="utf-8"
+    )
+    (_VIEWER_NOCLIPS_DIR / "viewer-config.json").write_text(
+        json.dumps(_t14_noclips_config()), encoding="utf-8"
     )
     return _VIEWER_DIR
 
@@ -299,7 +418,8 @@ def main(argv: list[str] | None = None) -> int:
     d = generate()
     print(f"generated {d / 'index.html'} ({(d / 'index.html').stat().st_size} bytes)")
     for _vd in (_VIEWER_PATH_DIR, _VIEWER_LIN_DIR, _VIEWER_NOLIN_DIR,
-                _VIEWER_STEP_DIR, _VIEWER_INTRO_DIR, _VIEWER_INTRONONE_DIR):
+                _VIEWER_STEP_DIR, _VIEWER_INTRO_DIR, _VIEWER_INTRONONE_DIR,
+                _VIEWER_CLIPS_DIR, _VIEWER_NOCLIPS_DIR):
         print(f"generated {_vd / 'index.html'} "
               f"({(_vd / 'index.html').stat().st_size} bytes)")
     if args.serve is not None:
