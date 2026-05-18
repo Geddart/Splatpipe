@@ -1,0 +1,168 @@
+"""Oracle tests for the shared camera-scope merge core.
+
+This is the single source of truth / cross-check oracle: the
+``set-start-view`` CLI relay and every future HTTP save adapter (the
+keyframe-editor save path) merge an untrusted patch onto a project's
+``viewer-config.json`` through ``merge_camera_scope``. The locked,
+security-critical invariant is that the patch can NEVER move the Bunny
+``primary_asset`` pointer (that is the "Speicher-blank" production-failure
+class). These tests pin the contract before — and forever after — the
+inline merge in ``set_start_view_cmd.py`` was extracted here.
+"""
+
+import copy
+
+import pytest
+
+from splatpipe.core.config_merge import ALLOWED_PATCH_KEYS, merge_camera_scope
+
+
+def test_allow_list_is_exactly_the_nine_locked_keys():
+    assert ALLOWED_PATCH_KEYS == {
+        "start_view", "camera_paths", "clips", "cameras",
+        "default_path_id", "intro", "titles3d", "spark_render", "annotations",
+    }
+
+
+def test_primary_asset_is_force_kept_and_patch_pointer_is_never_applied():
+    existing = {
+        "primary_asset": "bKEEP/scene.rad",
+        "start_view": {"pos": [1, 2, 3]},
+        "foo": "bar",
+    }
+    patch = {
+        "camera_paths": [{"id": "p1", "keyframes": []}],
+        "default_path_id": "p1",
+        "primary_asset": "EVIL/attacker.rad",   # must NEVER be applied
+    }
+    out = merge_camera_scope(existing, patch)
+
+    # the allowed camera-scope keys land
+    assert out["camera_paths"] == [{"id": "p1", "keyframes": []}]
+    assert out["default_path_id"] == "p1"
+    # LOCKED INVARIANT: pointer is always existing's, never the patch's
+    assert out["primary_asset"] == "bKEEP/scene.rad"
+    # non-allow-listed existing keys preserved untouched
+    assert out["start_view"] == {"pos": [1, 2, 3]}
+    assert out["foo"] == "bar"
+
+
+def test_inputs_are_not_mutated():
+    existing = {"primary_asset": "bK/scene.rad", "start_view": {"pos": [0]}}
+    patch = {"start_view": {"pos": [9, 9, 9]}, "camera_paths": [{"id": "p"}]}
+    existing_snapshot = copy.deepcopy(existing)
+    patch_snapshot = copy.deepcopy(patch)
+
+    out = merge_camera_scope(existing, patch)
+
+    assert existing == existing_snapshot, "merge mutated `existing`"
+    assert patch == patch_snapshot, "merge mutated `patch`"
+    # and the result is a distinct object (deep-copy based)
+    assert out is not existing
+    out["start_view"]["pos"].append(123)
+    assert existing == existing_snapshot, "result aliases `existing`'s nested data"
+    assert patch == patch_snapshot, "result aliases `patch`'s nested data"
+
+
+def test_shallow_replace_semantics_match_set_start_view():
+    """Extracted semantics: an allowed key is *replaced* wholesale
+    (``cfg[key] = patch[key]``), not deep-merged — exactly what
+    set_start_view_cmd.py did with ``cfg["start_view"] = start_view``.
+    """
+    existing = {
+        "primary_asset": "bK/s.rad",
+        "start_view": {"pos": [1, 1, 1], "fov": 60, "extra": "old"},
+    }
+    patch = {"start_view": {"pos": [2, 2, 2]}}   # no "fov"/"extra"
+    out = merge_camera_scope(existing, patch)
+    # whole-key replace: the stale sub-keys are gone, not merged in
+    assert out["start_view"] == {"pos": [2, 2, 2]}
+
+
+def test_empty_patch_returns_equivalent_of_existing():
+    existing = {
+        "primary_asset": "bK/s.rad",
+        "start_view": {"pos": [1]},
+        "spark_render": {"clip_xy": 1.4},
+        "unrelated": 42,
+    }
+    out = merge_camera_scope(existing, {})
+    assert out == existing
+    assert out is not existing
+
+
+def test_patch_with_only_disallowed_keys_is_a_noop_over_existing():
+    existing = {"primary_asset": "bK/s.rad", "start_view": {"pos": [1]}}
+    patch = {
+        "primary_asset": "EVIL/x.rad",
+        "index.html": "<script>evil</script>",
+        "splat_budget": 999_999_999,            # not in the 9-key allow-list
+        "arbitrary": True,
+    }
+    out = merge_camera_scope(existing, patch)
+    assert out == existing
+    assert out["primary_asset"] == "bK/s.rad"
+    assert "index.html" not in out
+    assert "splat_budget" not in out
+    assert "arbitrary" not in out
+
+
+def test_idempotent_same_input_identical_output():
+    existing = {
+        "primary_asset": "bKEEP/scene.rad",
+        "start_view": {"pos": [3, 4, 5]},
+        "annotations": [{"id": "a1"}],
+        "keep_me": {"nested": [1, 2]},
+    }
+    patch = {
+        "camera_paths": [{"id": "p1"}],
+        "annotations": [{"id": "a2"}, {"id": "a3"}],
+        "primary_asset": "EVIL",
+    }
+    first = merge_camera_scope(existing, patch)
+    second = merge_camera_scope(existing, patch)
+    assert first == second
+    # feeding the merged result back through an empty patch is a fixed point
+    assert merge_camera_scope(first, {}) == first
+    # re-applying the same patch to the merged result changes nothing
+    assert merge_camera_scope(first, patch) == first
+
+
+def test_all_nine_allowed_keys_are_applied():
+    existing = {"primary_asset": "bK/s.rad", "preexisting": "x"}
+    # primary_asset is intentionally absent from patch — it is NOT in
+    # ALLOWED_PATCH_KEYS and the force-keep invariant is tested separately
+    # (see test_primary_asset_is_force_kept...).
+    patch = {
+        "start_view": {"pos": [0]},
+        "camera_paths": [{"id": "p"}],
+        "clips": [{"id": "c"}],
+        "cameras": [{"id": "cam"}],
+        "default_path_id": "p",
+        "intro": {"type": "fade", "ms": 900},
+        "titles3d": [{"text": "T", "pos": [0, 0, 0]}],
+        "spark_render": {"clip_xy": 3.0},
+        "annotations": [{"id": "an"}],
+    }
+    out = merge_camera_scope(existing, patch)
+    for k, v in patch.items():
+        assert out[k] == v
+    assert out["primary_asset"] == "bK/s.rad"
+    assert out["preexisting"] == "x"
+
+
+def test_existing_without_primary_asset_does_not_synthesize_one():
+    """Faithful extraction: set_start_view never *added* primary_asset; if
+    the fetched config lacked it, it stayed absent (the older-deploy case).
+    A patch still can't introduce it.
+    """
+    existing = {"start_view": {"pos": [1]}}
+    patch = {"camera_paths": [{"id": "p"}], "primary_asset": "EVIL"}
+    out = merge_camera_scope(existing, patch)
+    assert "primary_asset" not in out
+    assert out["camera_paths"] == [{"id": "p"}]
+    assert out["start_view"] == {"pos": [1]}
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(pytest.main([__file__, "-v"]))
