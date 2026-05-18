@@ -158,7 +158,17 @@ class SparkAssembler:
         if not out_rad.is_file() and (output_dir / "scene.sog").is_file():
             primary_asset = "scene.sog"
             paged = False
-        html = spark_html_for(project.name, primary_asset=primary_asset, paged=paged)
+        # Save-backend plumbing (publish-time; INERT until the Save UI task).
+        # step.config is the merged load_project_config dict, so the
+        # [save_backend] table (defaults.toml: type="cli" endpoint="")
+        # surfaces here. Defensive .get → old configs lacking the table
+        # fall back to cli/empty (existing scenes byte-identical).
+        _sb = (getattr(step, "config", None) or {}).get("save_backend", {})
+        html = spark_html_for(
+            project.name, primary_asset=primary_asset, paged=paged,
+            save_mode=_sb.get("type", "cli"),
+            save_endpoint=(_sb.get("endpoint") or None),
+        )
         (output_dir / "index.html").write_text(html, encoding="utf-8")
 
         # ---- Project assets passthrough ----

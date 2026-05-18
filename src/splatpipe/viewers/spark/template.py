@@ -39,6 +39,8 @@ def html_for(
     share_url: str | None = None,
     share_image: str | None = None,
     description: str | None = None,
+    save_mode: str = "cli",
+    save_endpoint: str | None = None,
 ) -> str:
     """Render the Spark viewer HTML for a given project.
 
@@ -61,6 +63,18 @@ def html_for(
     Backward-compatible: every arg is optional, so existing callers
     (`SparkAssembler`, older deploy scripts) keep working and still get a
     title/description card (plus the image card once `preview.jpg` exists).
+
+    Save-backend plumbing (publish-time only; NO Save UI yet — a later task):
+      * `save_mode`     — ``"cli"`` (default) or ``"http"``. Baked verbatim
+                          as the ``SAVE_MODE`` JS const. With the default the
+                          generated HTML is byte-identical to before apart
+                          from the two new (inert) consts — existing scenes
+                          are untouched. NOTHING reads these consts yet.
+      * `save_endpoint` — POST URL for ``"http"`` mode (``None``/empty for
+                          ``"cli"``); baked as ``SAVE_ENDPOINT``.
+    The per-scene SECRET is intentionally NOT a parameter here and is never
+    baked into the template nor written to viewer-config.json — in http mode
+    it lives only in the author URL fragment (a later task).
     """
     import html as _h
 
@@ -102,6 +116,8 @@ def html_for(
         spark_fork_url=SPARK_FORK_URL,
         primary_asset=primary_asset,
         paged_json=json.dumps(bool(paged)),
+        save_mode_json=json.dumps(save_mode),
+        save_endpoint_json=json.dumps(save_endpoint or ""),
         share_meta=share_meta,
     )
 
@@ -421,6 +437,12 @@ _VIEWER_TEMPLATE = """\
   const canvas = document.getElementById('app-canvas');
   const PRIMARY_ASSET = '{primary_asset}';
   const PAGED = {paged_json};
+  // Save-backend plumbing (publish-time; see html_for). INERT - no code
+  // reads these yet; the Save UI (a later task) will branch on SAVE_MODE
+  // ('cli' = read-only; 'http' = POST edits to SAVE_ENDPOINT). The per-scene
+  // SECRET is NEVER here / in viewer-config.json (http-mode: URL fragment).
+  const SAVE_MODE = {save_mode_json};
+  const SAVE_ENDPOINT = {save_endpoint_json};
 
   // ?stock=1 in the URL strips all Splatpipe perf modifications (no DPR cap,
   // no mobile Spark-knob bundle, no maxSh cap, no processUploads throttle).

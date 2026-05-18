@@ -268,9 +268,27 @@ def publish_scene(
         share_url = f"{cdn}/{slug}/index.html"
         share_image = f"{cdn}/{slug}/preview.jpg"
         eff_desc = desc or NEUTRAL_DESC
+        # Save-backend plumbing (publish-time; INERT until the Save UI task).
+        # `cfg` is the assembled viewer-config (inherited scene_config / live
+        # slug). A [save_backend] table surfaces here only if the inherited
+        # config carries one; defensive .get → otherwise cli/empty so every
+        # existing scene stays byte-identical. The per-scene SECRET is NEVER
+        # a kwarg, never baked, never written to viewer-config.json.
+        #
+        # NOTE: publish.py reads cfg (the assembled scene_config / live-slug
+        # viewer-config), NOT the merged load_project_config, so defaults.toml's
+        # [save_backend] table NEVER surfaces here unless the inherited
+        # scene_config carries one explicitly. This is the publish-vs-assembler
+        # config-source asymmetry: assembler.py reads step.config (merged →
+        # picks up defaults.toml's [save_backend]); publish_scene() has no
+        # merged-config/Project parameter. Threading that through is deferred
+        # Save-UI work (Task 18), not a Task-8 omission.
+        _sb = cfg.get("save_backend", {}) if isinstance(cfg, dict) else {}
         html = html_for(scene_name, primary_asset="scene.rad", paged=True,
                         share_url=share_url, share_image=share_image,
-                        description=eff_desc)
+                        description=eff_desc,
+                        save_mode=_sb.get("type", "cli"),
+                        save_endpoint=(_sb.get("endpoint") or None))
         (stage / "index.html").write_text(html, encoding="utf-8")
 
         checks = {
