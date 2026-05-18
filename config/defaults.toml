@@ -56,5 +56,10 @@ storage_zone = "splatpipe"
 storage_password = "9684d80c-c7ee-43d7-b4480cd12b7e-3ea6-40de"
 cdn_url = "https://splatpipe-cdn.b-cdn.net"
 
+[save_backend]
+type = "cli"
+endpoint = ""
+# deploy_target = "bunny"  # or "folder"; omit to use the default (bunny)
+
 [paths]
 projects_root = "H:\\001_ProjectCache\\660 Drone\\_Photogrammetry"
