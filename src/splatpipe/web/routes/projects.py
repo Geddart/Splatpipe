@@ -992,7 +992,20 @@ async def set_default_path(request: Request, project_path: str):
 
 @router.post("/{project_path:path}/add-keyframe/{path_id}")
 async def add_keyframe(request: Request, project_path: str, path_id: str):
-    """Append a keyframe to a path. Body: {t?, pos, quat?, look_at?, fov, ...}."""
+    """Append a keyframe to a path.
+
+    Body: {t?, record_elapsed_s?, pos, quat?, look_at?, fov, ...}
+
+    ``record_elapsed_s`` (optional float): client-measured recording elapsed
+    seconds from the start of the recording session.  When present and
+    numeric the stored keyframe ``t`` is set to exactly
+    ``float(record_elapsed_s)`` so that the real flown pacing is preserved
+    (including 0.0 for the first keyframe — ``None``-check, NOT truthiness).
+    When absent or malformed (non-numeric value) the legacy
+    ``last_t + 2.0`` gap is used, which keeps the manual "+ Record kf" path
+    (no live recording session) unchanged and matches the silent-fallback
+    idiom used by other optional numeric fields in this file.
+    """
     body = await request.json()
     proj = Project(Path(project_path))
     from ...core.path_io import mutate_paths
@@ -1001,9 +1014,22 @@ async def add_keyframe(request: Request, project_path: str, path_id: str):
         for p in paths:
             if p.get("id") == path_id:
                 kfs = p.setdefault("keyframes", [])
-                # Default t = last_t + 2.0 if not provided
+                # Resolve t: prefer client-supplied recording elapsed time
+                # (record_elapsed_s) so the real flown pacing is preserved.
+                # Fall back to last_t + 2.0 for the manual "+ Record kf" path,
+                # or if record_elapsed_s is present but malformed (non-numeric)
+                # — consistent with the silent-fallback idiom for optional
+                # numeric fields elsewhere in this file (lines ~800-803,
+                # ~820-823, ~853-856, ~1094).
                 if "t" not in body:
-                    body["t"] = (kfs[-1]["t"] + 2.0) if kfs else 0.0
+                    record_elapsed_s = body.get("record_elapsed_s")
+                    if record_elapsed_s is not None:
+                        try:
+                            body["t"] = float(record_elapsed_s)
+                        except (TypeError, ValueError):
+                            body["t"] = (kfs[-1]["t"] + 2.0) if kfs else 0.0
+                    else:
+                        body["t"] = (kfs[-1]["t"] + 2.0) if kfs else 0.0
                 body.setdefault("easing_out", "easeInOutCubic")
                 body.setdefault("hold_s", 0.0)
                 body.setdefault("annotation_id", None)
