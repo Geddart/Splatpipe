@@ -47,6 +47,16 @@
       • ?embed=1 hides all Splatpipe chrome (#header/#stats/#controls-hint/
         #path-hud/#sp-hud computed display:none) — the existing embed
         behavior, now owned by ModeManager.
+
+    Task 12 contract asserted here (dual-UI author/user gating):
+      • default URL  -> body.usermode; #author-root + #user-transport BOTH
+        present in DOM; #author-root computed display:none, #user-transport
+        visible.
+      • ?author=1     -> body.authormode; #author-root visible,
+        #user-transport computed display:none.
+      • ?embed=1      -> the existing chrome strip ALSO hides #author-root
+        and #user-transport (embed still wins; both containers CSS-gated,
+        never JS add/removed -> no layout flash, same approach as embed).
   -->
   <style>
     html, body { height: 100%; margin: 0; padding: 0;
@@ -267,6 +277,86 @@
       if (userWin) {
         T('user mode keeps #header visible (no over-hiding)',
           !isHidden(userWin, '#header'));
+      }
+
+      // ── Task 12: dual-UI author/user gating (CSS-gated, ModeManager) ──
+      // The two dual-UI containers (#author-root editor root, #user-transport
+      // end-user transport) are ALWAYS in the DOM and CSS-gated by the body
+      // mode class ModeManager sets (no JS add/remove → no layout flash, same
+      // approach as embed). Defaults: no ?author/?embed → usermode. ?author=1
+      // → authormode. ?embed=1 → the existing strip hides ALL chrome incl.
+      // both new containers. (They are empty placeholders in Task 12 —
+      // Tasks 16-18 populate them — so we only assert presence + gating.)
+      const inDom = (win, sel) => {
+        try { return !!(win && win.document.querySelector(sel)); }
+        catch (e) { return false; }
+      };
+      const hasBodyClass = (win, cls) => {
+        try { return !!(win && win.document.body.classList.contains(cls)); }
+        catch (e) { return false; }
+      };
+
+      // (a) default URL → usermode; #author-root present-but-hidden,
+      //     #user-transport present-and-visible.
+      if (userWin) {
+        T('Task 12(a): default URL -> body.usermode',
+          hasBodyClass(userWin, 'usermode'),
+          'classList: ' + (function () {
+            try { return userWin.document.body.className; }
+            catch (e) { return '?'; } })());
+        T('Task 12(a): #author-root + #user-transport BOTH present in DOM',
+          inDom(userWin, '#author-root') && inDom(userWin, '#user-transport'),
+          'author-root=' + inDom(userWin, '#author-root') +
+            ' user-transport=' + inDom(userWin, '#user-transport'));
+        T('Task 12(a): usermode hides #author-root, shows #user-transport',
+          isHidden(userWin, '#author-root') &&
+            !isHidden(userWin, '#user-transport'),
+          'author-root hidden=' + isHidden(userWin, '#author-root') +
+            ' user-transport hidden=' + isHidden(userWin, '#user-transport'));
+      } else {
+        T('Task 12(a): default URL -> body.usermode', false,
+          'no user iframe window');
+      }
+
+      // (b) ?author=1 → authormode; #author-root visible,
+      //     #user-transport hidden.
+      if (authorWin) {
+        T('Task 12(b): ?author=1 -> body.authormode',
+          hasBodyClass(authorWin, 'authormode'),
+          'classList: ' + (function () {
+            try { return authorWin.document.body.className; }
+            catch (e) { return '?'; } })());
+        T('Task 12(b): authormode shows #author-root, hides #user-transport',
+          !isHidden(authorWin, '#author-root') &&
+            isHidden(authorWin, '#user-transport'),
+          'author-root hidden=' + isHidden(authorWin, '#author-root') +
+            ' user-transport hidden=' + isHidden(authorWin, '#user-transport'));
+      } else {
+        T('Task 12(b): ?author=1 -> body.authormode', false,
+          'no author iframe window');
+      }
+
+      // (c) ?embed=1 → the existing chrome strip ALSO hides both new
+      //     dual-UI containers (extended embed rule; embed still wins).
+      //     Assert PRESENCE first (mirrors 12(a)/(b)) so a viewer that
+      //     simply omits the elements cannot pass vacuously — isHidden()
+      //     returns true for absent elements, so without the inDom guard
+      //     a pre-Task-12 viewer would falsely pass this check.
+      if (embedWin) {
+        T('Task 12(c): #author-root + #user-transport BOTH present in DOM (embed)',
+          inDom(embedWin, '#author-root') && inDom(embedWin, '#user-transport'),
+          'author-root=' + inDom(embedWin, '#author-root') +
+            ' user-transport=' + inDom(embedWin, '#user-transport'));
+        T('Task 12(c): ?embed=1 hides #author-root AND #user-transport too',
+          isHidden(embedWin, '#author-root') &&
+            isHidden(embedWin, '#user-transport'),
+          'author-root hidden=' + isHidden(embedWin, '#author-root') +
+            ' user-transport hidden=' + isHidden(embedWin, '#user-transport'));
+      } else {
+        T('Task 12(c): #author-root + #user-transport BOTH present in DOM (embed)',
+          false, 'no embed iframe window');
+        T('Task 12(c): ?embed=1 hides #author-root AND #user-transport too',
+          false, 'no embed iframe window');
       }
 
       // ── Task 10: path player pauses (not teleports) on tab-background ──

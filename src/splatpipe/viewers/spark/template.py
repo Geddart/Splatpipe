@@ -341,7 +341,19 @@ _VIEWER_TEMPLATE = """\
     body.embed #controls-hint,
     body.embed #safari-hint,
     body.embed #path-hud,
-    body.embed #sp-hud {{ display: none !important; }}
+    body.embed #sp-hud,
+    body.embed #author-root,
+    body.embed #user-transport {{ display: none !important; }}
+
+    /* Task 12 -- dual-UI gate (CSS-only; ModeManager sets the body class).
+       #author-root (editor root) and #user-transport (end-user transport)
+       are ALWAYS in the DOM and shown/hidden purely by the mode class, so
+       there is no add/remove layout flash (same approach as the embed strip
+       above, which also hides both). usermode = the default end-user view;
+       authormode = ?author=1. Empty placeholders in Task 12 -- Tasks 16-18
+       populate them. */
+    body.usermode #author-root {{ display: none; }}
+    body.authormode #user-transport {{ display: none; }}
   </style>
 </head>
 <body>
@@ -419,6 +431,15 @@ _VIEWER_TEMPLATE = """\
     <span class="time" id="path-time">0.00s</span>
   </div>
 
+  <!-- Task 12 dual-UI roots. ALWAYS present, CSS-gated by the body mode
+       class ModeManager sets (body.usermode / body.authormode / the embed
+       strip) -- intentionally NOT JS add/removed so there is no layout
+       flash, mirroring the embed chrome strip. Empty placeholders now;
+       Tasks 16-18 populate them (#author-root = the in-viewer editor UI,
+       #user-transport = the end-user cinematic transport). -->
+  <div id="author-root"></div>
+  <div id="user-transport"></div>
+
   <script type="importmap">
   {{
     "imports": {{
@@ -488,6 +509,18 @@ _VIEWER_TEMPLATE = """\
     // zero behavior change. (Task 8 layers usermode/authormode +
     // chrome gating on top of this; T0 only lands the resolver.)
     document.body.classList.add('mode-' + _mode);
+    // Task 12 dual-UI gate, driven off THIS single resolved `_mode`
+    // (NO second ?author parse -- A4-unify: ModeManager is the only
+    // mode source). `authormode` only when ?author=1 won the ternary
+    // above (=> _mode==='author'); every other case (default user,
+    // and embed -- whose strip hides both dual-UI roots anyway) is
+    // `usermode`. CSS-GATED, NOT JS-toggled: the #author-root /
+    // #user-transport DOM is always present and shown/hidden purely
+    // by this body class (same approach as `embed`) so there is no
+    // add/remove layout flash. A future editor MUST keep this a
+    // class switch -- do not "fix" it to JS branching.
+    document.body.classList.add(
+      _mode === 'author' ? 'authormode' : 'usermode');
     if (_mode === 'embed') {{
       document.body.classList.add('embed');
       console.info('[Splatpipe] EMBED mode (chrome hidden for iframe)');
