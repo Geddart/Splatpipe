@@ -1,0 +1,48 @@
+# Generic Apache rules for the save_backend="php" reference adapter.
+# Drop this next to save-camera.php and the scenes/<slug>/ tree on any
+# Apache + mod_php / php-fpm host. Host-agnostic — no geddart.de/Strato
+# specifics. (Nginx/Caddy users: replicate the two intents below — deny
+# the secret/scratch files, no-cache the two mutable text files.)
+
+# Suppress PHP error output from this auth endpoint regardless of host defaults.
+# (php_flag requires mod_php; for php-fpm set display_errors=Off in the pool's php.ini.)
+<IfModule mod_php.c>
+    php_flag display_errors Off
+    php_flag log_errors On
+</IfModule>
+<IfModule mod_php7.c>
+    php_flag display_errors Off
+    php_flag log_errors On
+</IfModule>
+<IfModule mod_php8.c>
+    php_flag display_errors Off
+    php_flag log_errors On
+</IfModule>
+
+# 1. Deny web access to per-scene secrets and write scratch files. The
+#    .author-token store, the .bak snapshot and any in-flight .tmp must
+#    never be fetchable. Covers scenes/<slug>/.author-token etc.
+<FilesMatch "(^\.author-token$|\.author-token$|\.bak$|\.tmp$|^\.save\.lock$|\.save\.lock$)">
+    Require all denied
+</FilesMatch>
+
+# Belt-and-braces: also hide dotfiles generally (Apache 2.4 default already
+# blocks .ht*, this extends it to .author-token / .save.lock).
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>
+
+# 2. Author Saves must be visible on the very next reload, so the two
+#    mutable text files are served revalidated (no stale viewer-config /
+#    shell). The heavy immutable .rad/.radc chunks live on the CDN and are
+#    unaffected by this file.
+<FilesMatch "(viewer-config\.json|index\.html)$">
+    <IfModule mod_headers.c>
+        Header set Cache-Control "no-cache, must-revalidate"
+        Header set Pragma "no-cache"
+    </IfModule>
+    <IfModule mod_expires.c>
+        ExpiresActive On
+        ExpiresDefault "access plus 0 seconds"
+    </IfModule>
+</FilesMatch>
