@@ -740,6 +740,31 @@
           })();
         });
       }
+      // SAME poll mechanism as waitUntil() (100 ms cadence, real time) but
+      // also reports WHEN the predicate first turned true:
+      //   { ok:true,  atMs:<Date.now() at the first truthy poll> }   or
+      //   { ok:false, atMs:null }  on timeout.
+      // Task-13 introNoneCheck uses this to measure the ready->tour-start
+      // delta so an erroneously-applied fade (intro:none must NOT fade)
+      // pushes tour-start ~fade-ms after ready and is caught -- a plain
+      // boolean wait cannot distinguish "started immediately" from
+      // "started after an invisible 900 ms fade". This is the sibling
+      // Task-13 ready/tour observation mechanism, just timestamped (it
+      // does NOT relax what correct behavior must be -- see the positive
+      // <~500 ms assertion in introNoneCheck).
+      function waitUntilAt(win, pred, capMs) {
+        return new Promise((resolve) => {
+          const t0 = Date.now();
+          (function poll() {
+            let v = false;
+            try { v = !!pred(win); } catch (e) { v = false; }
+            if (v) return resolve({ ok: true, atMs: Date.now() });
+            if (Date.now() - t0 > capMs)
+              return resolve({ ok: false, atMs: null });
+            setTimeout(poll, 100);
+          })();
+        });
+      }
       const introWin = frameWin('f-intro');
       const introNoneWin = frameWin('f-intronone');
 
@@ -847,6 +872,21 @@
       //     so a viewer that simply OMITS the element cannot pass this
       //     vacuously — exactly the inDom guard Task 12(c) added) but is
       //     NEVER shown, and the tour starts immediately on ready.
+      // intro:none must start the tour IMMEDIATELY on ready -- NOT after
+      // a (mistakenly-applied, invisible) fade delay. So we don't just
+      // assert "ready" then "tour eventually started" (a boolean wait
+      // can't tell an immediate start from one delayed ~900 ms behind an
+      // invisible fade -- exactly the bug type:none must not have). We
+      // timestamp BOTH the REAL ready signal (#loading gains `.hidden` --
+      // the SAME signal introFadeCheck uses) and the first tour tick
+      // (#path-time shows a [\d.]+s value -- the SAME tour-start probe
+      // introFadeCheck uses) via the shared waitUntilAt() (same 100 ms
+      // poll as waitUntil(), just timestamped) and assert the tour starts
+      // within a tight window of ready. An erroneously-applied fade
+      // (>=~900 ms in practice; even the harness' short 250 ms fade) would
+      // push tourAt well past this window -> this check FAILS. It stays a
+      // POSITIVE assertion for the correct (immediate) behavior.
+      const _INTRONONE_MAX_READY_TO_TOUR_MS = 500;
       async function introNoneCheck() {
         const win = introNoneWin;
         if (!win) return { ok: false, reason: 'no f-intronone window' };
@@ -861,31 +901,58 @@
         })();
         // …and never VISIBLE pre-ready (type:none must not flash it).
         const introHiddenPre = !existsVisible(win, '#intro-fade');
-        // Wait for ready (#loading `.hidden`) then the tour must start.
-        const ready = await waitUntil(win, (w) => {
+        // Wait for ready (#loading `.hidden`) then the tour must start --
+        // timestamped (waitUntilAt) so we can assert tour-start is within
+        // a tight window of ready (no invisible fade delay). The ready /
+        // tour-start predicates are byte-identical to introFadeCheck's
+        // (same observation mechanism, reused -- not a parallel one).
+        const readyR = await waitUntilAt(win, (w) => {
           try {
             const l = w.document.getElementById('loading');
             return !!(l && l.classList.contains('hidden'));
           } catch (e) { return false; }
         }, 20000);
-        const tourStarted = await waitUntil(win, (w) => {
+        const tourR = await waitUntilAt(win, (w) => {
           try {
             const te = w.document.getElementById('path-time');
             return te && /[\d.]+s/.test(te.textContent || '');
           } catch (e) { return false; }
         }, 8000);
+        const ready = readyR.ok;
+        const tourStarted = tourR.ok;
+        // ready -> tour-start delta. With intro:none the tour fires on the
+        // ready signal directly, so this is small (~one or two 100 ms poll
+        // ticks); an invisible fade would insert its fade-ms here. Only
+        // meaningful when BOTH fired; treat a missing timestamp as a
+        // failed (Infinity) delta so a non-firing tour can't pass via the
+        // window check.
+        const readyToTourMs =
+          (readyR.atMs !== null && tourR.atMs !== null)
+            ? (tourR.atMs - readyR.atMs)
+            : Infinity;
+        // POSITIVE assertion: correct (immediate) behavior keeps the tour
+        // within the tight window of ready. (>= 0 guards a weird clock /
+        // poll-order inversion; a negative delta is also not "immediate
+        // on ready".)
+        const tourImmediate =
+          readyToTourMs >= 0 &&
+          readyToTourMs <= _INTRONONE_MAX_READY_TO_TOUR_MS;
         // Re-confirm #intro-fade still not shown post-ready (type:none
         // must never flash the overlay, even momentarily on ready).
         const stillHidden = !existsVisible(win, '#intro-fade');
         return { ok: introInDom && introHiddenPre && ready &&
-                     tourStarted && stillHidden,
+                     tourStarted && tourImmediate && stillHidden,
                  introInDom: introInDom, introHiddenPre: introHiddenPre,
                  ready: ready, tourStarted: tourStarted,
+                 readyToTourMs: readyToTourMs,
+                 maxReadyToTourMs: _INTRONONE_MAX_READY_TO_TOUR_MS,
+                 tourImmediate: tourImmediate,
                  stillHidden: stillHidden };
       }
       const inc = await introNoneCheck();
       T('Task 13(c): intro=none — #intro-fade present-but-NEVER-shown, ' +
-        'tour starts immediately on ready (no fade gate)',
+        'tour starts immediately on ready (within ' +
+        _INTRONONE_MAX_READY_TO_TOUR_MS + 'ms, no fade gate)',
         inc.ok === true, JSON.stringify(inc));
 
       // (d) ?embed=1 strips the cinematic layer. PRESENCE-guarded first

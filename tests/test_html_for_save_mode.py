@@ -169,6 +169,15 @@ _T13_LB_END = '  <div id="css2d-root"></div>'
 #     between it and the END comment. The Task-10 visibilitychange handler
 #     sits ABOVE this START and is therefore NOT excised (its survival is
 #     asserted below -- the region must never widen to swallow it).
+#     NOTE: "inert" here means byte-lock-anchor-stable, NOT dead code --
+#     the ``if`` body still runs a live ``selEl.value = cfg.default_path_id;``
+#     (a harmless pre-existing duplicate of what the deferred
+#     ``_introStartTour()`` also does; the Task-13 spec review independently
+#     confirmed there is NO second ``startPath()`` at init, so it is a
+#     benign double-set, not a second autostart). Do NOT delete / "clean
+#     up" this line thinking it is dead: it is a pinned byte-lock anchor
+#     (it is the START anchor itself) and removing/moving it changes the
+#     generated HTML and breaks this excision.
 _T13_AS_START = "  if (cfg.default_path_id) {\n"
 _T13_AS_END = (
     "  // ---- Bench launchers (used by both the URL "
@@ -303,7 +312,22 @@ def _excise(text: str, start_anchor: str, end_token: str,
 #        print(len(h), hashlib.sha256(h.encode()).hexdigest())
 #        PY
 #      PowerShell (Windows — primary dev platform):
-#        git show <HEAD>:src/splatpipe/viewers/spark/template.py > "$env:TEMP\t.py"
+#        # WINDOWS CRLF FOOT-GUN -- READ THIS BEFORE YOU REGEN A PIN:
+#        # NEVER do `git show <rev>:<path> > file.py` on Windows.
+#        # PowerShell `>` redirection (and/or core.autocrlf=true on the
+#        # checkout) injects CRLF into the dumped template -> html_for()
+#        # then differs from the LF-only committed bytes -> a WRONG
+#        # remainder/full fingerprint. A future Task-14..18 author would
+#        # then silently re-pin this byte-lock to a CORRUPT value and the
+#        # guard is permanently, silently disabled. The COMMITTED template
+#        # is LF-only and this lock is CRLF-sensitive BY DESIGN. Instead use
+#        # `git show <rev>:<path> | Set-Content -Encoding utf8 -NoNewline
+#        # file` (LF preserved, no BOM/CRLF), OR compute the hash IN-PROCESS
+#        # straight from `git show` bytes (never touch the filesystem):
+#        $src = (git show "<HEAD>:src/splatpipe/viewers/spark/template.py" `
+#                  | Out-String)
+#        git show "<HEAD>:src/splatpipe/viewers/spark/template.py" `
+#          | Set-Content -Encoding utf8 -NoNewline "$env:TEMP\t.py"
 #        python - @'
 #        import hashlib, importlib.util, tempfile, os
 #        p=os.path.join(tempfile.gettempdir(),'t.py')
@@ -312,6 +336,9 @@ def _excise(text: str, start_anchor: str, end_token: str,
 #        h=m.html_for('HarnessScene')
 #        print(len(h), hashlib.sha256(h.encode()).hexdigest())
 #        '@
+#        # (Do NOT add a .gitattributes to "fix" this -- repo-wide
+#        # line-ending renormalization mid-build is unsafe around the
+#        # template.py surgical-staging; this caveat IS the whole fix.)
 #   2a. PURELY-ADDITIVE task (like Tasks 8/10): set the baseline LEN/SHA to
 #       the step-1 fingerprint, add unique anchors for YOUR new block(s),
 #       and EXCISE them from the current HTML; the excised result must equal
@@ -343,6 +370,13 @@ def _excise(text: str, start_anchor: str, end_token: str,
 #       (as Task 13's deferred-autostart wrapper nearly did), keep the
 #       pre-existing START line FIRST and place ALL new content strictly
 #       between it and the END (an inert-but-unmoved anchor line is fine).
+#       A task whose template delta is PURELY 2c (lands strictly inside an
+#       already-excised region) does NOT advance
+#       ``_PRE_TASKnn_REMAINDER_*`` / ``_FULL_*`` -- the pins stay
+#       byte-identical to the PRIOR task's. If your recomputed remainder
+#       differs from the prior pin, your delta leaked OUTSIDE the region:
+#       fix the code to stay in-region, do NOT update the pin to match (a
+#       moved pin here just re-blesses the leak and disables the guard).
 #   2d. MULTI-REGION task (like Task 12 — three regions; or Task 13 —
 #       three NEW regions PLUS two deltas absorbed into Task-12 regions per
 #       2c): apply the 2b recipe ONCE PER NEW REGION. For each pick a START
