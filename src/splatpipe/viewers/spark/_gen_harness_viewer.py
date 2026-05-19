@@ -229,6 +229,87 @@ def _t17_timeline_config() -> dict:
     }
 
 
+# --- Task-18 variant: author select-key gizmo + interp popover + ------
+# Record(K) + Save/Emit SPCP1. Same generated viewer, driven with
+# ``?author=1`` (=> ModeManager resolves author mode -> the Task-16
+# overlay + Task-17 timeline + the Task-18 ``_gzInit`` gizmo block + the
+# Object.defineProperties-EXTENDED window.__editor build). ALL of this
+# is DOM + THREE geometry + the SPCP codec -- NO real .rad needed,
+# fully scene-less-verifiable (no honest deferral): the frusta the
+# gizmo picks are the Task-16 _trajFrusta THREE.LineSegments (built off
+# sampleAt, no splats); TransformControls is a pure THREE addon; the
+# interp popover is DOM; Record reads the live camera + the real-
+# elapsed _trajPlayhead; Save is the in-memory payload -> the JS
+# encode_spcp port (a string).
+# The scene config carries a THREE-keyframe single camera path with
+# DISTINCT per-keyframe quats (identity / +Y yaw 90 / +X pitch 90) so:
+#   * each frustum is at a distinct, well-separated world position
+#     (so a raycast pick selects an UNAMBIGUOUS keyframe), and
+#   * a gizmo rotate-drag write-back to kf.quat is detectable against
+#     the keyframe's own distinct base quat.
+# ``default_path_id`` selects it so selEl.value (the active path the
+# gizmo edits) is deterministic without a click. NO clips/cameras:
+# author mode is the single-path editor. ``intro:{type:"none"}`` is
+# the SAME deliberate TEST ISOLATION as the Task-10/11/14/16/17
+# fixtures. The path is SHORT (24 s) so the auto-tour playhead stays
+# inside it for the whole bounded observation AND the Record-uses-
+# real-elapsed-t assertion is fast + deterministic.
+_VIEWER_T18_DIR = _MANUAL_DIR / "_viewer_t18"
+# A SECOND Task-18 dir whose generated HTML bakes
+# ``save_mode="http"`` + a ``save_endpoint`` (via the html_for
+# kwargs Task-8 added -- CONSUMED here, not re-implemented). Same
+# scene config as _viewer_t18; only SAVE_MODE/SAVE_ENDPOINT differ.
+# The harness wraps this iframe's ``fetch`` and asserts the opt-in
+# http Save POSTs the camera-scope patch to SAVE_ENDPOINT with the
+# Bearer secret from the URL #author=<secret> fragment and NO
+# primary_asset -- scene-independently, NO real server.
+_VIEWER_T18_HTTP_DIR = _MANUAL_DIR / "_viewer_t18_http"
+_T18_HTTP_ENDPOINT = "https://save.example.test/api/save-camera"
+
+_T18_Q0 = [0.0, 0.0, 0.0, 1.0]
+_T18_Q1 = [0.0, 0.7071067811865476, 0.0, 0.7071067811865476]
+_T18_Q2 = [0.7071067811865476, 0.0, 0.0, 0.7071067811865476]
+
+
+def _t18_gizmo_config() -> dict:
+    """3-keyframe single path with distinct per-keyframe quats +
+    well-separated positions -- the Task-18 gizmo/interp/record/save
+    fixture. ``?author=1`` builds the Task-16 overlay + Task-17
+    timeline + the Task-18 gizmo block + the extended
+    window.__editor surface. ``spark_render``/``start_view`` are
+    present so the Save payload exercises the full Contract-C
+    allow-list (and the harness can assert NO primary_asset)."""
+    return {
+        "annotations": [],
+        "default_path_id": "gzPath",
+        "intro": {"type": "none"},
+        "start_view": {
+            "pos": [0.0, 0.0, 8.0],
+            "quat": [0.0, 0.0, 0.0, 1.0],
+            "target": [0.0, 0.0, 0.0],
+            "fov": 60.0,
+        },
+        "spark_render": {"clip_xy": 1.4},
+        "camera_paths": [
+            {
+                "id": "gzPath",
+                "name": "Task-18 gizmo path",
+                "loop": False,
+                "smoothness": 1.0,
+                "play_speed": 1.0,
+                "keyframes": [
+                    {"t": 0.0, "pos": [0.0, 0.0, 0.0],
+                     "quat": list(_T18_Q0), "fov": 60.0},
+                    {"t": 12.0, "pos": [20.0, 0.0, 0.0],
+                     "quat": list(_T18_Q1), "fov": 60.0},
+                    {"t": 24.0, "pos": [20.0, 0.0, -40.0],
+                     "quat": list(_T18_Q2), "fov": 55.0},
+                ],
+            }
+        ],
+    }
+
+
 def _t16_author_config() -> dict:
     """3-keyframe single path; segment 0 SLOW (long-duration), segment 1
     FAST (short-duration); distinct per-keyframe quats. ``?author=1`` on
@@ -532,6 +613,15 @@ def generate() -> Path:
         author-mode auto-tour), diamond-drag temporal edit, wheel
         zoom, box-multiselect + edge-drag span scale, X-delete, the
         fps-RELABEL-only grid -- all IN-MEMORY (no persistence).
+      * ``_viewer_t18/`` -- a 3-keyframe single-path scene with
+        distinct per-keyframe quats + well-separated positions
+        (driven with ``?author=1``); Task-18 author select-key
+        gizmo (TransformControls frustum-pick attach + drag
+        write-back to kf.pos/kf.quat + World<->Screen + R/T), the
+        5-type interp popover (writes kf.interp), Record(K) (live
+        camera pose + the REAL elapsed playhead t), and the cli
+        SPCP1 Save (byte-identical encode_spcp port) + the opt-in
+        http POST -- all IN-MEMORY until the explicit Save.
     Returns the Task-0 ``_viewer/`` dir (the harness page resolves the rest
     relatively).
     """
@@ -547,6 +637,8 @@ def generate() -> Path:
     _VIEWER_TRANSPORT_DIR.mkdir(parents=True, exist_ok=True)
     _VIEWER_AUTHOR_DIR.mkdir(parents=True, exist_ok=True)
     _VIEWER_T17_DIR.mkdir(parents=True, exist_ok=True)
+    _VIEWER_T18_DIR.mkdir(parents=True, exist_ok=True)
+    _VIEWER_T18_HTTP_DIR.mkdir(parents=True, exist_ok=True)
     # Same generated viewer for ALL variants — only the config differs.
     html = html_for("HarnessScene")
     (_VIEWER_DIR / "index.html").write_text(html, encoding="utf-8", newline="")
@@ -561,6 +653,17 @@ def generate() -> Path:
     (_VIEWER_TRANSPORT_DIR / "index.html").write_text(html, encoding="utf-8", newline="")
     (_VIEWER_AUTHOR_DIR / "index.html").write_text(html, encoding="utf-8", newline="")
     (_VIEWER_T17_DIR / "index.html").write_text(html, encoding="utf-8", newline="")
+    (_VIEWER_T18_DIR / "index.html").write_text(html, encoding="utf-8", newline="")
+    # The Task-18 http-mode variant uses a DIFFERENT generated HTML:
+    # html_for bakes SAVE_MODE/SAVE_ENDPOINT via the Task-8 kwargs
+    # (consumed, not re-added). Everything else is identical.
+    html_http = html_for(
+        "HarnessScene", save_mode="http",
+        save_endpoint=_T18_HTTP_ENDPOINT,
+    )
+    (_VIEWER_T18_HTTP_DIR / "index.html").write_text(
+        html_http, encoding="utf-8", newline=""
+    )
     # A stub config so the no-store fetch succeeds and the viewer takes its
     # normal (non-error) path; no scene.rad is referenced/needed for the
     # framework-init assertions.
@@ -615,6 +718,22 @@ def generate() -> Path:
     (_VIEWER_T17_DIR / "viewer-config.json").write_text(
         json.dumps(_t17_timeline_config()), encoding="utf-8", newline=""
     )
+    # Task-18: a 3-keyframe single path with distinct per-keyframe
+    # quats + well-separated positions; the harness drives this
+    # iframe with ?author=1 so the Task-16 overlay + Task-17 timeline
+    # + the Task-18 gizmo/interp-popover/Record/Save-emit block + the
+    # extended window.__editor build (frustum-pick gizmo attach +
+    # drag write-back, World<->Screen, R/T, V interp popover, K
+    # record at the real-elapsed playhead, cli SPCP1 emit + http
+    # POST).
+    (_VIEWER_T18_DIR / "viewer-config.json").write_text(
+        json.dumps(_t18_gizmo_config()), encoding="utf-8", newline=""
+    )
+    # Task-18 http variant: SAME scene config (only the baked
+    # SAVE_MODE/SAVE_ENDPOINT in its index.html differ).
+    (_VIEWER_T18_HTTP_DIR / "viewer-config.json").write_text(
+        json.dumps(_t18_gizmo_config()), encoding="utf-8", newline=""
+    )
     return _VIEWER_DIR
 
 
@@ -660,7 +779,8 @@ def main(argv: list[str] | None = None) -> int:
                 _VIEWER_STEP_DIR, _VIEWER_INTRO_DIR, _VIEWER_INTRONONE_DIR,
                 _VIEWER_CLIPS_DIR, _VIEWER_NOCLIPS_DIR,
                 _VIEWER_TRANSPORT_DIR, _VIEWER_AUTHOR_DIR,
-                _VIEWER_T17_DIR):
+                _VIEWER_T17_DIR, _VIEWER_T18_DIR,
+                _VIEWER_T18_HTTP_DIR):
         print(f"generated {_vd / 'index.html'} "
               f"({(_vd / 'index.html').stat().st_size} bytes)")
     if args.serve is not None:

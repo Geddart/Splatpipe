@@ -5052,6 +5052,1110 @@ _VIEWER_TEMPLATE = """\
     }} catch (e) {{}}
   }})();
 
+  // ============================================================
+  //  Author editor -- select-key gizmo + interp popover +
+  //  Record(K) + Save/Emit SPCP (Task 18 -- plan H2/Task-14)
+  // ------------------------------------------------------------
+  //  AUTHOR MODE ONLY (ModeManager.is('author')): user / embed and
+  //  the 6 live single-camera scenes are byte-runtime-unchanged --
+  //  every code path here is gated by the SAME _EDITOR_AUTHOR flag
+  //  the Task-16 trajectory overlay + the Task-17 timeline use, and
+  //  every DOM/listener/THREE object is only ever created in author
+  //  mode (so this whole section is inert in user/embed; the
+  //  byte-lock proves the 6 live scenes' generated HTML is
+  //  byte-identical -- this code sits strictly INSIDE the Task-16
+  //  T16-TRAJ region, recipe 2c, so it is absorbed by that region's
+  //  EXISTING excision and the moving-baseline remainder is
+  //  unaffected by it).
+  //  The IMPORT: TransformControls is loaded via a DYNAMIC
+  //  import('three/addons/controls/TransformControls.js') -- the
+  //  ``three/addons/`` prefix ALREADY resolves through the existing
+  //  importmap (the SAME mapping OrbitControls/CSS2DRenderer use),
+  //  so there is NO new importmap entry and NO shared-HTML change:
+  //  the import statement is region-interior author-gated code, not
+  //  a top-level static import that would land OUTSIDE T16-TRAJ.
+  //  WHAT IT DOES (the Task-18 scope):
+  //    * click a trajectory frustum (the Task-16 _trajFrusta meshes)
+  //      -> select that keyframe -> attach TransformControls to a
+  //      proxy Object3D parked at the keyframe pose.
+  //    * drag the gizmo -> write the proxy's pose back to THAT
+  //      keyframe's kf.pos (translate) / kf.quat (rotate) IN MEMORY
+  //      (the SAME object the live player + the Task-16 overlay +
+  //      the Task-17 timeline read) -> _trajRebuild + sig bump so
+  //      the Task-16 overlay + Task-17 diamonds rebuild. NO save.
+  //    * SPACE toggles World <-> Screen (Screen = camera-aligned
+  //      axes: TransformControls 'local' space on a proxy whose
+  //      quaternion we keep == the camera's, so the gizmo axes
+  //      track the screen). R / T toggle rotate / translate.
+  //    * V opens a 5-type interp popover (a segmented control over
+  //      the EXISTING _VALID_INTERP set) and writes the selected
+  //      keyframe's kf.interp -> rebuild (the spline already honours
+  //      per-keyframe interp via _kfMeta).
+  //    * K records a keyframe = the LIVE camera pose + the REAL
+  //      elapsed playhead t (the SAME single-source-of-truth clock
+  //      _trajPlayhead() returns -- the live _player/_t0 clock while
+  //      a tour plays, else the #path-scrub position; this is the
+  //      in-viewer analogue of the Task-5 "recording uses real
+  //      elapsed time" fix, NOT a reinvented timer) appended to the
+  //      active path's keyframes -> rebuild.
+  //    * Save: SAVE_MODE=="cli" (the decision-A DEFAULT) emits an
+  //      SPCP1:<slug>:<b64url> token + the
+  //      `splatpipe set-camera-path <token>` command in an
+  //      on-screen textarea + copy-to-clipboard, MIRRORING the
+  //      existing SPV1 "Set start view" relay UI (no client secret,
+  //      identical trust model). SAVE_MODE=="http" (opt-in) POSTs
+  //      the camera-scope patch JSON to SAVE_ENDPOINT with
+  //      Authorization: Bearer <secret> where <secret> is read ONLY
+  //      from the author URL fragment (#author=<secret>).
+  //  AUTO-TOUR: in ?author=1 the default-path tour AUTO-PLAYS
+  //  (_cinematic is usermode-only). Authoring while it auto-advances
+  //  is disorienting, so the FIRST author interaction (gizmo attach
+  //  / Record / interp open) does an EXPLICIT stopPath() -- the
+  //  SAME single stop mechanism the Task-17 timeline's pause/scrub
+  //  reuse (NOT a change to Task-13's _cinematic gate; an explicit
+  //  interaction stop, exactly like the Task-15 end-user interrupt).
+  //  The SPCP1 codec is a BYTE-IDENTICAL JS port of
+  //  core/spcp_token.encode_spcp: compact JSON
+  //  (separators (",",":"), ensure_ascii=True, key INSERTION order
+  //  -- NO sort_keys) -> urlsafe base64 -> rstrip('='). The number
+  //  formatter (_spcpNum) reproduces CPython json.dumps' float repr
+  //  (integer-valued -> integer literal -> a json.loads/json.dumps
+  //  fixed point; |x|<1e-4 -> zero-padded sci e[+-]NN like Python,
+  //  NOT JS fixed-notation) so a Python decode_spcp(js_token)
+  //  round-trips AND encode_spcp(slug, that payload) == js_token
+  //  byte-for-byte (the spec's core correctness gate, asserted by a
+  //  real pytest check on the harness-captured token).
+  //  Payload = Contract-C / ALLOWED_PATCH_KEYS ONLY:
+  //  start_view, camera_paths, clips, cameras, default_path_id,
+  //  intro, titles3d, spark_render, annotations -- wrapped as
+  //  {{ v:1, scope:'camera_paths', ...patch }}. NEVER primary_asset
+  //  (the locked Speicher-blank invariant; merge_camera_scope
+  //  force-keeps the live pointer and ALLOWED_PATCH_KEYS asserts it
+  //  is excluded -- the emitted payload must respect that).
+  //  window.__editor is EXTENDED (TEST-ONLY: getters + deterministic
+  //  hooks, same convention as the Task-16/17 surface; no production
+  //  reader; inert without the harness).
+  //  Reuses, never reinvents: _trajActivePath/_trajPlayhead/
+  //  _trajRebuild/_trajKfSig/_trajFrusta (Task-16), buildPlayer/
+  //  sampleAt (the SuperSplat spline), the _raycaster (the existing
+  //  scene raycaster), InteractionManager (pointer brokering vs
+  //  OrbitControls/playback), stopPath (the single stop mechanism),
+  //  the SPV1 relay-UI pattern, _VALID_INTERP, SAVE_MODE/
+  //  SAVE_ENDPOINT (Task-8 -- consumed, NOT re-added).
+  // ============================================================
+  (function _gzInit() {{
+    if (!_EDITOR_AUTHOR) return;
+
+    // ---- Slug for the SPCP1 token (mirror the SPV1 relay block):
+    //      the page <title> h1 text, sanitised to the kebab/word set
+    //      encode_spcp accepts (it rejects a ':' in the slug -- our
+    //      sanitiser strips it, so split(':',2) is safe both ways).
+    const _gzProjName = (document.querySelector('#title h1') &&
+      document.querySelector('#title h1').textContent || 'scene').trim();
+    const _gzSlug = (_gzProjName.replace(/[^A-Za-z0-9_-]+/g, '_')
+      .slice(0, 48)) || 'scene';
+
+    // ---- BYTE-IDENTICAL JS port of core/spcp_token.encode_spcp ----
+    // Python: json.dumps(payload, separators=(",",":")).encode()
+    //         -> base64.urlsafe_b64encode(...).rstrip("=")
+    //         -> "SPCP1:" + slug + ":" + that
+    // json.dumps defaults: ensure_ascii=True, NO sort_keys (key
+    // INSERTION order). We replicate ALL of that exactly.
+    //
+    // _spcpNum: reproduce CPython json/float repr so a value
+    // round-trips through Python json.loads -> json.dumps unchanged
+    // (the byte-identity gate). Key facts (verified against CPython):
+    //   * 0 / -0  -> "0"   (json.loads("0") is int 0 -> "0": a fixed
+    //                        point; JS String(-0) is "0" too).
+    //   * integer-valued, |n| < 1e21 -> String(n) (e.g. "2","-40").
+    //     json.loads parses it as an int and re-dumps the SAME
+    //     literal -> fixed point (covers the >=1e16 case too: JS
+    //     emits the integer literal, Python keeps it an int).
+    //   * fractional, 1e-4 <= |n| < 1e16 -> String(n): JS shortest
+    //     round-trip digits == CPython's, both fixed-notation ->
+    //     byte-identical.
+    //   * fractional, |n| < 1e-4 (CPython switches to sci here):
+    //     mantissa from toExponential() + Python-style exponent
+    //     "e" + sign + >=2-digit zero-padded magnitude (JS gives
+    //     "1e-5", Python "1e-05"; we pad to match).
+    //   * non-finite -> never valid JSON (the clean payload has
+    //     none); throw so a bug is loud, never silently NaN.
+    function _spcpNum(n) {{
+      if (!isFinite(n)) throw new Error('non-finite number in payload');
+      if (n === 0) return '0';                 // also -0 (=== 0)
+      if (Number.isInteger(n) && Math.abs(n) < 1e21) return String(n);
+      if (Math.abs(n) >= 1e-4) return String(n);
+      // |n| < 1e-4, fractional -> CPython sci: mantissa + e[+-]NN.
+      const e = n.toExponential();             // e.g. "1.23e-5"
+      const m = e.indexOf('e');
+      const mant = e.slice(0, m);
+      let exp = parseInt(e.slice(m + 1), 10);   // negative here
+      const sign = exp < 0 ? '-' : '+';
+      let mag = String(Math.abs(exp));
+      if (mag.length < 2) mag = '0' + mag;      // zero-pad to >=2
+      return mant + 'e' + sign + mag;
+    }}
+    // Python json string escaping with ensure_ascii=True: the JSON
+    // string escapes (\\" \\\\ \\b \\f \\n \\r \\t), other C0
+    // controls AND every non-ASCII codepoint as \\uXXXX (surrogate
+    // pairs preserved as two \\uXXXX -- exactly what CPython emits;
+    // JS strings are already UTF-16 so iterating code UNITS yields
+    // the same pair encoding).
+    function _spcpStr(s) {{
+      let out = '"';
+      for (let i = 0; i < s.length; i++) {{
+        const c = s.charCodeAt(i);
+        const ch = s[i];
+        if (ch === '"') out += '\\\\"';
+        else if (ch === '\\\\') out += '\\\\\\\\';
+        else if (c === 8) out += '\\\\b';
+        else if (c === 9) out += '\\\\t';
+        else if (c === 10) out += '\\\\n';
+        else if (c === 12) out += '\\\\f';
+        else if (c === 13) out += '\\\\r';
+        else if (c < 0x20 || c > 0x7e) {{
+          out += '\\\\u' + c.toString(16).padStart(4, '0');
+        }} else {{
+          out += ch;
+        }}
+      }}
+      return out + '"';
+    }}
+    // Compact JSON, key INSERTION order (NO sort), separators
+    // (",",":") -- byte-for-byte json.dumps(payload,
+    // separators=(",",":")). Arrays/objects recurse; null/bool
+    // exactly as Python; numbers via _spcpNum; strings via _spcpStr.
+    // (The payload we build holds only JSON-safe primitives, arrays
+    // and plain objects -- the SAME shape that came from the
+    // viewer-config JSON -- so this total covers it.)
+    function _spcpJson(v) {{
+      if (v === null) return 'null';
+      const t = typeof v;
+      if (t === 'boolean') return v ? 'true' : 'false';
+      if (t === 'number') return _spcpNum(v);
+      if (t === 'string') return _spcpStr(v);
+      if (Array.isArray(v)) {{
+        let s = '[';
+        for (let i = 0; i < v.length; i++) {{
+          if (i) s += ',';
+          // Python json renders array None/NaN slots as null; an
+          // undefined/function slot cannot occur in our payload, map
+          // it to null defensively (never throw mid-encode).
+          const e = v[i];
+          s += (e === undefined || typeof e === 'function')
+            ? 'null' : _spcpJson(e);
+        }}
+        return s + ']';
+      }}
+      if (t === 'object') {{
+        let s = '{{';
+        let first = true;
+        // Object.keys preserves insertion order for string keys
+        // (the payload keys are all plain strings) -- the SAME order
+        // Python dict iteration would use for an equivalently-built
+        // dict; encode_spcp does NOT sort, so we must NOT either.
+        for (const k of Object.keys(v)) {{
+          const val = v[k];
+          // Python json SKIPS no keys (it would serialise None);
+          // our payload never holds undefined/function values, but
+          // skip such a slot defensively rather than emit invalid
+          // JSON (a value Python could not have produced anyway).
+          if (val === undefined || typeof val === 'function') continue;
+          if (!first) s += ',';
+          first = false;
+          s += _spcpStr(k) + ':' + _spcpJson(val);
+        }}
+        return s + '}}';
+      }}
+      // undefined / symbol: not representable -- our payload never
+      // contains these at the top level (guarded above for slots).
+      throw new Error('unserialisable value in payload');
+    }}
+    function _b64urlBytes(str) {{
+      // str is already pure ASCII (ensure_ascii=True), so its UTF-8
+      // == its byte values; btoa over it == Python
+      // base64.urlsafe_b64encode of the same bytes, then '+/' ->
+      // '-_' and strip '=' (encode_spcp's exact tail).
+      const b64 = btoa(str);
+      return b64.replace(/\\+/g, '-').replace(/\\//g, '_')
+        .replace(/=+$/, '');
+    }}
+    function _encodeSpcp(slug, payload) {{
+      if (String(slug).indexOf(':') !== -1) {{
+        // Mirror encode_spcp's slug guard (a ':' would break the
+        // cross-language split(':',2) decode). Our sanitiser already
+        // strips ':' so this never fires in practice; defensive.
+        throw new Error("slug must not contain ':'");
+      }}
+      const json = _spcpJson(payload);
+      return 'SPCP1:' + slug + ':' + _b64urlBytes(json);
+    }}
+
+    // ---- Build the Contract-C camera-scope patch from the AUTHORED
+    //      in-memory state. ONLY the locked allow-list keys
+    //      (start_view, camera_paths, clips, cameras,
+    //      default_path_id, intro, titles3d, spark_render,
+    //      annotations) -- NEVER primary_asset (the Speicher-blank
+    //      invariant: merge_camera_scope force-keeps the live
+    //      pointer; emitting it here would be a critical breach).
+    //      Values are taken from the LIVE cfg object (the same
+    //      object the Task-16/17 in-memory edits + Record(K) + the
+    //      gizmo mutate in place) so the author's edits are exactly
+    //      what gets persisted. Missing keys are simply omitted (a
+    //      whole-replace merge -- absent key == leave the live
+    //      config's value untouched).
+    const _PATCH_KEYS = ['start_view', 'camera_paths', 'clips',
+      'cameras', 'default_path_id', 'intro', 'titles3d',
+      'spark_render', 'annotations'];
+    function _buildPatch() {{
+      const patch = {{}};
+      for (const k of _PATCH_KEYS) {{
+        if (cfg && Object.prototype.hasOwnProperty.call(cfg, k) &&
+            cfg[k] !== undefined && cfg[k] !== null) {{
+          patch[k] = cfg[k];
+        }}
+      }}
+      return patch;
+    }}
+    function _buildSpcpPayload() {{
+      // Exactly decode_spcp's gate shape: v + scope FIRST (insertion
+      // order), then the allow-listed camera-scope keys. (Python
+      // round-trip: decode_spcp checks v==1 & scope=='camera_paths';
+      // the cli backend's merge_camera_scope then ignores v/scope
+      // and applies only ALLOWED_PATCH_KEYS -- so including them in
+      // the token envelope is correct and required.)
+      const p = {{ v: 1, scope: 'camera_paths' }};
+      const patch = _buildPatch();
+      for (const k of Object.keys(patch)) p[k] = patch[k];
+      return p;
+    }}
+
+    // ---- Explicit auto-tour stop (single source of truth). In
+    //      ?author=1 the default-path tour auto-plays; the first
+    //      authoring gesture stops it via the EXISTING stopPath()
+    //      (the SAME mechanism Task-17's pause uses) so the gizmo
+    //      drag / Record happen against a still camera. This is an
+    //      explicit interaction stop, NOT a _cinematic-gate change.
+    let _gzTourStopped = false;
+    function _gzStopTour() {{
+      if (_player) {{
+        try {{ stopPath(); }} catch (e) {{}}
+        _gzTourStopped = true;
+      }}
+    }}
+
+    // ---- Selection + gizmo state. _gzProxy is a bare Object3D the
+    //      TransformControls drives; we mirror its pose to/from the
+    //      selected keyframe. It is added to the scene ONLY while a
+    //      key is selected and removed on deselect (no leak). The
+    //      TransformControls 'helper' (its visible gizmo) is added/
+    //      removed alongside.
+    let _gzCtl = null;            // TransformControls instance (lazy)
+    let _gzProxy = null;          // THREE.Object3D the gizmo drives
+    let _gzSelKf = -1;            // selected keyframe index (-1 none)
+    let _gzMode = 'translate';    // 'translate' | 'rotate'
+    let _gzScreen = false;        // false = World, true = Screen
+    let _gzDragging = false;
+    let _gzImportPromise = null;  // memoised dynamic import
+    let _gzPopEl = null;          // the interp popover element
+    let _gzCtlHelper = null;      // the gizmo's visible helper object
+
+    function _gzActivePath() {{
+      return (typeof _trajActivePath === 'function')
+        ? _trajActivePath() : null;
+    }}
+    // The keyframe OBJECT for the current selection (selection is by
+    // the Task-16 frustum's kfIndex == the path's keyframes[] index;
+    // _trajRebuild builds one frustum per keyframe IN ORDER).
+    function _gzSelKfObj() {{
+      const p = _gzActivePath();
+      if (!p || !p.keyframes || _gzSelKf < 0 ||
+          _gzSelKf >= p.keyframes.length) return null;
+      return p.keyframes[_gzSelKf];
+    }}
+
+    // Push the selected keyframe's pose onto the proxy (so the gizmo
+    // sits exactly where the camera will be for that key).
+    const _GZ_TMPQ = new THREE.Quaternion();
+    function _gzSyncProxyFromKf() {{
+      const kf = _gzSelKfObj();
+      if (!kf || !_gzProxy) return;
+      const pos = (kf.pos && kf.pos.length === 3) ? kf.pos : [0, 0, 0];
+      _gzProxy.position.set(pos[0], pos[1], pos[2]);
+      const q = (kf.quat && kf.quat.length === 4)
+        ? kf.quat : [0, 0, 0, 1];
+      _gzProxy.quaternion.set(q[0], q[1], q[2], q[3]);
+      _gzProxy.updateMatrixWorld(true);
+    }}
+
+    // Trigger the Task-16 overlay + the Task-17 timeline to re-read
+    // the mutated keyframe NOW (deterministic for the harness; the
+    // OverlayScene sig check would also rebuild on the next tick --
+    // _trajKfSig includes pos/quat/interp). Also null _player if it
+    // is driving THIS path so a later Play re-derives the geometry.
+    function _gzAfterEdit() {{
+      const p = _gzActivePath();
+      if (!p) return;
+      try {{
+        _trajRebuild(p);
+        _trajPhPlayer = p ? buildPlayer(p) : null;
+      }} catch (e) {{}}
+      // Bump the built-sig mismatch so the OverlayScene update()
+      // path also rebuilds (belt-and-braces; _trajRebuild already
+      // reset it -- this just guarantees a mismatch if a later
+      // tick races).
+      try {{
+        if (window.__editor && typeof window.__editor.rebuild ===
+            'function') window.__editor.rebuild();
+      }} catch (e) {{}}
+      if (_player && _activePathId === (p.id || _activePathId)) {{
+        // A pose edit while the player drives this path: rebuild it
+        // in place (reuse buildPlayer -- the one spline impl) so the
+        // edit is not lost; if it cannot build, stop cleanly.
+        const np = buildPlayer(p);
+        if (np) _player = np;
+        else {{ try {{ stopPath(); }} catch (e) {{}} }}
+      }}
+    }}
+
+    // Write the proxy's CURRENT pose back to the selected keyframe
+    // (translate -> kf.pos; rotate -> kf.quat). Called on the
+    // TransformControls 'objectChange' so the trajectory tracks the
+    // drag live (the spec's "drag -> kf.pos changes + trajectory
+    // rebuilds").
+    function _gzWriteProxyToKf() {{
+      const kf = _gzSelKfObj();
+      if (!kf || !_gzProxy) return;
+      kf.pos = [_gzProxy.position.x, _gzProxy.position.y,
+        _gzProxy.position.z];
+      _gzProxy.getWorldQuaternion(_GZ_TMPQ);
+      kf.quat = [_GZ_TMPQ.x, _GZ_TMPQ.y, _GZ_TMPQ.z, _GZ_TMPQ.w];
+      _gzAfterEdit();
+    }}
+
+    // Apply the World/Screen + translate/rotate mode to the live
+    // control. Screen == camera-aligned axes: TransformControls'
+    // 'local' space on a proxy whose rotation we keep equal to the
+    // camera's, so the gizmo's axes follow the screen. World ==
+    // 'world' space (the proxy keeps the keyframe's own rotation,
+    // restored from the keyframe so a space round-trip is lossless).
+    function _gzApplySpace() {{
+      if (!_gzCtl) return;
+      _gzCtl.setMode(_gzMode);
+      if (_gzScreen) {{
+        // Camera-aligned: drive the gizmo in the proxy's LOCAL
+        // frame and make that frame == the camera orientation.
+        _gzProxy.quaternion.copy(camera.quaternion);
+        _gzProxy.updateMatrixWorld(true);
+        _gzCtl.setSpace('local');
+      }} else {{
+        // World axes: restore the keyframe's own orientation onto
+        // the proxy (so a rotate drag edits the real kf.quat) and
+        // use world space.
+        _gzSyncProxyFromKf();
+        _gzCtl.setSpace('world');
+      }}
+    }}
+
+    // Lazily import + construct TransformControls (dynamic import
+    // via the EXISTING ``three/addons/`` importmap mapping -- no new
+    // importmap entry; region-interior). Resolves to the control or
+    // null (import failure must never throw into the author UI).
+    function _gzEnsureControl() {{
+      if (_gzCtl) return Promise.resolve(_gzCtl);
+      if (!_gzImportPromise) {{
+        _gzImportPromise = import(
+          'three/addons/controls/TransformControls.js'
+        ).then((mod) => {{
+          const TC = mod && (mod.TransformControls ||
+            (mod.default && mod.default.TransformControls) ||
+            mod.default);
+          if (!TC) return null;
+          const ctl = new TC(camera, renderer.domElement);
+          ctl.setSize(0.9);
+          // The gizmo's visible part. r150+ exposes getHelper();
+          // older builds ARE the Object3D. Add ONLY the helper (or
+          // the control) to the scene -- never both -- so there is
+          // exactly one gizmo in the graph.
+          const helper = (typeof ctl.getHelper === 'function')
+            ? ctl.getHelper() : ctl;
+          _gzCtlHelper = helper;
+          // While the gizmo is grabbed, OrbitControls must NOT also
+          // move the camera. Broker through the ONE InteractionManager
+          // (the Task-0 contract): take a NON-exclusive 'tool' owner
+          // on drag-start, release on drag-end, and gate OrbitControls
+          // off for the drag (mirrors how playback flips
+          // controls.enabled). 'dragging-changed' is TransformControls'
+          // canonical drag signal.
+          ctl.addEventListener('dragging-changed', (ev) => {{
+            _gzDragging = !!ev.value;
+            if (_gzDragging) {{
+              InteractionManager.requestPointer('tool');
+              controls.enabled = false;
+            }} else {{
+              InteractionManager.releasePointer('tool');
+              // Restore OrbitControls only if nothing exclusive
+              // (a path/bench) is driving the camera.
+              if (!InteractionManager.isCameraOwned()) {{
+                controls.enabled = true;
+              }}
+            }}
+          }});
+          // Live write-back: every gizmo move edits the selected
+          // keyframe + rebuilds the trajectory (the spec's
+          // "drag -> kf.pos changes + trajectory rebuilds").
+          ctl.addEventListener('objectChange', () => {{
+            _gzWriteProxyToKf();
+          }});
+          _gzCtl = ctl;
+          if (helper && helper.parent !== scene) scene.add(helper);
+          return ctl;
+        }}).catch(() => null);
+      }}
+      return _gzImportPromise;
+    }}
+
+    // Attach the gizmo to a keyframe (idx = the path keyframes[]
+    // index, == the Task-16 frustum kfIndex). Creates the proxy if
+    // needed, parks it at the keyframe, attaches TransformControls.
+    function _gzAttach(idx) {{
+      const p = _gzActivePath();
+      if (!p || !p.keyframes || idx < 0 ||
+          idx >= p.keyframes.length) return;
+      // First authoring gesture: stop the auto-tour (explicit
+      // interaction stop -- the SAME stopPath() Task-17 reuses).
+      _gzStopTour();
+      _gzSelKf = idx;
+      if (!_gzProxy) {{
+        _gzProxy = new THREE.Object3D();
+        _gzProxy.name = 'editor-gizmo-proxy';
+      }}
+      if (_gzProxy.parent !== scene) scene.add(_gzProxy);
+      _gzSyncProxyFromKf();
+      _gzEnsureControl().then((ctl) => {{
+        if (!ctl || _gzSelKf !== idx) return;
+        ctl.attach(_gzProxy);
+        _gzApplySpace();
+        _trajRefreshActive();
+      }});
+    }}
+
+    // Detach + hide the gizmo (deselect). Removes the proxy + the
+    // helper from the scene so there is no orphan/leak; the
+    // TransformControls instance itself is kept (memoised) for
+    // re-attach -- attach/detach is its designed lifecycle.
+    function _gzDetach() {{
+      _gzSelKf = -1;
+      if (_gzCtl) {{
+        try {{ _gzCtl.detach(); }} catch (e) {{}}
+      }}
+      if (_gzProxy && _gzProxy.parent) {{
+        _gzProxy.parent.remove(_gzProxy);
+      }}
+      controls.enabled = !InteractionManager.isCameraOwned();
+    }}
+
+    // ---- Pointer pick: a left click on a trajectory frustum
+    //      selects that keyframe (the Task-16 _trajFrusta meshes
+    //      are the only pickables here). Uses the EXISTING scene
+    //      _raycaster (single source of truth). A click that hits
+    //      no frustum AND is not on the gizmo deselects. We ignore
+    //      the click while the gizmo is being dragged (the gizmo
+    //      owns the pointer then) and while OrbitControls is mid-
+    //      gesture is naturally fine (a frustum hit is a discrete
+    //      click, not a drag).
+    function _gzPickFrustum(clientX, clientY) {{
+      if (!_trajFrusta.length) return -1;
+      const rect = renderer.domElement.getBoundingClientRect();
+      _ndc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+      _ndc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+      _raycaster.setFromCamera(_ndc, camera);
+      // LineSegments need a forgiving threshold; the frusta are
+      // small wireframes. Pick the nearest hit frustum's kfIndex.
+      const prevT = _raycaster.params.Line
+        ? _raycaster.params.Line.threshold : 1;
+      if (_raycaster.params.Line) {{
+        _raycaster.params.Line.threshold =
+          Math.max(prevT, _TRAJ_FRUSTUM_HALF * 0.6);
+      }}
+      let best = -1, bestDist = Infinity;
+      for (const f of _trajFrusta) {{
+        if (!f.mesh) continue;
+        const hits = _raycaster.intersectObject(f.mesh, false);
+        if (hits.length && hits[0].distance < bestDist) {{
+          bestDist = hits[0].distance;
+          best = f.kfIndex;
+        }}
+      }}
+      if (_raycaster.params.Line) {{
+        _raycaster.params.Line.threshold = prevT;
+      }}
+      return best;
+    }}
+    function _gzOnCanvasDown(ev) {{
+      if (!ModeManager.is('author')) return;
+      if (ev.button !== undefined && ev.button !== 0) return;
+      if (_gzDragging) return;          // gizmo owns the pointer
+      // If the gizmo's own axes were hit, TransformControls handles
+      // it (it has its own pointer listeners) -- do nothing here.
+      const idx = _gzPickFrustum(ev.clientX, ev.clientY);
+      if (idx >= 0) {{
+        _gzAttach(idx);
+        // A frustum pick is an editing gesture, not an orbit: stop
+        // the event so OrbitControls does not also start a drag
+        // from the same pointerdown.
+        ev.stopPropagation();
+      }}
+    }}
+    // Capture phase so we see the pointerdown before OrbitControls'
+    // own canvas listener (it is attached without capture); only
+    // when we actually consume a frustum hit do we stopPropagation.
+    renderer.domElement.addEventListener(
+      'pointerdown', _gzOnCanvasDown, true);
+
+    // ---- The 5-type interp popover (V). A segmented control over
+    //      the EXISTING _VALID_INTERP set (auto_clamped / automatic
+    //      / linear / bezier / stepped -- the real constant, not a
+    //      hardcoded list). Selecting writes the SELECTED keyframe's
+    //      kf.interp and rebuilds (the spline already honours
+    //      per-keyframe interp via _kfMeta). Built lazily, injected
+    //      into the Task-12 #author-root (CSS-gated to authormode --
+    //      no new CSS region, inline-styled like #sp-hud / the
+    //      Task-16 toggle), removed on close (no leak).
+    const _GZ_INTERPS = Object.keys(_VALID_INTERP);
+    function _gzClosePopover() {{
+      if (_gzPopEl && _gzPopEl.parentNode) {{
+        _gzPopEl.parentNode.removeChild(_gzPopEl);
+      }}
+      _gzPopEl = null;
+    }}
+    function _gzSelInterpVal() {{
+      const kf = _gzSelKfObj();
+      return (kf && kf.interp) ? kf.interp : null;
+    }}
+    function _gzSetInterp(val) {{
+      const kf = _gzSelKfObj();
+      if (!kf) return false;
+      if (val && _VALID_INTERP[val]) kf.interp = val;
+      _gzAfterEdit();
+      return kf.interp === val;
+    }}
+    function _gzOpenPopover() {{
+      if (_gzSelKf < 0) return;       // need a selected keyframe
+      _gzStopTour();
+      _gzClosePopover();
+      const root = document.getElementById('author-root');
+      if (!root) return;
+      const kf = _gzSelKfObj();
+      const cur = (kf && typeof kf.interp === 'string' &&
+        _VALID_INTERP[kf.interp]) ? kf.interp : '';
+      const box = document.createElement('div');
+      box.id = 'editor-interp-pop';
+      box.style.cssText =
+        'position:absolute;top:54px;left:12px;z-index:51;' +
+        'display:flex;gap:4px;align-items:center;flex-wrap:wrap;' +
+        'max-width:360px;padding:8px 10px;border-radius:8px;' +
+        'background:rgba(20,20,20,0.86);' +
+        '-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);' +
+        'font:12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;' +
+        'color:#eee;user-select:none;';
+      const lab = document.createElement('span');
+      lab.textContent = 'interp:';
+      lab.style.cssText = 'opacity:.7;margin-right:4px;';
+      box.appendChild(lab);
+      _GZ_INTERPS.forEach((nm) => {{
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = nm;
+        b.setAttribute('data-interp', nm);
+        b.style.cssText =
+          'background:' + (nm === cur
+            ? 'rgba(53,224,255,0.34)' : 'rgba(255,255,255,0.10)') +
+          ';color:#eee;border:0;border-radius:5px;' +
+          'padding:4px 8px;cursor:pointer;font:12px monospace;' +
+          'line-height:1;';
+        b.addEventListener('click', () => {{
+          _gzSetInterp(nm);
+          _gzClosePopover();
+        }});
+        box.appendChild(b);
+      }});
+      root.appendChild(box);
+      _gzPopEl = box;
+    }}
+
+    // ---- Record(K): append a keyframe = the LIVE camera pose +
+    //      the REAL elapsed playhead t. The playhead is taken from
+    //      _trajPlayhead() (the SAME single-source-of-truth clock
+    //      the Task-16 overlay + Task-17 timeline read: the live
+    //      _player/_t0 clock while a tour plays, else the
+    //      #path-scrub position) -- the in-viewer analogue of the
+    //      Task-5 "recording uses real elapsed time" fix, NOT a
+    //      reinvented timer. The new keyframe is inserted into the
+    //      active path's keyframes[] (buildPlayer sorts by t, so a
+    //      record at any playhead lands correctly) and the
+    //      trajectory rebuilds. Recording also stops the auto-tour
+    //      first (explicit interaction stop) so the captured pose is
+    //      the user's, not a tour frame.
+    const _GZ_R = (x) => Math.round(x * 1e5) / 1e5;
+    function _gzRecordKeyframe() {{
+      const p = _gzActivePath();
+      if (!p) return null;
+      if (!Array.isArray(p.keyframes)) p.keyframes = [];
+      // Read the real elapsed playhead BEFORE stopping the tour
+      // (stopPath() clears _player; we want the elapsed time the
+      // user is parked at -- the same value _trajPlayhead returns).
+      let t = 0;
+      try {{
+        const ph = buildPlayer(p);
+        const v = ph ? _trajPlayhead(ph) : null;
+        if (typeof v === 'number' && isFinite(v)) t = Math.max(0, v);
+      }} catch (e) {{}}
+      _gzStopTour();
+      const kf = {{
+        t: _GZ_R(t),
+        pos: [_GZ_R(camera.position.x), _GZ_R(camera.position.y),
+          _GZ_R(camera.position.z)],
+        quat: [_GZ_R(camera.quaternion.x), _GZ_R(camera.quaternion.y),
+          _GZ_R(camera.quaternion.z), _GZ_R(camera.quaternion.w)],
+        fov: _GZ_R(camera.fov),
+      }};
+      p.keyframes.push(kf);
+      _gzAfterEdit();
+      return kf;
+    }}
+
+    // ---- Save / Emit. SAVE_MODE=="cli" (decision-A DEFAULT):
+    //      emit the SPCP1 token + the `splatpipe set-camera-path
+    //      <token>` command in an on-screen textarea + clipboard,
+    //      MIRRORING the existing SPV1 "Set start view" relay UI
+    //      (same overlay/card/textarea/copy pattern, same trust
+    //      model -- no client secret). SAVE_MODE=="http" (opt-in):
+    //      POST the camera-scope patch JSON to SAVE_ENDPOINT with
+    //      Authorization: Bearer <secret> where <secret> is read
+    //      ONLY from the author URL fragment (#author=<secret>) --
+    //      never baked, never in viewer-config.json. Returns the
+    //      token (cli) or a Promise (http) so the harness can
+    //      deterministically assert both paths.
+    function _gzEsc(s) {{
+      return String(s).replace(/[&<>]/g, (c) =>
+        ({{ '&': '&amp;', '<': '&lt;', '>': '&gt;' }}[c]));
+    }}
+    function _gzAuthorSecret() {{
+      // The http-mode bearer lives ONLY in the URL fragment
+      // (#author=<secret>), never baked / in config. Parse it
+      // leniently (#author=... possibly among &-joined fields).
+      try {{
+        const h = (location.hash || '').replace(/^#/, '');
+        for (const part of h.split('&')) {{
+          const eq = part.indexOf('=');
+          if (eq > 0 && part.slice(0, eq) === 'author') {{
+            return decodeURIComponent(part.slice(eq + 1));
+          }}
+        }}
+      }} catch (e) {{}}
+      return '';
+    }}
+    let _gzLastToken = '';
+    function _gzShowTokenCard(token) {{
+      // Mirror the SPV1 relay overlay/card EXACTLY (same structure,
+      // wording shape, textarea + copy-again + done).
+      const old = document.getElementById('gz-save-overlay');
+      if (old) old.remove();
+      const cmd = 'splatpipe set-camera-path ' + token;
+      const ov = document.createElement('div');
+      ov.id = 'gz-save-overlay';
+      ov.style.cssText =
+        'position:fixed;inset:0;z-index:9999;display:flex;' +
+        'align-items:center;justify-content:center;' +
+        'background:rgba(0,0,0,.55);font:14px system-ui,sans-serif;';
+      const card = document.createElement('div');
+      card.style.cssText =
+        'background:#1f1f24;color:#eee;max-width:560px;width:90%;' +
+        'padding:20px 22px;border-radius:12px;' +
+        'box-shadow:0 8px 40px rgba(0,0,0,.5);';
+      let copied = false;
+      try {{
+        if (navigator.clipboard && navigator.clipboard.writeText) {{
+          navigator.clipboard.writeText(token);
+          copied = true;
+        }}
+      }} catch (e) {{}}
+      card.innerHTML =
+        '<div style="font-weight:600;font-size:16px;margin-bottom:6px;">' +
+        (copied ? 'Copied to clipboard \\u2713'
+                : 'Camera-path token') + '</div>' +
+        '<div style="opacity:.75;margin-bottom:10px;">Send this ' +
+        'token to Claude on Telegram, or run the command below, to ' +
+        'save these camera paths for <b>' + _gzEsc(_gzProjName) +
+        '</b> for everyone:</div>' +
+        '<textarea id="gz-tok" readonly style="width:100%;height:84px;' +
+        'box-sizing:border-box;background:#111;color:#9fd;' +
+        'border:1px solid #333;border-radius:8px;padding:8px;' +
+        'font:12px monospace;resize:none;"></textarea>' +
+        '<div style="opacity:.6;margin:8px 0 4px;">CLI:</div>' +
+        '<textarea id="gz-cmd" readonly style="width:100%;height:44px;' +
+        'box-sizing:border-box;background:#111;color:#9fd;' +
+        'border:1px solid #333;border-radius:8px;padding:8px;' +
+        'font:12px monospace;resize:none;"></textarea>' +
+        '<div style="display:flex;gap:10px;justify-content:flex-end;' +
+        'margin-top:14px;">' +
+        '<button id="gz-copy" class="quality-btn">Copy again</button>' +
+        '<button id="gz-done" class="quality-btn" ' +
+        'style="background:#2d6cdf;color:#fff;">Done</button></div>';
+      ov.appendChild(card);
+      document.body.appendChild(ov);
+      const ta = card.querySelector('#gz-tok');
+      ta.value = token;
+      card.querySelector('#gz-cmd').value = cmd;
+      ta.focus(); ta.select();
+      ov.addEventListener('click', (e) => {{
+        if (e.target === ov) ov.remove();
+      }});
+      card.querySelector('#gz-done').addEventListener('click', () => {{
+        ov.remove();
+      }});
+      card.querySelector('#gz-copy').addEventListener('click', () => {{
+        ta.focus(); ta.select();
+        try {{
+          if (navigator.clipboard) navigator.clipboard.writeText(token);
+        }} catch (e) {{}}
+        try {{ document.execCommand('copy'); }} catch (e) {{}}
+      }});
+    }}
+    // The CLI-default Save: build the payload from the AUTHORED
+    // in-memory state, encode the SPCP1 token (byte-identical port),
+    // mirror the SPV1 relay UI. Returns the token string.
+    function _gzSaveCli() {{
+      const payload = _buildSpcpPayload();
+      const token = _encodeSpcp(_gzSlug, payload);
+      _gzLastToken = token;
+      _gzShowTokenCard(token);
+      return token;
+    }}
+    // The opt-in http Save: POST {{slug, patch}} (the allow-listed
+    // camera-scope patch keys ONLY -- NEVER primary_asset)
+    // to SAVE_ENDPOINT with Bearer <fragment secret>. The body is
+    // the SAME allow-listed patch (NEVER primary_asset) -- mirrors
+    // the Contract-C {{slug, patch}} body shape. Returns the fetch
+    // Promise so the harness can assert the call (no real server).
+    function _gzSaveHttp() {{
+      const patch = _buildPatch();
+      const secret = _gzAuthorSecret();
+      const body = JSON.stringify({{ slug: _gzSlug, patch: patch }});
+      const headers = {{ 'Content-Type': 'application/json' }};
+      if (secret) headers['Authorization'] = 'Bearer ' + secret;
+      return fetch(SAVE_ENDPOINT, {{
+        method: 'POST', headers: headers, body: body,
+      }});
+    }}
+    function _gzSave() {{
+      if (SAVE_MODE === 'http' && SAVE_ENDPOINT) {{
+        return _gzSaveHttp();
+      }}
+      return _gzSaveCli();
+    }}
+
+    // ---- The author HUD button cluster (Save + a hint). Injected
+    //      into the Task-12 #author-root (CSS-gated to authormode;
+    //      inline-styled like #sp-hud / the Task-16 toggle -- no new
+    //      CSS region). The gizmo space/mode + interp + record are
+    //      keyboard-driven (the spec's R/T/V/K); the Save button is
+    //      the explicit persist action.
+    {{
+      const root = document.getElementById('author-root');
+      if (root) {{
+        const bar = document.createElement('div');
+        bar.id = 'editor-gizmo-bar';
+        bar.style.cssText =
+          'position:absolute;top:12px;left:160px;z-index:50;' +
+          'display:flex;gap:6px;align-items:center;' +
+          'padding:6px 9px;border-radius:7px;' +
+          'background:rgba(20,20,20,0.72);' +
+          '-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);' +
+          'font:12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;' +
+          'color:#eee;user-select:none;';
+        const _mkBtn = (txt, title, id) => {{
+          const b = document.createElement('button');
+          b.type = 'button'; b.textContent = txt;
+          b.title = title || ''; if (id) b.id = id;
+          b.style.cssText =
+            'background:rgba(255,255,255,0.10);color:#eee;border:0;' +
+            'border-radius:5px;padding:4px 9px;cursor:pointer;' +
+            'font:12px monospace;line-height:1;';
+          return b;
+        }};
+        const recBtn = _mkBtn('\\u25CF Rec (K)',
+          'Record a keyframe at the playhead from the live camera',
+          'editor-rec-btn');
+        const interpBtn = _mkBtn('interp (V)',
+          'Set the selected keyframe interpolation', 'editor-interp-btn');
+        const saveBtn = _mkBtn('Save',
+          'Save camera paths (cli: emit SPCP1 token; http: POST)',
+          'editor-save-btn');
+        recBtn.addEventListener('click', () => {{ _gzRecordKeyframe(); }});
+        interpBtn.addEventListener('click', () => {{ _gzOpenPopover(); }});
+        saveBtn.addEventListener('click', () => {{ _gzSave(); }});
+        bar.appendChild(recBtn);
+        bar.appendChild(interpBtn);
+        bar.appendChild(saveBtn);
+        root.appendChild(bar);
+      }}
+    }}
+
+    // ---- Keyboard: R/T (translate/rotate), SPACE (World<->Screen),
+    //      V (interp popover), K (record). Author-mode only; ignored
+    //      while typing in an input/textarea (the Save card's
+    //      textareas) so copying the token does not trigger Record.
+    window.addEventListener('keydown', (ev) => {{
+      if (!ModeManager.is('author')) return;
+      const ae = document.activeElement;
+      if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' ||
+          ae.tagName === 'SELECT')) return;
+      const k = ev.key;
+      if (k === 'r' || k === 'R') {{
+        _gzMode = 'rotate'; _gzApplySpace();
+      }} else if (k === 't' || k === 'T') {{
+        _gzMode = 'translate'; _gzApplySpace();
+      }} else if (k === ' ' || k === 'Spacebar' || ev.code === 'Space') {{
+        _gzScreen = !_gzScreen; _gzApplySpace();
+        ev.preventDefault();    // stop the page scrolling on Space
+      }} else if (k === 'v' || k === 'V') {{
+        if (_gzPopEl) _gzClosePopover(); else _gzOpenPopover();
+      }} else if (k === 'k' || k === 'K') {{
+        _gzRecordKeyframe();
+      }} else if (k === 'Escape') {{
+        _gzClosePopover();
+        _gzDetach();
+      }}
+    }});
+
+    // ---- TEST-ONLY surface extension (mirror window.__clip /
+    //      __transport / the Task-16/17 window.__editor: getters +
+    //      deterministic hooks; NO production reader; inert without
+    //      the harness). Extends the EXISTING window.__editor object
+    //      (created by the Task-16 block, extended by Task-17) so
+    //      the harness reads ONE surface. Every hook drives the
+    //      REAL code path a user action / keypress would (the same
+    //      convention as __editor.scrubTo / tlDragKf).
+    try {{
+      if (window.__editor) {{
+        const _gzApi = {{
+          // ---- read state ----
+          get gzMode() {{ return _gzMode; }},
+          get gzSpace() {{ return _gzScreen ? 'screen' : 'world'; }},
+          get gzSelKf() {{ return _gzSelKf; }},
+          get gzAttached() {{
+            return !!(_gzCtl && _gzCtl.object === _gzProxy &&
+              _gzSelKf >= 0);
+          }},
+          get gzProxyInScene() {{
+            return !!(_gzProxy && _gzProxy.parent === scene);
+          }},
+          get gzHelperInScene() {{
+            return !!(_gzCtlHelper && _gzCtlHelper.parent === scene);
+          }},
+          get gzControlSpace() {{
+            return _gzCtl ? _gzCtl.space : null;
+          }},
+          get gzControlMode() {{
+            return _gzCtl ? _gzCtl.mode : null;
+          }},
+          get gzPopoverOpen() {{ return !!_gzPopEl; }},
+          get gzInterpOptions() {{ return _GZ_INTERPS.slice(); }},
+          get gzSelInterp() {{
+            const kf = _gzSelKfObj();
+            return (kf && kf.interp) ? kf.interp : null;
+          }},
+          get gzSaveMode() {{
+            try {{ return SAVE_MODE; }} catch (e) {{ return '?'; }}
+          }},
+          get gzSlug() {{ return _gzSlug; }},
+          get gzLastToken() {{ return _gzLastToken; }},
+          get gzFrustumCount() {{ return _trajFrusta.length; }},
+          // The selected keyframe's CURRENT stored pose (the SAME
+          // in-memory object the player + overlay read) so the
+          // harness can assert a gizmo drag changed kf.pos/kf.quat.
+          get gzSelKfPose() {{
+            const kf = _gzSelKfObj();
+            if (!kf) return null;
+            return {{
+              t: kf.t,
+              pos: (kf.pos || []).slice(),
+              quat: (kf.quat || []).slice(),
+              fov: kf.fov,
+              interp: kf.interp || null,
+            }};
+          }},
+          // The active path's keyframe times (array order) -- so the
+          // harness can assert Record APPENDED a keyframe at the
+          // real-elapsed playhead t.
+          get gzKfTimes() {{
+            const p = _gzActivePath();
+            return (p && p.keyframes)
+              ? p.keyframes.map(k => (k.t || 0)) : [];
+          }},
+          get gzKfCount() {{
+            const p = _gzActivePath();
+            return (p && p.keyframes) ? p.keyframes.length : 0;
+          }},
+          // The Task-16 overlay signature -- so the harness can
+          // assert a gizmo/record/interp edit triggered the overlay
+          // rebuild (the sig CHANGED) without a save/network.
+          get gzOverlaySig() {{
+            try {{
+              const p = _gzActivePath();
+              return (typeof _trajKfSig === 'function')
+                ? _trajKfSig(p) : '';
+            }} catch (e) {{ return ''; }}
+          }},
+          // ---- deterministic hooks (drive the REAL handlers) ----
+          // Select a keyframe by index == clicking its frustum
+          // (drives the SAME _gzAttach the pointer pick calls).
+          // Returns a Promise resolving once the (lazily imported)
+          // TransformControls has attached, so the harness can await.
+          gzSelect(idx) {{
+            _gzAttach(idx);
+            return _gzEnsureControl().then(() => ({{
+              attached: !!(_gzCtl && _gzCtl.object === _gzProxy),
+              sel: _gzSelKf,
+            }}));
+          }},
+          // Raycast-pick a frustum at NDC (-1..1) -> returns the kf
+          // index a click there would select (drives the REAL
+          // _gzPickFrustum off the live trajectory geometry; the
+          // harness converts a frustum's world pos to NDC itself).
+          gzPickAtNdc(ndcx, ndcy) {{
+            const rect = renderer.domElement.getBoundingClientRect();
+            const cx = rect.left + (ndcx + 1) * 0.5 * rect.width;
+            const cy = rect.top + (1 - ndcy) * 0.5 * rect.height;
+            return _gzPickFrustum(cx, cy);
+          }},
+          gzDetach() {{ _gzDetach(); return _gzSelKf; }},
+          // Simulate a gizmo TRANSLATE drag: move the proxy by a
+          // world delta + run the SAME objectChange write-back the
+          // real drag fires (we cannot synthesise a pointer drag on
+          // the addon's internal plane deterministically; this
+          // drives the EXACT same _gzWriteProxyToKf the gizmo's
+          // 'objectChange' listener calls).
+          gzDragTranslate(dx, dy, dz) {{
+            if (!_gzProxy || _gzSelKf < 0) return null;
+            _gzProxy.position.x += (+dx || 0);
+            _gzProxy.position.y += (+dy || 0);
+            _gzProxy.position.z += (+dz || 0);
+            _gzProxy.updateMatrixWorld(true);
+            _gzWriteProxyToKf();
+            const kf = _gzSelKfObj();
+            return kf ? (kf.pos || []).slice() : null;
+          }},
+          // Simulate a gizmo ROTATE drag: rotate the proxy by a
+          // quaternion (xyzw) + run the SAME write-back.
+          gzDragRotate(qx, qy, qz, qw) {{
+            if (!_gzProxy || _gzSelKf < 0) return null;
+            const q = new THREE.Quaternion(qx, qy, qz, qw).normalize();
+            _gzProxy.quaternion.premultiply(q);
+            _gzProxy.updateMatrixWorld(true);
+            _gzWriteProxyToKf();
+            const kf = _gzSelKfObj();
+            return kf ? (kf.quat || []).slice() : null;
+          }},
+          // R/T mode toggle (drives the SAME _gzApplySpace the
+          // keydown handler runs).
+          gzSetMode(m) {{
+            _gzMode = (m === 'rotate') ? 'rotate' : 'translate';
+            _gzApplySpace();
+            return _gzCtl ? _gzCtl.mode : _gzMode;
+          }},
+          // SPACE World<->Screen toggle (drives the SAME path).
+          gzToggleSpace() {{
+            _gzScreen = !_gzScreen;
+            _gzApplySpace();
+            return {{ screen: _gzScreen,
+              ctlSpace: _gzCtl ? _gzCtl.space : null }};
+          }},
+          gzSetSpace(s) {{
+            _gzScreen = (s === 'screen');
+            _gzApplySpace();
+            return {{ screen: _gzScreen,
+              ctlSpace: _gzCtl ? _gzCtl.space : null }};
+          }},
+          // V interp popover open + pick (drives the REAL popover
+          // DOM + the REAL _gzSetInterp the buttons call).
+          gzOpenInterp() {{ _gzOpenPopover(); return !!_gzPopEl; }},
+          gzCloseInterp() {{ _gzClosePopover(); return !_gzPopEl; }},
+          gzPickInterp(val) {{
+            // Click the matching popover button if open (the REAL
+            // DOM path); else fall back to the same _gzSetInterp.
+            if (_gzPopEl) {{
+              const b = _gzPopEl.querySelector(
+                '[data-interp="' + val + '"]');
+              if (b) {{ b.click(); return _gzSelInterpVal(); }}
+            }}
+            _gzSetInterp(val);
+            _gzClosePopover();
+            return _gzSelInterpVal();
+          }},
+          // K record (drives the REAL _gzRecordKeyframe -> live
+          // camera pose + real-elapsed playhead t).
+          gzRecord() {{
+            const kf = _gzRecordKeyframe();
+            return kf ? {{ t: kf.t, pos: kf.pos.slice(),
+              quat: kf.quat.slice(), fov: kf.fov }} : null;
+          }},
+          get gzTourStopped() {{ return _gzTourStopped; }},
+          // The real-elapsed playhead (the SAME _trajPlayhead the
+          // overlay/timeline use) -- so the harness can assert
+          // Record used it (not a +2.0 fallback).
+          get gzPlayheadT() {{
+            try {{
+              const p = _gzActivePath();
+              const ph = p ? buildPlayer(p) : null;
+              const v = ph ? _trajPlayhead(ph) : 0;
+              return (typeof v === 'number' && isFinite(v))
+                ? Math.max(0, v) : 0;
+            }} catch (e) {{ return 0; }}
+          }},
+          // ---- Save / SPCP emit ----
+          // Build the Contract-C camera-scope patch (allow-list
+          // ONLY; the harness asserts NO primary_asset).
+          gzBuildPatch() {{ return _buildPatch(); }},
+          gzBuildPayload() {{ return _buildSpcpPayload(); }},
+          // The JS-ported encode_spcp over an ARBITRARY payload --
+          // so the harness/pytest can assert byte-identity vs the
+          // Python encode_spcp for the SAME payload (the spec's
+          // core correctness gate).
+          gzEncodeSpcp(slug, payload) {{
+            return _encodeSpcp(slug, payload);
+          }},
+          // Drive the REAL cli Save (emit token + show the relay
+          // card) and RETURN the emitted token so the harness can
+          // capture it for the Python round-trip / byte-identity
+          // pytest check (the spec mandates a real captured token,
+          // not a hand-constructed one).
+          gzSaveCliToken() {{
+            return _gzSaveCli();
+          }},
+          // Drive the REAL Save dispatch (cli -> token string;
+          // http -> the fetch Promise) -- so the harness can assert
+          // the http path POSTs the right patch to SAVE_ENDPOINT.
+          gzSave() {{ return _gzSave(); }},
+          gzAuthorSecret() {{ return _gzAuthorSecret(); }},
+          // Close the Save card if open (harness cleanup so its
+          // textarea focus does not eat later key probes).
+          gzCloseSaveCard() {{
+            const o = document.getElementById('gz-save-overlay');
+            if (o) {{ o.remove(); return true; }}
+            return false;
+          }},
+        }};
+        // Preserve getters AS getters (Object.assign would freeze
+        // them -- same reasoning as the Task-17 extension).
+        Object.defineProperties(
+          window.__editor, Object.getOwnPropertyDescriptors(_gzApi));
+      }}
+    }} catch (e) {{}}
+  }})();
+
   // ---- Frame loop ----
   const cam = cfg.camera || _DEFAULTS.camera;
   const splatCountEl = document.getElementById('splat-count');

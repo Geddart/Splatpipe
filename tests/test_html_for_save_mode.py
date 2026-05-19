@@ -28,7 +28,90 @@ from splatpipe.core.events import ProgressEvent, StepResult
 from splatpipe.steps.publish import publish_scene
 from splatpipe.viewers.spark.template import html_for
 
-# --- Moving baseline (Task 17) -------------------------------------------
+# --- Moving baseline (Task 18) -------------------------------------------
+# The byte-identity guard pins the PREVIOUS task's COMMITTED generated
+# output and asserts the only delta is THIS task's deliberate change.
+# The baseline therefore moves forward one commit each task. For Task 18
+# the pinned baseline is the committed template at HEAD ``407932a`` (the
+# commit BEFORE Task 18's edit -- i.e. Task 17 committed: feat(editor)
+# author bottom timeline) -- which ALREADY contains every prior task's
+# deliberate, anchored change (Task 8's inert SAVE_* block, Task 10's two
+# visibilitychange blocks, Task 11's in-place spline change, Task 12's
+# three dual-UI regions, Task 13's three regions, Task 14's grown T13-AS
+# ClipPlayer + T14-PW + T14-AF, Task 15's grown T13-AS end-user transport
+# + T15-OB, Task 16's NEW T16-TRAJ author overlay, and Task 17's bottom
+# timeline absorbed INSIDE T16-TRAJ per recipe 2c).
+# ``html_for("HarnessScene")`` there is 286845 bytes.
+#
+# Task 18 (author editor -- select-key gizmo (TransformControls,
+# World|Screen) + the 5-type interp popover + Record(K) + Save/Emit
+# SPCP1; plan H2/Task-14) is a PURE recipe-2c REGION-INTERIOR-ONLY
+# change. Its ENTIRE deliberate delta -- the ``_gzInit`` IIFE (the
+# frustum-pick raycast off the EXISTING scene ``_raycaster``; the
+# TransformControls proxy + World/Screen + R/T modes brokered through
+# the ONE Task-0 ``InteractionManager`` vs OrbitControls; the 5-type
+# interp popover over the EXISTING ``_VALID_INTERP`` set; Record(K) =
+# the live camera pose + the REAL elapsed playhead ``_trajPlayhead()``
+# the Task-16 overlay / Task-17 timeline already use; the cli-default
+# Save that emits an ``SPCP1:`` token via a BYTE-IDENTICAL JS port of
+# ``core.spcp_token.encode_spcp`` MIRRORING the existing SPV1 relay UI,
+# plus the opt-in http POST of the camera-scope patch to
+# ``SAVE_ENDPOINT``) PLUS the ``Object.defineProperties`` EXTENSION of
+# the Task-16/17 TEST-ONLY ``window.__editor`` surface -- lands
+# STRICTLY INSIDE the EXISTING Task-16 T16-TRAJ region (between the
+# UNCHANGED ``  applySplatBudget(_initialBudget);`` START and the
+# UNCHANGED ``  // ---- Frame loop ----`` END, immediately AFTER the
+# Task-17 ``_tlInit`` IIFE's close and BEFORE that END comment). It
+# adds NO new region and NO delta OUTSIDE T16-TRAJ:
+#   * NO importmap change. TransformControls is loaded via a DYNAMIC
+#     ``import('three/addons/controls/TransformControls.js')`` and the
+#     ``three/addons/`` importmap mapping ALREADY EXISTS (the SAME
+#     mapping OrbitControls/CSS2DRenderer's static imports use) -- so
+#     the import is region-interior author-gated code, NOT a new
+#     importmap entry / a top-level static import that would land
+#     OUTSIDE T16-TRAJ (verified: ``three/addons/`` appears exactly
+#     once in BOTH ``407932a`` and the current HTML, byte-unchanged).
+#   * NO CSS region (the gizmo bar / interp popover / Save card are
+#     inline-styled like #sp-hud / the Task-16 toggle); the
+#     ``#author-root`` root already exists (Task 12); the spline /
+#     player / scrub / clip / transport / Task-16 overlay / Task-17
+#     timeline code is REUSED, never modified.
+# The whole block is AUTHOR-MODE-gated (the SAME ``_EDITOR_AUTHOR`` =
+# ``ModeManager.is('author')`` flag the Task-16/17 code uses + every
+# DOM/listener/THREE object is only created in author mode) so for
+# ``"HarnessScene"`` (NOT author mode -- like the 6 live single-camera
+# scenes) it produces ZERO rendered-HTML delta OUTSIDE T16-TRAJ and is
+# byte-runtime-inert: a DELIBERATE, byte-lock-excised change, NOT a
+# regression. Per the regen recipe case 2c: a task whose template
+# delta is PURELY 2c (lands strictly inside an already-excised region)
+# does NOT advance ``_PRE_TASKnn_REMAINDER_*`` -- the remainder is
+# byte-IDENTICAL to the prior task's because the T16-TRAJ excision
+# simply now removes a LARGER span (the Task-16 overlay PLUS the
+# Task-17 timeline PLUS the Task-18 gizmo/popover/record/save). Only
+# the FULL ``407932a`` fingerprint advances (the new committed
+# baseline -- documentation / cross-check; the remainder pin is what
+# the assertion uses). Every prior task's anchored content stays
+# asserted-surviving below (the excision only ever NARROWS what is
+# compared -- never relaxed); the Task-18 gizmo/SPCP surface is
+# asserted present-in-full-html then gone-after-the-T16-TRAJ-excision
+# (hard proof it is wholly inside that region, not leaking).
+_PRE_TASK18_REMAINDER_LEN = 155585
+_PRE_TASK18_REMAINDER_SHA = (
+    "f4cb11b385dedc2d018fc4342766285c0805f147c080b44d9de1fcd250370226"
+)
+# Full ``407932a`` baseline fingerprint (documentation / cross-check;
+# the remainder pin above is what the assertion uses). The REMAINDER
+# pin is byte-IDENTICAL to ``_PRE_TASK17_REMAINDER_*`` (the recipe-2c
+# invariant: Task 18's delta is wholly inside the Task-16 T16-TRAJ
+# region, so the eleven-region remainder is unchanged); only the FULL
+# fingerprint advances (the new committed baseline has the Task-17
+# timeline inside T16-TRAJ).
+_PRE_TASK18_FULL_LEN = 286845
+_PRE_TASK18_FULL_SHA = (
+    "3ad09fb07a1fa85b2f406c67a02fb8aade45b41193a102655e3b52aa9333c032"
+)
+
+# --- Prior moving-baseline note (Task 17, kept for provenance) -----------
 # The byte-identity guard pins the PREVIOUS task's COMMITTED generated
 # output and asserts the only delta is THIS task's deliberate change. The
 # baseline therefore moves forward one commit each task. For Task 17 the
@@ -949,13 +1032,50 @@ def test_defaults_are_regression_safe_existing_scenes_byte_identical():
     assert "OverlayScene.register(_tlLayer)" in html            # Task 17 tick
     assert "editor-timeline" in html                            # Task 17 strip
     assert "tlScaleSelection" in html                           # Task 17 hook
-    # Task-17 is PURE recipe-2c: it adds NO new region. The Task-8
-    # SAVE_* contract is the persistence boundary the spec hard-draws
-    # (Task-17 wires NO save) -- assert it is still present in the FULL
-    # html (it survives the excision too; the OUTSIDE-all-regions
-    # survival is re-asserted post-excision below -- never relaxed).
-    assert 'const SAVE_MODE = "cli";' in html              # Task 8 (T17 no-save)
-    assert 'const SAVE_ENDPOINT = "";' in html              # Task 8 (T17 no-save)
+    # Task 18's deliberate additions ARE present (the WHOLE gizmo /
+    # interp-popover / Record / Save-emit block lives STRICTLY INSIDE
+    # the SAME Task-16 T16-TRAJ region, recipe 2c -- it is excised
+    # together WITH T16-TRAJ below, so it must be present here first
+    # then gone after that excision; that present-then-gone pair is
+    # the hard proof the gizmo/SPCP block is wholly inside T16-TRAJ
+    # and leaks NOTHING outside it). ``function _gzInit`` is the
+    # author-gizmo IIFE; ``function _encodeSpcp`` is the BYTE-IDENTICAL
+    # JS port of ``core.spcp_token.encode_spcp``; ``function _spcpNum``
+    # is its CPython-faithful number formatter; ``gzEncodeSpcp`` /
+    # ``gzSaveCliToken`` are the TEST-ONLY ``window.__editor`` hooks;
+    # ``editor-gizmo-bar`` is the author HUD cluster id; the
+    # ``Author editor -- select-key gizmo`` is the section banner.
+    assert "Author editor -- select-key gizmo" in html         # Task 18 banner
+    assert "function _gzInit" in html                           # Task 18 IIFE
+    assert "function _encodeSpcp" in html                       # Task 18 SPCP port
+    assert "function _spcpNum" in html                          # Task 18 num fmt
+    assert "three/addons/controls/TransformControls.js" in html  # Task 18 import
+    assert "gzEncodeSpcp" in html                               # Task 18 surface
+    assert "gzSaveCliToken" in html                             # Task 18 surface
+    assert "editor-gizmo-bar" in html                           # Task 18 HUD
+    # Task-18 is PURE recipe-2c: it adds NO new region (the
+    # TransformControls import is a DYNAMIC import via the
+    # ALREADY-EXISTING ``three/addons/`` importmap mapping -- NOT a new
+    # importmap entry / a shared-HTML change; verified exactly-once +
+    # byte-unchanged in both baseline and current below). The Task-8
+    # SAVE_* contract is the persistence boundary Task-18's cli/http
+    # Save CONSUMES (it does NOT re-add SAVE_MODE/SAVE_ENDPOINT) --
+    # assert the consts are still present in the FULL html (they
+    # survive the excision too; the OUTSIDE-all-regions survival is
+    # re-asserted post-excision below -- never relaxed).
+    assert 'const SAVE_MODE = "cli";' in html              # Task 8 (T18 consumes)
+    assert 'const SAVE_ENDPOINT = "";' in html              # Task 8 (T18 consumes)
+    # The ``three/addons/`` importmap mapping pre-exists UNCHANGED and
+    # EXACTLY ONCE (the Task-18 TransformControls dynamic import reuses
+    # it -- NO new importmap entry, so no shared non-author-gated HTML
+    # change; this is what keeps Task-18 a pure recipe-2c region-
+    # interior change rather than a bounded deliberate importmap
+    # region). It lives OUTSIDE all eleven regions -> it is in the
+    # compared remainder and thus asserted-surviving (never relaxed).
+    assert html.count(
+        '"three/addons/": '
+        '"https://cdn.jsdelivr.net/npm/three@'
+    ) == 1
 
     # Excise the ELEVEN deliberately-touched regions. The Task-11 spline
     # first (its ORIGINAL anchors, unchanged by Tasks 12-16 -- keeps
@@ -1110,6 +1230,55 @@ def test_defaults_are_regression_safe_existing_scenes_byte_identical():
             not in stripped)                                # T17 layer gone
     assert "editor-timeline" not in stripped               # T17 strip gone
     assert "tlScaleSelection" not in stripped              # T17 hook gone
+    # The Task-18 gizmo/interp-popover/Record/Save-emit block (recipe
+    # 2c -- it lands STRICTLY INSIDE the SAME T16-TRAJ region,
+    # immediately after the Task-17 ``_tlInit`` IIFE's close and
+    # before the ``// ---- Frame loop ----`` END) is therefore excised
+    # TOGETHER WITH T16-TRAJ above: its surface MUST be gone too.
+    # ``function _gzInit`` (the author-gizmo IIFE), ``function
+    # _encodeSpcp`` / ``function _spcpNum`` (the BYTE-IDENTICAL SPCP
+    # JS port + its CPython-faithful number formatter), the
+    # ``three/addons/controls/TransformControls.js`` DYNAMIC import
+    # specifier, ``gzEncodeSpcp`` / ``gzSaveCliToken`` (the TEST-ONLY
+    # window.__editor hooks), ``editor-gizmo-bar`` (the author HUD id)
+    # and the ``Author editor -- select-key gizmo`` banner are each
+    # UNIQUE to the Task-18 block; their absence proves the
+    # gizmo/SPCP block is WHOLLY inside T16-TRAJ and leaks NOTHING
+    # into the compared remainder (the recipe-2c invariant -- if ANY
+    # Task-18 line had leaked outside T16-TRAJ it would still be in
+    # ``stripped`` here AND the LEN/SHA pin below would mismatch).
+    # This is the present-then-gone pair that makes the 2c absorption
+    # hard-proven, NOT assumed. CRUCIALLY: the ``three/addons/``
+    # importmap mapping line is OUTSIDE T16-TRAJ (it is in the
+    # importmap <script> in the document head) so it SURVIVES the
+    # excision -- the DYNAMIC import specifier inside _gzInit is gone
+    # (region-interior) but the shared importmap mapping it reuses is
+    # untouched (asserted surviving just below) -- the proof Task-18
+    # added NO importmap entry / NO shared-HTML change.
+    assert "Author editor -- select-key gizmo" not in stripped  # T18 gone
+    assert "function _gzInit" not in stripped              # T18 IIFE gone
+    assert "function _encodeSpcp" not in stripped          # T18 SPCP port gone
+    assert "function _spcpNum" not in stripped             # T18 num fmt gone
+    assert ("three/addons/controls/TransformControls.js"
+            not in stripped)                                # T18 dyn import gone
+    assert "gzEncodeSpcp" not in stripped                  # T18 surface gone
+    assert "gzSaveCliToken" not in stripped                # T18 surface gone
+    assert "editor-gizmo-bar" not in stripped              # T18 HUD gone
+    # The shared ``three/addons/`` importmap MAPPING (NOT the Task-18
+    # dynamic import specifier, which is region-interior and gone
+    # above) is OUTSIDE all eleven regions and MUST survive the
+    # excision -- this is the byte-lock proof Task-18 added NO
+    # importmap entry / NO shared non-author-gated HTML change (it
+    # only REUSES the pre-existing mapping via a region-interior
+    # dynamic import).
+    assert html.count(
+        '"three/addons/": '
+        '"https://cdn.jsdelivr.net/npm/three@'
+    ) == 1                                                  # shared map intact
+    assert (
+        '"three/addons/": '
+        '"https://cdn.jsdelivr.net/npm/three@'
+    ) in stripped                                          # survives excision
     # The T16-TRAJ START anchor LINE is excised WITH the region, but
     # ``applySplatBudget`` (the FUNCTION, defined far above) and the
     # ``// ---- Frame loop ----`` END comment are themselves removed too
@@ -1139,42 +1308,52 @@ def test_defaults_are_regression_safe_existing_scenes_byte_identical():
     assert "_hidAt" in stripped                           # Task 10 survives
     assert "visibilitychange" in stripped                 # Task 10 survives
 
-    # Byte-for-byte identical to the ``c1d5801`` committed template with
+    # Byte-for-byte identical to the ``407932a`` committed template with
     # the SAME ELEVEN regions excised -> NO unintended drift anywhere
-    # outside the deliberate Task-8/10/11/12/13/14/15/16/17 changes
+    # outside the deliberate Task-8/10/11/12/13/14/15/16/17/18 changes
     # (FAILS loudly if e.g. a stray uncommitted block elsewhere in the
     # template leaked in -- this is exactly how the 4 unstaged strays
-    # are kept out of the Task-17 commit; the pagedExtSplats stray,
+    # are kept out of the Task-18 commit; the pagedExtSplats stray,
     # OUTSIDE all eleven regions, makes this FAIL in the dirty tree BY
-    # DESIGN -> the guard still bites). Task 17 (the author bottom
-    # timeline -- scrub/diamonds/transport/zoom/multiselect/scale) is a
+    # DESIGN -> the guard still bites). Task 18 (the author select-key
+    # gizmo + interp popover + Record + Save/Emit SPCP1) is a
     # PURE recipe-2c change: its ENTIRE deliberate delta lands STRICTLY
     # INSIDE the EXISTING Task-16 T16-TRAJ region (so that region's
     # excision now removes a LARGER span -- the Task-16 author overlay
-    # PLUS the Task-17 timeline -- and the ELEVEN-region REMAINDER is
-    # byte-IDENTICAL to the Task-16 one; ``_PRE_TASK17_REMAINDER_*`` ==
-    # ``_PRE_TASK16_REMAINDER_*`` BY the 2c invariant, NOT by accident
-    # -- a changed remainder here would mean the timeline LEAKED outside
-    # T16-TRAJ). It is a DELIBERATE, byte-lock-excised change -- NOT a
-    # regression for the 6 live single-camera scenes: they are NOT
-    # author mode, so the SAME ``_EDITOR_AUTHOR`` /
-    # ``ModeManager.is('author')`` gate the Task-16 overlay uses + the
-    # strip DOM only ever built in author mode + the ``_tlLayer``
-    # ``modes:['author']`` make the whole timeline byte-runtime-inert
-    # for them (and the byte-lock proves their generated HTML is
-    # byte-identical OUTSIDE T16-TRAJ). PERSISTENCE is NOT Task-17:
-    # SAVE_MODE / SAVE_ENDPOINT are asserted-surviving (re-pinned just
-    # above) -- the timeline mutates only the IN-MEMORY active path +
-    # rebuilds the spline, it wires no save.
-    assert len(stripped) == _PRE_TASK17_REMAINDER_LEN, (
-        f"length drift: {len(stripped)} != {_PRE_TASK17_REMAINDER_LEN} "
+    # PLUS the Task-17 timeline PLUS the Task-18 gizmo/interp-popover/
+    # Record/Save-emit block -- and the ELEVEN-region REMAINDER is
+    # byte-IDENTICAL to the Task-17 one; ``_PRE_TASK18_REMAINDER_*`` ==
+    # ``_PRE_TASK17_REMAINDER_*`` BY the 2c invariant, NOT by accident
+    # -- a changed remainder here would mean the gizmo/SPCP block
+    # LEAKED outside T16-TRAJ, e.g. a top-level TransformControls
+    # static import instead of the region-interior DYNAMIC import, or
+    # a new importmap entry). It is a DELIBERATE, byte-lock-excised
+    # change -- NOT a regression for the 6 live single-camera scenes:
+    # they are NOT author mode, so the SAME ``_EDITOR_AUTHOR`` /
+    # ``ModeManager.is('author')`` gate the Task-16/17 code uses +
+    # every gizmo DOM/listener/THREE object only ever created in
+    # author mode make the whole block byte-runtime-inert for them
+    # (and the byte-lock proves their generated HTML is byte-identical
+    # OUTSIDE T16-TRAJ). Task-18 CONSUMES the Task-8 SAVE_MODE /
+    # SAVE_ENDPOINT contract (cli emits SPCP1, http POSTs the
+    # camera-scope patch) -- it does NOT re-add them; both consts are
+    # asserted-surviving the excision (re-pinned just above). The
+    # shared ``three/addons/`` importmap mapping is OUTSIDE all
+    # regions and asserted-surviving too (Task-18 added NO importmap
+    # entry -- it reuses the existing mapping via a region-interior
+    # dynamic import).
+    assert len(stripped) == _PRE_TASK18_REMAINDER_LEN, (
+        f"length drift: {len(stripped)} != {_PRE_TASK18_REMAINDER_LEN} "
         "(an UNINTENDED change leaked OUTSIDE the eleven deliberate "
-        "regions -- e.g. a Task-17 timeline line escaped the Task-16 "
-        "T16-TRAJ region the 2c recipe requires it to stay inside)"
+        "regions -- e.g. a Task-18 gizmo/SPCP line escaped the Task-16 "
+        "T16-TRAJ region the 2c recipe requires it to stay inside, or "
+        "a NEW importmap entry was added for TransformControls instead "
+        "of reusing the existing three/addons/ mapping via a dynamic "
+        "import)"
     )
     assert (
         hashlib.sha256(stripped.encode()).hexdigest()
-        == _PRE_TASK17_REMAINDER_SHA
+        == _PRE_TASK18_REMAINDER_SHA
     )
 
 

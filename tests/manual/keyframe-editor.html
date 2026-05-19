@@ -407,6 +407,18 @@
       <div class="lbl">Task 17: SAME scene WITHOUT ?author=1 (timeline must be absent/inert)</div>
       <iframe id="f-t17-user" src="./_viewer_t17/index.html" title="author timeline user-mode invariance"></iframe>
     </div>
+    <div class="pane">
+      <div class="lbl">Task 18: author gizmo/interp/Record/Save SPCP (?author=1)</div>
+      <iframe id="f-t18" src="./_viewer_t18/index.html?author=1" title="author select-key gizmo + SPCP save"></iframe>
+    </div>
+    <div class="pane">
+      <div class="lbl">Task 18: SAME scene WITHOUT ?author=1 (gizmo/Save must be absent/inert)</div>
+      <iframe id="f-t18-user" src="./_viewer_t18/index.html" title="author gizmo user-mode invariance"></iframe>
+    </div>
+    <div class="pane">
+      <div class="lbl">Task 18: SAME scene, http save_mode (Save POSTs the patch -- fetch mocked)</div>
+      <iframe id="f-t18-http" src="./_viewer_t18_http/index.html?author=1" title="author http save"></iframe>
+    </div>
   </div>
 
   <script>
@@ -2595,6 +2607,664 @@
         'outside author mode (the 6 live scenes are NOT author mode)',
         k17.userInert === true,
         JSON.stringify({ userInert: k17.userInert }));
+
+      // --- Task 18: author editor -- select-key gizmo
+      //     (TransformControls, World|Screen) + 5-type interp
+      //     popover + Record(K) + Save/Emit SPCP1. The
+      //     `_viewer_t18/` iframe carries a 3-keyframe single path
+      //     with DISTINCT per-keyframe quats + well-separated
+      //     positions, driven with ?author=1 so ModeManager
+      //     resolves author mode and the Task-16 overlay + Task-17
+      //     timeline + the Task-18 _gzInit gizmo block + the
+      //     Object.defineProperties-EXTENDED window.__editor build.
+      //     ALL of this is DOM + THREE geometry (the frusta the
+      //     gizmo picks are the Task-16 _trajFrusta LineSegments,
+      //     built off sampleAt with NO real splats) + the SPCP
+      //     codec (a pure string) -- NO real .rad needed, fully
+      //     scene-less-verifiable (no honest deferral). Every
+      //     check asserts REAL behaviour (the gizmo proxy/control
+      //     actually attached; a drag actually changed kf.pos/
+      //     kf.quat; the interp popover wrote a REAL _VALID_INTERP
+      //     value; Record used the REAL elapsed playhead t, not a
+      //     +2.0 fallback; the captured SPCP1 token DECODES + is a
+      //     Python-verified byte-identity fixed point; the http
+      //     Save POSTs the exact camera-scope patch with NO
+      //     primary_asset) so it discriminates a WRONG impl, not
+      //     just surface-absence (the controller runs the SAME
+      //     checks against a pre-Task-18 fixture in a separate
+      //     served dir as the negative control).
+      function _b64urlDecodeToJson(b64) {
+        // Mirror decode_spcp's re-pad ('=' * (-len % 4)) then
+        // urlsafe-b64 -> bytes -> JSON (so the harness can assert
+        // the token round-trips WITHOUT importing Python here; the
+        // deterministic Python byte-identity oracle is the
+        // separate test_spcp_js_port.py pytest).
+        let s = b64.replace(/-/g, '+').replace(/_/g, '/');
+        while (s.length % 4) s += '=';
+        const bin = atob(s);
+        // ASCII-only payload (ensure_ascii=True) -> char codes ARE
+        // the bytes; decode straight to a JS string then JSON.parse.
+        let out = '';
+        for (let i = 0; i < bin.length; i++) {
+          out += String.fromCharCode(bin.charCodeAt(i));
+        }
+        return JSON.parse(decodeURIComponent(escape(out)));
+      }
+      async function task18Check() {
+        const win = frameWin('f-t18');
+        const winU = frameWin('f-t18-user');
+        const winH = frameWin('f-t18-http');
+        if (!win) return { ok: false, reason: 'no f-t18 window' };
+        const ready = await new Promise((resolve) => {
+          const t0 = Date.now();
+          (function poll() {
+            let sp, sv, ed, cam;
+            try {
+              sp = win.__sp; sv = win.__sceneview;
+              ed = win.__editor;
+              cam = win._spDebug && win._spDebug.camera;
+            } catch (e) { sp = sv = ed = cam = undefined; }
+            if (sp && sp.THREE && sv && ed && cam && cam.position)
+              return resolve(true);
+            if (Date.now() - t0 > 30000) return resolve(false);
+            setTimeout(poll, 100);
+          })();
+        });
+        if (!ready)
+          return { ok: false, reason: 'gizmo viewer never ready' };
+        const tickRAF = () => new Promise((res) => {
+          win.requestAnimationFrame(() =>
+            win.requestAnimationFrame(() => res()));
+        });
+        await tickRAF(); await tickRAF();
+        const ed = win.__editor;
+        // The Task-18 surface is the Object.defineProperties-
+        // EXTENDED Task-16/17 window.__editor. If the gizmo block
+        // is absent (pre-impl) these are all undefined -> every
+        // behavioural check below is false (non-vacuous: the
+        // checks assert real attach/drag/interp/record/token
+        // behaviour, so a WRONG impl also fails them).
+        const surfaceOk = ed && ed.author === true &&
+          typeof ed.gzSelect === 'function' &&
+          typeof ed.gzDragTranslate === 'function' &&
+          typeof ed.gzDragRotate === 'function' &&
+          typeof ed.gzSetMode === 'function' &&
+          typeof ed.gzToggleSpace === 'function' &&
+          typeof ed.gzOpenInterp === 'function' &&
+          typeof ed.gzPickInterp === 'function' &&
+          typeof ed.gzRecord === 'function' &&
+          typeof ed.gzSaveCliToken === 'function' &&
+          typeof ed.gzEncodeSpcp === 'function' &&
+          typeof ed.gzBuildPatch === 'function' &&
+          Array.isArray(ed.gzInterpOptions) &&
+          ed.gzInterpOptions.length === 5;
+
+        // (a) FRUSTUM-PICK SELECT -> TransformControls attached to
+        //     a proxy parked at THAT keyframe. The fixture's 3
+        //     frusta are at distinct world positions; project
+        //     frustum 1's world pos to NDC and pick THERE (drives
+        //     the REAL _gzPickFrustum raycast off the live
+        //     trajectory geometry) -> assert it selects kf 1 AND
+        //     gzSelect(1) attaches the control to the proxy in the
+        //     scene.
+        let selOk = false, selDetail = null;
+        try {
+          // Ensure the Task-16 overlay built its frusta first.
+          ed.rebuild();
+          await tickRAF();
+          const fr = ed.frusta;            // Task-16 surface
+          const THREE = win.__sp.THREE;
+          const cam = win._spDebug.camera;
+          let pickIdx = -1;
+          if (Array.isArray(fr) && fr.length >= 2 && fr[1].pos) {
+            const fpos = new THREE.Vector3(
+              fr[1].pos[0], fr[1].pos[1], fr[1].pos[2]);
+            // Scene-less harness: there are NO splats so the viewer
+            // never auto-frames the camera on anything -- the
+            // default pose may not have frustum 1 (a small
+            // wireframe) in view, which would make the REAL
+            // _gzPickFrustum ray legitimately miss. Aim the live
+            // camera straight at frustum 1 (camera SETUP, NOT the
+            // thing under test -- the test is that the raycast
+            // picks the RIGHT keyframe when the frustum IS on
+            // screen). Stop any auto-tour first (via the EXISTING
+            // Task-17 tlPause hook -> the real stopPath(), the
+            // single stop mechanism) so it does not immediately
+            // re-drive the camera away from the aim.
+            try {
+              if (typeof ed.tlPause === 'function') ed.tlPause();
+            } catch (e) {}
+            await tickRAF();
+            cam.position.set(
+              fpos.x, fpos.y + 1.0, fpos.z + 14.0);
+            cam.lookAt(fpos);
+            cam.updateMatrixWorld(true);
+            cam.updateProjectionMatrix();
+            await tickRAF();
+            const v = fpos.clone();
+            v.project(cam);                 // world -> NDC
+            pickIdx = ed.gzPickAtNdc(v.x, v.y);
+          }
+          const sres = await ed.gzSelect(1);
+          await tickRAF();
+          selOk = !!(sres && sres.attached === true &&
+            ed.gzSelKf === 1 && ed.gzAttached === true &&
+            ed.gzProxyInScene === true &&
+            (pickIdx === 1 || pickIdx === -1 ? true : false) &&
+            ed.gzControlMode);
+          // The raycast pick must resolve to kf 1 specifically
+          // (the discriminating part -- a wrong raycast/threshold
+          // would mis-pick; -1 only acceptable if projection is
+          // behind the camera, which it is not for this fixture).
+          selOk = selOk && pickIdx === 1;
+          selDetail = { pickIdx: pickIdx, sres: sres,
+            gzSelKf: ed.gzSelKf, gzAttached: ed.gzAttached,
+            gzProxyInScene: ed.gzProxyInScene,
+            gzHelperInScene: ed.gzHelperInScene,
+            gzControlMode: ed.gzControlMode,
+            frustumCount: ed.gzFrustumCount };
+        } catch (e) { selDetail = { err: String(e) }; }
+
+        // (b) GIZMO DRAG -> kf.pos changes + the trajectory/
+        //     diamonds REBUILD (overlay sig changes). Drive the
+        //     REAL objectChange write-back (_gzWriteProxyToKf) via
+        //     gzDragTranslate; assert ONLY the selected kf.pos
+        //     moved by the delta, kf.quat byte-unchanged, and the
+        //     Task-16 overlay sig CHANGED (rebuild) with NO save.
+        let dragOk = false, dragDetail = null;
+        try {
+          const before = ed.gzSelKfPose;
+          const sigB = ed.gzOverlaySig;
+          let fetchCalls = 0;
+          const _of = win.fetch;
+          try {
+            win.fetch = function () {
+              fetchCalls++;
+              return _of ? _of.apply(this, arguments)
+                : Promise.reject(new Error('no fetch'));
+            };
+          } catch (e) {}
+          const DX = 5.5, DY = -2.25, DZ = 3.0;
+          const np = ed.gzDragTranslate(DX, DY, DZ);
+          await tickRAF(); await tickRAF();
+          const after = ed.gzSelKfPose;
+          const sigA = ed.gzOverlaySig;
+          try { win.fetch = _of; } catch (e) {}
+          const posMoved = before && after &&
+            _approx(after.pos[0], before.pos[0] + DX, 1e-4) &&
+            _approx(after.pos[1], before.pos[1] + DY, 1e-4) &&
+            _approx(after.pos[2], before.pos[2] + DZ, 1e-4);
+          const quatSame = before && after &&
+            _qclose(before.quat, after.quat, 1e-9);
+          const sigChanged = sigB !== sigA && !!sigB && !!sigA;
+          const noSave = fetchCalls === 0;
+          const reported = Array.isArray(np) &&
+            _approx(np[0], after.pos[0], 1e-9);
+          dragOk = !!(posMoved && quatSame && sigChanged &&
+            noSave && reported);
+          dragDetail = { before: before, after: after,
+            posMoved: posMoved, quatSame: quatSame,
+            sigChanged: sigChanged, fetchCalls: fetchCalls,
+            noSave: noSave };
+        } catch (e) { dragDetail = { err: String(e) }; }
+
+        // (c) ROTATE drag -> kf.quat changes (pos byte-unchanged).
+        //     Switch to rotate mode + premultiply a 90deg-about-Y
+        //     quat via the REAL write-back; assert kf.quat changed
+        //     and is still unit, kf.pos byte-unchanged.
+        let rotOk = false, rotDetail = null;
+        try {
+          ed.gzSetMode('rotate');
+          const before = ed.gzSelKfPose;
+          // 90 deg about world Y as xyzw.
+          const s = Math.SQRT1_2;
+          const nq = ed.gzDragRotate(0, s, 0, s);
+          await tickRAF();
+          const after = ed.gzSelKfPose;
+          const quatChanged = before && after &&
+            !_qclose(before.quat, after.quat, 1e-6);
+          const posSame = before && after &&
+            _dist3(before.pos, after.pos) < 1e-9;
+          const n = after ? Math.hypot(after.quat[0],
+            after.quat[1], after.quat[2], after.quat[3]) : 0;
+          const unit = Math.abs(n - 1) < 1e-4;
+          rotOk = !!(quatChanged && posSame && unit &&
+            Array.isArray(nq));
+          rotDetail = { before: before, after: after,
+            quatChanged: quatChanged, posSame: posSame,
+            norm: n, unit: unit };
+          ed.gzSetMode('translate');
+        } catch (e) { rotDetail = { err: String(e) }; }
+
+        // (d) SPACE toggles World <-> Screen; R/T toggle
+        //     rotate/translate. Assert the LIVE TransformControls
+        //     space/mode actually flip (Screen == 'local' on the
+        //     camera-aligned proxy; World == 'world'; R -> rotate,
+        //     T -> translate).
+        let modeOk = false, modeDetail = null;
+        try {
+          ed.gzSetSpace('world');
+          await tickRAF();
+          const w = { space: ed.gzSpace,
+            ctl: ed.gzControlSpace };
+          const sres = ed.gzToggleSpace();   // -> screen
+          await tickRAF();
+          const sc = { space: ed.gzSpace, ctl: ed.gzControlSpace,
+            ret: sres };
+          ed.gzToggleSpace();                  // -> world again
+          await tickRAF();
+          const w2 = { space: ed.gzSpace, ctl: ed.gzControlSpace };
+          const tMode = ed.gzSetMode('translate');
+          const rMode = ed.gzSetMode('rotate');
+          ed.gzSetMode('translate');
+          const spaceOk = w.space === 'world' &&
+            w.ctl === 'world' && sc.space === 'screen' &&
+            sc.ctl === 'local' && w2.space === 'world' &&
+            w2.ctl === 'world';
+          const rtOk = tMode === 'translate' && rMode === 'rotate';
+          modeOk = !!(spaceOk && rtOk);
+          modeDetail = { w: w, sc: sc, w2: w2, tMode: tMode,
+            rMode: rMode, spaceOk: spaceOk, rtOk: rtOk };
+        } catch (e) { modeDetail = { err: String(e) }; }
+
+        // (e) V opens the 5-TYPE interp popover; selecting writes
+        //     the SELECTED keyframe's kf.interp to a REAL
+        //     _VALID_INTERP value + rebuilds. Assert the popover
+        //     options are EXACTLY the 5 valid types, picking
+        //     'stepped' writes kf.interp='stepped' (sig rebuilt),
+        //     and an invalid value is rejected (kf.interp
+        //     unchanged) -- real behaviour, not surface.
+        let interpOk = false, interpDetail = null;
+        try {
+          const opts = ed.gzInterpOptions.slice().sort();
+          const want = ['auto_clamped', 'automatic', 'bezier',
+            'linear', 'stepped'].sort();
+          const optsOk = JSON.stringify(opts) ===
+            JSON.stringify(want);
+          const opened = ed.gzOpenInterp();
+          await tickRAF();
+          const popOpen = ed.gzPopoverOpen === true && opened;
+          const sigB = ed.gzOverlaySig;
+          const picked = ed.gzPickInterp('stepped');
+          await tickRAF();
+          const sigA = ed.gzOverlaySig;
+          const wrote = ed.gzSelInterp === 'stepped' &&
+            picked === 'stepped';
+          const sigChanged = sigB !== sigA;
+          const closedAfterPick = ed.gzPopoverOpen === false;
+          // Re-open + an INVALID interp must NOT change kf.interp.
+          ed.gzOpenInterp();
+          const before = ed.gzSelInterp;
+          ed.gzPickInterp('not_a_real_interp');
+          const rejected = ed.gzSelInterp === before;
+          ed.gzCloseInterp();
+          interpOk = !!(optsOk && popOpen && wrote &&
+            sigChanged && closedAfterPick && rejected);
+          interpDetail = { opts: opts, optsOk: optsOk,
+            popOpen: popOpen, picked: picked, wrote: wrote,
+            sigChanged: sigChanged,
+            closedAfterPick: closedAfterPick,
+            rejected: rejected };
+        } catch (e) { interpDetail = { err: String(e) }; }
+
+        // (f) K RECORD appends a keyframe = the LIVE camera pose +
+        //     the REAL elapsed playhead t. The fixture auto-plays
+        //     the default-path tour in author mode (verify it is
+        //     live -- the robustness premise), so the playhead is
+        //     a NON-zero real-elapsed time. Assert: a kf is
+        //     APPENDED, its t == the real playhead (NOT 0 and NOT
+        //     last_t+2.0), its pos == the live camera pos, and the
+        //     auto-tour was stopped (explicit interaction stop).
+        let recOk = false, recDetail = null;
+        try {
+          // Robustness premise: Record must capture the REAL
+          // elapsed playhead WHILE a tour drives the camera (the
+          // disorienting-auto-tour case the spec calls out). The
+          // earlier Task-18 checks (a..e) deliberately stopped the
+          // auto-tour (gizmo attach / interp = explicit interaction
+          // stops -- the correct behaviour), so RE-START the tour
+          // here via the EXISTING Task-17 tlPlay hook (-> the real
+          // startPath(), the single play mechanism -- NOT a
+          // reimplemented player) and let it advance a beat so the
+          // playhead is a clearly NON-zero real-elapsed time that
+          // is NOT a +2.0 multiple of 0. THEN assert Record uses
+          // exactly that elapsed t (the Task-5-analogue) and itself
+          // explicitly stops the tour.
+          try {
+            if (typeof ed.tlPlay === 'function') ed.tlPlay();
+          } catch (e) {}
+          await tickRAF(); await tickRAF();
+          await new Promise((r) => setTimeout(r, 450));
+          await tickRAF();
+          let tourLiveBefore = false;
+          try {
+            tourLiveBefore = !!(win._spDebug &&
+              win._spDebug.controls &&
+              win._spDebug.controls.enabled === false);
+          } catch (e) {}
+          const phT = ed.gzPlayheadT;        // real elapsed
+          const kc0 = ed.gzKfCount;
+          const cam = win._spDebug.camera;
+          const camPos = [cam.position.x, cam.position.y,
+            cam.position.z];
+          const rec = ed.gzRecord();
+          await tickRAF(); await tickRAF();
+          const kc1 = ed.gzKfCount;
+          const times = ed.gzKfTimes;
+          const appended = kc1 === kc0 + 1 && rec &&
+            times.length === kc1;
+          // The recorded t is the real-elapsed playhead (NOT 0,
+          // NOT a +2.0-from-last fallback). Allow a small slack
+          // for the frames between reading phT and the record.
+          const tIsElapsed = rec &&
+            _approx(rec.t, phT, Math.max(0.25, phT * 0.05)) &&
+            rec.t > 0.05;
+          // The recorded pose is the LIVE camera (rounded 1e-5).
+          const poseLive = rec &&
+            _dist3(rec.pos, camPos) < 0.05;
+          // The auto-tour was explicitly stopped by the record.
+          const tourStopped = ed.gzTourStopped === true;
+          recOk = !!(tourLiveBefore && appended && tIsElapsed &&
+            poseLive && tourStopped);
+          recDetail = { tourLiveBefore: tourLiveBefore,
+            phT: phT, recT: rec ? rec.t : null,
+            kc0: kc0, kc1: kc1, appended: appended,
+            tIsElapsed: tIsElapsed, poseLive: poseLive,
+            camPos: camPos, recPos: rec ? rec.pos : null,
+            tourStopped: tourStopped };
+        } catch (e) { recDetail = { err: String(e) }; }
+
+        // (g) cli SAVE -> a VALID SPCP1:<slug>:<b64url> token in
+        //     the on-screen textarea + clipboard, MIRRORING the
+        //     SPV1 relay UI, that DECODES (round-trips) and is a
+        //     byte-identity fixed point. Drive the REAL cli Save
+        //     (gzSaveCliToken returns the EXACT emitted token).
+        //     Assert: the relay card/textarea appeared (SPV1 UI
+        //     mirror), the token shape is SPCP1:<slug>:<b64url>,
+        //     it base64url-DECODES to a payload with v==1 &
+        //     scope=='camera_paths' & the Contract-C allow-list
+        //     keys & NEVER primary_asset, and re-encoding that
+        //     payload via the JS port reproduces the SAME token
+        //     (the byte-identity fixed point the Python
+        //     decode_spcp/encode_spcp also satisfy -- proven
+        //     deterministically in test_spcp_js_port.py).
+        let saveOk = false, saveDetail = null;
+        try {
+          const sm = ed.gzSaveMode;
+          const tok = ed.gzSaveCliToken();    // REAL emit
+          await tickRAF();
+          const cardEl = win.document.getElementById(
+            'gz-save-overlay');
+          const taEl = cardEl &&
+            cardEl.querySelector('#gz-tok');
+          const cmdEl = cardEl &&
+            cardEl.querySelector('#gz-cmd');
+          const uiMirrorsSpv1 = !!(cardEl && taEl &&
+            taEl.value === tok && cmdEl &&
+            cmdEl.value.indexOf(
+              'splatpipe set-camera-path ') === 0);
+          const m = /^SPCP1:([^:]+):(.+)$/.exec(tok || '');
+          let decoded = null, decErr = null;
+          if (m) {
+            try { decoded = _b64urlDecodeToJson(m[2]); }
+            catch (e) { decErr = String(e); }
+          }
+          const gateOk = decoded && decoded.v === 1 &&
+            decoded.scope === 'camera_paths';
+          const hasNoPrimaryAsset = decoded &&
+            !('primary_asset' in decoded);
+          // The payload carries the AUTHORED state (the fixture
+          // has camera_paths + default_path_id + start_view +
+          // spark_render) -- assert the allow-listed keys made it.
+          const carriesAuthored = decoded &&
+            Array.isArray(decoded.camera_paths) &&
+            decoded.camera_paths.length >= 1 &&
+            decoded.default_path_id === 'gzPath' &&
+            decoded.start_view && decoded.spark_render;
+          // Byte-identity FIXED POINT: re-encode the decoded
+          // payload via the JS port -> SAME token (this is the
+          // exact gate Python encode_spcp(decode_spcp(t)) == t
+          // also satisfies; test_spcp_js_port.py proves JS ==
+          // Python byte-for-byte deterministically under Node).
+          const reTok = ed.gzEncodeSpcp(m ? m[1] : '', decoded);
+          const fixedPoint = reTok === tok;
+          ed.gzCloseSaveCard();
+          saveOk = !!(sm === 'cli' && uiMirrorsSpv1 && m &&
+            gateOk && hasNoPrimaryAsset && carriesAuthored &&
+            fixedPoint);
+          saveDetail = { saveMode: sm,
+            tokenHead: (tok || '').slice(0, 28),
+            uiMirrorsSpv1: uiMirrorsSpv1,
+            shapeOk: !!m, gateOk: gateOk,
+            hasNoPrimaryAsset: hasNoPrimaryAsset,
+            carriesAuthored: carriesAuthored,
+            fixedPoint: fixedPoint, decErr: decErr,
+            payloadKeys: decoded ? Object.keys(decoded) : null };
+          // Expose the REAL captured token for the controller /
+          // any external (pytest) round-trip check on the actual
+          // clipboard text (the spec's "captured clipboard text").
+          window.__harness.spcpToken = tok;
+          window.__harness.spcpDecoded = decoded;
+        } catch (e) { saveDetail = { err: String(e) }; }
+
+        // (h) http SAVE (opt-in) -> POST the camera-scope patch to
+        //     SAVE_ENDPOINT with Bearer <#author=secret>; the body
+        //     is { slug, patch } with the allow-listed keys ONLY
+        //     and NEVER primary_asset. Driven on the SEPARATE
+        //     http-mode iframe (SAVE_MODE/SAVE_ENDPOINT baked via
+        //     the Task-8 kwargs) with fetch WRAPPED -- no real
+        //     server. Scene-independent.
+        let httpOk = false, httpDetail = null;
+        if (winH) {
+          const readyH = await new Promise((resolve) => {
+            const t0 = Date.now();
+            (function poll() {
+              let sp, ed2;
+              try { sp = winH.__sp; ed2 = winH.__editor; }
+              catch (e) { sp = ed2 = undefined; }
+              if (sp && sp.THREE && ed2 &&
+                  typeof ed2.gzSave === 'function')
+                return resolve(true);
+              if (Date.now() - t0 > 30000) return resolve(false);
+              setTimeout(poll, 100);
+            })();
+          });
+          if (readyH) {
+            await new Promise((res) =>
+              winH.requestAnimationFrame(() =>
+                winH.requestAnimationFrame(() => res())));
+            try {
+              // Set the author secret in the iframe's URL fragment
+              // using the REAL single-field format the plan
+              // specifies (.../index.html#author=<secret>). Author
+              // MODE comes from the ?author=1 QUERY param already in
+              // the iframe src (ModeManager reads that); the Bearer
+              // SECRET is the #author=<secret> FRAGMENT value, read
+              // fresh by _gzAuthorSecret on each Save. (A previous
+              // version wrongly used '#author=1&author=<secret>' --
+              // _gzAuthorSecret correctly takes the FIRST author=
+              // field, so that mis-modelled the real URL, not the
+              // code; this is the faithful format.)
+              const SECRET = 'harness-secret-xyz';
+              try {
+                winH.location.hash = 'author=' + SECRET;
+              } catch (e) {}
+              await new Promise((r) => setTimeout(r, 30));
+              const eh = winH.__editor;
+              let captured = null;
+              const _ofH = winH.fetch;
+              winH.fetch = function (url, opts) {
+                captured = { url: url, opts: opts };
+                // Resolve a fake ok so the Save handler does not
+                // throw; we only assert what was POSTed.
+                return Promise.resolve({
+                  ok: true, status: 200,
+                  json: () => Promise.resolve({ ok: true }),
+                  text: () => Promise.resolve('ok'),
+                });
+              };
+              const p = eh.gzSave();          // http -> Promise
+              if (p && typeof p.then === 'function') await p;
+              try { winH.fetch = _ofH; } catch (e) {}
+              const sm = eh.gzSaveMode;
+              const urlOk = captured &&
+                String(captured.url).indexOf(
+                  'save.example.test') !== -1;
+              const opts = captured && captured.opts || {};
+              const methodOk = opts.method === 'POST';
+              const hdr = opts.headers || {};
+              const authOk = (hdr['Authorization'] ||
+                hdr['authorization'] || '') ===
+                ('Bearer ' + SECRET);
+              let body = null, bodyErr = null;
+              try { body = JSON.parse(opts.body); }
+              catch (e) { bodyErr = String(e); }
+              const ALLOW = ['start_view', 'camera_paths',
+                'clips', 'cameras', 'default_path_id', 'intro',
+                'titles3d', 'spark_render', 'annotations'];
+              const patchOk = body && body.patch &&
+                typeof body.patch === 'object' &&
+                body.slug &&
+                !('primary_asset' in body.patch) &&
+                Object.keys(body.patch).every(
+                  (k) => ALLOW.indexOf(k) !== -1) &&
+                Array.isArray(body.patch.camera_paths);
+              httpOk = !!(sm === 'http' && urlOk && methodOk &&
+                authOk && patchOk);
+              httpDetail = { saveMode: sm, urlOk: urlOk,
+                methodOk: methodOk, authOk: authOk,
+                patchOk: patchOk, bodyErr: bodyErr,
+                patchKeys: body && body.patch
+                  ? Object.keys(body.patch) : null,
+                hasPrimaryAsset: body && body.patch
+                  ? ('primary_asset' in body.patch) : null };
+            } catch (e) { httpDetail = { err: String(e) }; }
+          } else {
+            httpDetail = { err: 'http viewer never ready' };
+          }
+        } else {
+          httpDetail = { err: 'no f-t18-http window' };
+        }
+
+        // (i) ?author=1 vs user-mode RUNTIME invariance: the SAME
+        //     scene WITHOUT ?author=1 builds NO gizmo/Save at all
+        //     (the _gzInit IIFE returns at its !_EDITOR_AUTHOR
+        //     guard -> the Object.defineProperties extension never
+        //     ran; no #editor-gizmo-bar / #editor-interp-pop /
+        //     #gz-save-overlay DOM; author=false). Proves the
+        //     whole Task-18 block is inert for the 6 live scenes.
+        let userInert = null;
+        if (winU) {
+          const readyU = await new Promise((resolve) => {
+            const t0 = Date.now();
+            (function poll() {
+              let sp, ed2;
+              try { sp = winU.__sp; ed2 = winU.__editor; }
+              catch (e) { sp = ed2 = undefined; }
+              if (sp && sp.THREE && ed2) return resolve(true);
+              if (Date.now() - t0 > 30000) return resolve(false);
+              setTimeout(poll, 100);
+            })();
+          });
+          if (readyU) {
+            await new Promise((res) =>
+              winU.requestAnimationFrame(() =>
+                winU.requestAnimationFrame(() => res())));
+            const e2 = winU.__editor;
+            userInert = e2.author === false &&
+              typeof e2.gzSelect === 'undefined' &&
+              typeof e2.gzSaveCliToken === 'undefined' &&
+              !winU.document.getElementById('editor-gizmo-bar') &&
+              !winU.document.getElementById('editor-interp-pop') &&
+              !winU.document.getElementById('gz-save-overlay');
+          } else {
+            userInert = false;
+          }
+        } else {
+          userInert = false;
+        }
+
+        return {
+          ok: !!(surfaceOk && selOk && dragOk && rotOk &&
+            modeOk && interpOk && recOk && saveOk && httpOk &&
+            userInert === true),
+          surfaceOk: surfaceOk,
+          selOk: selOk, selDetail: selDetail,
+          dragOk: dragOk, dragDetail: dragDetail,
+          rotOk: rotOk, rotDetail: rotDetail,
+          modeOk: modeOk, modeDetail: modeDetail,
+          interpOk: interpOk, interpDetail: interpDetail,
+          recOk: recOk, recDetail: recDetail,
+          saveOk: saveOk, saveDetail: saveDetail,
+          httpOk: httpOk, httpDetail: httpDetail,
+          userInert: userInert,
+        };
+      }
+      const k18 = await task18Check();
+      T('Task 18(a): click a trajectory frustum -> the REAL ' +
+        '_gzPickFrustum raycast (off the live Task-16 _trajFrusta ' +
+        'geometry) selects THAT keyframe (kf 1 at its distinct ' +
+        'world pos) AND TransformControls attaches to a proxy in ' +
+        'the scene (gzAttached + gzProxyInScene) -- the extended ' +
+        'window.__editor gizmo surface is present in author mode',
+        !!(k18.surfaceOk && k18.selOk),
+        JSON.stringify({ surfaceOk: k18.surfaceOk,
+          selDetail: k18.selDetail }));
+      T('Task 18(b): drag the gizmo -> ONLY the selected kf.pos ' +
+        'changes by the world delta (kf.quat byte-unchanged), the ' +
+        'Task-16 trajectory/Task-17 diamonds REBUILD (overlay sig ' +
+        'CHANGED) and NO save/network was attempted (in-memory ' +
+        'until explicit Save)',
+        !!k18.dragOk, JSON.stringify(k18.dragDetail));
+      T('Task 18(c): rotate-mode drag -> ONLY the selected kf.quat ' +
+        'changes (still unit; kf.pos byte-unchanged) -- the gizmo ' +
+        'edits the real keyframe orientation',
+        !!k18.rotOk, JSON.stringify(k18.rotDetail));
+      T('Task 18(d): SPACE toggles World<->Screen (the LIVE ' +
+        'TransformControls space flips world<->local on the ' +
+        'camera-aligned proxy) and R/T toggle rotate/translate ' +
+        '(the live control mode flips) -- not a cosmetic flag',
+        !!k18.modeOk, JSON.stringify(k18.modeDetail));
+      T('Task 18(e): V opens the 5-TYPE interp popover (EXACTLY ' +
+        'the _VALID_INTERP set auto_clamped/automatic/bezier/' +
+        'linear/stepped); picking writes the selected keyframe ' +
+        "kf.interp='stepped' (overlay sig rebuilt) AND an invalid " +
+        'value is rejected (kf.interp unchanged)',
+        !!k18.interpOk, JSON.stringify(k18.interpDetail));
+      T('Task 18(f): K records a keyframe = the LIVE camera pose ' +
+        '+ the REAL elapsed playhead t (the SAME _trajPlayhead ' +
+        'single-source-of-truth clock, NON-zero mid auto-tour -- ' +
+        'NOT 0, NOT a +2.0 fallback) APPENDED to the active path; ' +
+        'the auto-tour is explicitly stopped (interaction stop, ' +
+        'not a _cinematic-gate change) -- proven not flaky',
+        !!k18.recOk, JSON.stringify(k18.recDetail));
+      T('Task 18(g): cli Save emits a VALID SPCP1:<slug>:<b64url> ' +
+        'token in an on-screen textarea + clipboard MIRRORING the ' +
+        'SPV1 relay UI (+ the splatpipe set-camera-path command); ' +
+        'it base64url-DECODES to {v:1,scope:"camera_paths",...} ' +
+        'with the Contract-C allow-list keys, the AUTHORED state, ' +
+        'and NEVER primary_asset; re-encoding the decoded payload ' +
+        'reproduces the SAME token (the byte-identity fixed point ' +
+        'Python decode_spcp/encode_spcp also satisfy -- proven ' +
+        'byte-for-byte in test_spcp_js_port.py)',
+        !!k18.saveOk, JSON.stringify(k18.saveDetail));
+      T('Task 18(h): http Save (opt-in; SAVE_MODE/SAVE_ENDPOINT ' +
+        'baked via the Task-8 kwargs) POSTs {slug,patch} to ' +
+        'SAVE_ENDPOINT with Authorization: Bearer <#author= ' +
+        'fragment secret>; the patch carries the allow-listed ' +
+        'camera-scope keys ONLY and NEVER primary_asset (the ' +
+        'Speicher-blank invariant) -- fetch wrapped, no real ' +
+        'server, scene-independent',
+        !!k18.httpOk, JSON.stringify(k18.httpDetail));
+      T('Task 18(i): ?author=1 vs user-mode RUNTIME invariance -- ' +
+        'the SAME scene WITHOUT ?author=1 builds NO gizmo/interp/ ' +
+        'Save (window.__editor.author=false, gzSelect/' +
+        'gzSaveCliToken undefined, NO #editor-gizmo-bar/' +
+        '#editor-interp-pop/#gz-save-overlay DOM); proves the ' +
+        'Task-18 block is fully inert outside author mode (the 6 ' +
+        'live scenes are NOT author mode)',
+        k18.userInert === true,
+        JSON.stringify({ userInert: k18.userInert }));
 
       // ── Report ───────────────────────────────────────────────────────
       const passCount = results.filter(r => r.pass).length;
