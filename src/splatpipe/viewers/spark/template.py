@@ -392,6 +392,12 @@ _VIEWER_TEMPLATE = """\
     body.usermode #author-root {{ display: none; }}
     body.authormode #user-transport {{ display: none; }}
     body.authormode #path-mini {{ display: none !important; }}
+    /* v2-C Phase 2 REFINE: AUTHOR-ONLY add/rename buttons. CSS-only
+       gate (mirrors the body.authormode #path-mini pattern above) so
+       the buttons are always in the DOM (no layout flash) and hidden
+       in every non-author mode (default end-user view, embed). */
+    body:not(.authormode) #add-camera-btn,
+    body:not(.authormode) #rename-camera-btn {{ display: none !important; }}
 
     /* Task 13 -- cinematic loading-blur + intro fade (the END-USER shell,
        plan SS-A3). Same CSS-gating mechanism as the Task-12 dual-UI roots
@@ -480,6 +486,16 @@ _VIEWER_TEMPLATE = """\
       <select id="camera-select" class="quality-btn" title="Camera. Perspective = free-fly (orbit / WASD). An animated camera binds the in-viewer editor to its path (author) or plays its tour (end-user).">
         <option value="__perspective__">Perspective</option>
       </select>
+      <!-- v2-C Phase 2 REFINE: AUTHOR-ONLY visible "Add" / "Rename"
+           buttons. Both are CSS-gated to authormode (the existing
+           T12-CSS dual-UI region adjacent to body.authormode #path-mini)
+           so an end-user never sees them. JS handlers (in the T19-JS
+           #camSel* block) call _camSelCreate / _camSelRename. Reuse
+           class="quality-btn" -- NO new CSS for styling. -->
+      <button id="add-camera-btn" class="quality-btn"
+              title="Author only: add a new empty camera. The new camera is selected and bound; press Record-K (R) to capture keyframes.">+ Add camera</button>
+      <button id="rename-camera-btn" class="quality-btn"
+              title="Author only: rename the currently-selected camera. Perspective cannot be renamed.">Rename</button>
       <button id="bench-btn" class="quality-btn"
               title="Run the selected benchmark (dropdown at left). Click again to stop early; downloads a JSON trace (+ contact sheet for probe/rotate).">Bench</button>
       <button id="setstart-btn" class="quality-btn"
@@ -2324,12 +2340,14 @@ _VIEWER_TEMPLATE = """\
   //  -- only the end-user #camera-select <select> MARKUP, which
   //  is OUTSIDE every region, needs the deliberate re-pin).
   const _CAM_PERSP = '__perspective__';
-  // v2-C Phase 2 -- AUTHOR-ONLY "+ Create camera" sentinel. Like
-  // _CAM_PERSP it is a pure viewer-UI selector value that is NEVER
-  // written to cfg / the SPCP patch / a camera_paths|cameras entry;
-  // it is the LAST #camera-select option and ONLY appended when
-  // _EDITOR_AUTHOR (an end-user never sees / can trigger create).
-  const _CAM_CREATE = '__create__';
+  // v2-C Phase 2 REFINE: the "+ Create camera" sentinel was dropped in
+  // favour of a VISIBLE "+ Add camera" BUTTON (#add-camera-btn) wired
+  // straight to _camSelCreate() -- no dropdown sentinel any more (the
+  // dropdown is now the cleaner "Perspective | each camera" peer-list it
+  // semantically already is). #add-camera-btn + #rename-camera-btn live
+  // in the EXISTING T20-CAMSEL-DOM markup region and are CSS-gated to
+  // authormode in the EXISTING T12-CSS region (recipe-2c throughout --
+  // the byte-lock remainder pin stays UNCHANGED).
   const _camSel = document.getElementById('camera-select');
   // v2-C Phase 2 -- mirror of core/path_io.py::_new_id ('p_' + 10
   // hex). The Python schema / set-camera-path accept exactly this
@@ -2411,24 +2429,10 @@ _VIEWER_TEMPLATE = """\
   // play); END-USER starts that path's tour.
   function _camSelApply(val) {{
     const isUser = ModeManager.is('user');
-    // v2-C Phase 2 -- AUTHOR-ONLY "+ Create camera". The create
-    // sentinel is the LAST option and only present for authors;
-    // double-guard with _EDITOR_AUTHOR so an end-user can never
-    // trigger create even if the value were forced. _camSelCreate
-    // re-enters _camSelApply with the NEW real path id (never
-    // _CAM_CREATE), so this branch does not recurse.
-    if (val === _CAM_CREATE) {{
-      if (_EDITOR_AUTHOR) {{
-        _camSelCreate();
-      }} else {{
-        // Defensive: an end-user must never land on create. Fall
-        // back to free-fly (Perspective) -- consistent state.
-        _camSelSyncing = true;
-        if (_camSel) {{ try {{ _camSel.value = _CAM_PERSP; }} catch (e) {{}} }}
-        _camSelSyncing = false;
-      }}
-      return;
-    }}
+    // v2-C Phase 2 REFINE: the dropdown no longer carries a create
+    // sentinel -- "+ Add camera" is a visible button (#add-camera-btn)
+    // wired straight to _camSelCreate(). The dropdown is now purely
+    // "Perspective | each camera" -- nothing here to intercept.
     if (!val || val === _CAM_PERSP) {{
       // Perspective = free-fly. Stop any path playback; in
       // end-user mode treat it as an explicit interrupt (reuses
@@ -2503,12 +2507,14 @@ _VIEWER_TEMPLATE = """\
   }}
   // v2-C Phase 2 -- (re)build the camera options. Single source of
   // truth for BOTH #camera-select (Perspective sentinel kept as
-  // option 0 -- never destroyed -- then the cameras, then the
-  // AUTHOR-ONLY "+ Create camera" sentinel last) AND the hidden
+  // option 0 -- never destroyed -- then the cameras) AND the hidden
   // #path-select (the ~30 selEl consumers read selEl.value; they
   // need the new path as a real <option> so selEl.value = id sticks
-  // -- the SAME rebind contract Phase 1 relies on). Reused by init
-  // AND by create (no duplicated option-build).
+  // -- the SAME rebind contract Phase 1 relies on). Reused by init,
+  // by create (no duplicated option-build) AND by rename (so a new
+  // label shows up immediately). Phase 2 REFINE: no "+ Create
+  // camera" sentinel any more -- a visible #add-camera-btn replaces
+  // it (button click -> _camSelCreate() directly).
   function _camSelBuildOptions() {{
     if (_camSel) {{
       // Drop everything AFTER the Perspective sentinel (option 0,
@@ -2521,24 +2527,6 @@ _VIEWER_TEMPLATE = """\
         opt.value = c.value;
         opt.textContent = c.label;
         _camSel.appendChild(opt);
-      }}
-      // AUTHOR-ONLY: the create affordance, always LAST. An
-      // end-user never gets this option (selector itself stays
-      // end-user-visible from Phase 1; only CREATE is gated).
-      // _camSelBuildOptions runs at MODULE INIT TIME (via
-      // _camSelInit below), BEFORE the `const _EDITOR_AUTHOR =
-      // ModeManager.is('author')` declaration further down -- so
-      // reading `_EDITOR_AUTHOR` here would throw a TDZ
-      // ReferenceError on every page load (freezes the viewer).
-      // Call `ModeManager.is('author')` directly: ModeManager is a
-      // module-scope const declared well above this site, and its
-      // `is(...)` accessor is safe to invoke at any time after that
-      // declaration. Semantically identical to `_EDITOR_AUTHOR`.
-      if (ModeManager.is('author')) {{
-        const cOpt = document.createElement('option');
-        cOpt.value = _CAM_CREATE;
-        cOpt.textContent = '+ Create camera';
-        _camSel.appendChild(cOpt);
       }}
     }}
     // Rebuild the hidden #path-select with the SAME (value=p.id,
@@ -2617,6 +2605,55 @@ _VIEWER_TEMPLATE = """\
     // timeline / _gzRecordKeyframe operate on the new empty path).
     _camSelApply(pathId);
   }}
+  // v2-C Phase 2 REFINE -- AUTHOR-ONLY rename of the currently-selected
+  // camera. In-place mutation of BOTH cfg.cameras[i].name AND the
+  // matching cfg.camera_paths/cameraPaths entry's .name (so the
+  // dropdown rebuild + the SPCP _buildPatch round-trip both see the
+  // new label). NO new wire change: `cameras` / `camera_paths` are
+  // already in _PATCH_KEYS, primary_asset force-keep is unchanged,
+  // and a renamed-in-place entry round-trips through the EXISTING
+  // SPCP / config_merge contract with ZERO codec change. The
+  // Perspective sentinel cannot be renamed (it is not a real camera).
+  function _camSelRename() {{
+    if (!_EDITOR_AUTHOR) return;
+    if (!_camSel) return;
+    const val = _camSel.value;
+    if (!val || val === _CAM_PERSP) return;
+    // Locate the path entry by id (the dropdown value is always the
+    // path id -- both from _camSelCameras' cfg.cameras branch and its
+    // raw cameraPaths fallback).
+    const pathIdx = cameraPaths.findIndex(p => p && p.id === val);
+    let camsArr = Array.isArray(cfg.cameras) ? cfg.cameras : null;
+    let camIdx = -1;
+    if (camsArr) {{
+      camIdx = camsArr.findIndex(c => c && c.path_id === val);
+    }}
+    if (pathIdx < 0 && camIdx < 0) return;
+    const cur = (camIdx >= 0 && camsArr[camIdx] && camsArr[camIdx].name)
+      ? camsArr[camIdx].name
+      : ((pathIdx >= 0 && cameraPaths[pathIdx] && cameraPaths[pathIdx].name)
+         ? cameraPaths[pathIdx].name
+         : '');
+    let next;
+    try {{ next = window.prompt('Rename camera', cur || ''); }}
+    catch (e) {{ next = null; }}
+    if (next === null) return;          // cancelled
+    next = ('' + next).trim();
+    if (!next) return;                  // reject blank
+    if (next.length > 60) next = next.slice(0, 60);
+    if (next === cur) return;           // no-op
+    if (camIdx >= 0) camsArr[camIdx].name = next;
+    if (pathIdx >= 0) cameraPaths[pathIdx].name = next;
+    // Keep cfg.camera_paths pointing at the live cameraPaths binding
+    // (defensive -- same re-alias _camSelCreate does, harmless if
+    // they were already the same reference).
+    cfg.camera_paths = cameraPaths;
+    // Rebuild dropdown options reflecting the new label, then
+    // re-select the same camera (_camSelReflect is a no-op when
+    // _camSel.value already matches `val`, so this is idempotent).
+    _camSelBuildOptions();
+    _camSelReflect(val);
+  }}
   function _camSelInit() {{
     if (!_camSel) return;
     // Build the camera options after the Perspective sentinel
@@ -2643,6 +2680,21 @@ _VIEWER_TEMPLATE = """\
       if (_camSelSyncing) return;
       _camSelApply(_camSel.value);
     }});
+    // v2-C Phase 2 REFINE -- visible Add / Rename buttons. Both are
+    // CSS-gated to authormode (T12-CSS region) so an end-user never
+    // sees them; the handlers double-guard via _EDITOR_AUTHOR (a
+    // devtools click in usermode is a no-op). The button DOM lives
+    // in the EXISTING T20-CAMSEL-DOM markup region (between the
+    // camera-select </select> and the Bench button) so it is
+    // recipe-2c-absorbed and contributes ZERO to the byte-lock pin.
+    const _addBtn = document.getElementById('add-camera-btn');
+    if (_addBtn) {{
+      _addBtn.addEventListener('click', () => {{ _camSelCreate(); }});
+    }}
+    const _renBtn = document.getElementById('rename-camera-btn');
+    if (_renBtn) {{
+      _renBtn.addEventListener('click', () => {{ _camSelRename(); }});
+    }}
   }}
   _camSelInit();
 

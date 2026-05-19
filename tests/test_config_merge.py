@@ -214,6 +214,67 @@ def test_multicamera_create_patch_whole_replaces_and_keeps_primary_asset():
     assert out["spark_render"] == {"clip_xy": 3.0}
 
 
+def test_multicamera_rename_round_trips_through_merge():
+    """v2-C Phase 2 REFINE "Rename": the in-viewer rename affordance
+    mutates ``cameras[i].name`` AND the matching ``camera_paths[i].name``
+    in place, then Save sends the patch through ``merge_camera_scope``.
+    The UNCHANGED whole-replace semantics carry the new name through
+    untouched (no codec change, no new wire key) -- this LOCKS that
+    contract. The security-critical ``primary_asset`` force-keep still
+    holds against a hostile pointer in the SAME patch. Proof the
+    Phase-2 REFINE rename flow needed ZERO core change."""
+    existing = {
+        "primary_asset": "bSPEICHER/scene.rad",
+        "camera_paths": [
+            {"id": "p_orig000001", "name": "Camera 1",
+             "keyframes": [{"t": 0.0, "pos": [0, 0, 0]}]},
+            {"id": "p_orig000002", "name": "Camera 2",
+             "keyframes": [{"t": 0.0, "pos": [1, 1, 1]}]},
+        ],
+        "cameras": [
+            {"id": "p_camorig001", "name": "Camera 1",
+             "path_id": "p_orig000001"},
+            {"id": "p_camorig002", "name": "Camera 2",
+             "path_id": "p_orig000002"},
+        ],
+        "default_path_id": "p_orig000001",
+        "spark_render": {"clip_xy": 3.0},
+    }
+    # The exact shape _camSelRename emits: both cameras present but
+    # the second one's name updated in BOTH cfg.cameras AND the
+    # matching cameraPaths entry (same author UX -- rename in place).
+    # The hostile primary_asset in the same patch must still be
+    # ignored by the force-keep invariant.
+    patch = {
+        "camera_paths": [
+            {"id": "p_orig000001", "name": "Camera 1",
+             "keyframes": [{"t": 0.0, "pos": [0, 0, 0]}]},
+            {"id": "p_orig000002", "name": "Hero",
+             "keyframes": [{"t": 0.0, "pos": [1, 1, 1]}]},
+        ],
+        "cameras": [
+            {"id": "p_camorig001", "name": "Camera 1",
+             "path_id": "p_orig000001"},
+            {"id": "p_camorig002", "name": "Hero",
+             "path_id": "p_orig000002"},
+        ],
+        "default_path_id": "p_orig000001",
+        "primary_asset": "EVIL/attacker.rad",   # must NEVER apply
+    }
+    out = merge_camera_scope(existing, patch)
+
+    # whole-replace carries the renamed entries through unchanged.
+    assert out["camera_paths"] == patch["camera_paths"]
+    assert out["camera_paths"][1]["name"] == "Hero"
+    assert out["cameras"] == patch["cameras"]
+    assert out["cameras"][1]["name"] == "Hero"
+    # untouched siblings preserved.
+    assert out["default_path_id"] == "p_orig000001"
+    assert out["spark_render"] == {"clip_xy": 3.0}
+    # LOCKED INVARIANT: pointer is always existing's, never patch's.
+    assert out["primary_asset"] == "bSPEICHER/scene.rad"
+
+
 def test_existing_without_primary_asset_does_not_synthesize_one():
     """Faithful extraction: set_start_view never *added* primary_asset; if
     the fetched config lacked it, it stayed absent (the older-deploy case).
