@@ -3642,6 +3642,478 @@ _VIEWER_TEMPLATE = """\
   }}
   applySplatBudget(_initialBudget);
 
+  // ============================================================
+  //  Author editor -- viewport trajectory + camera frustums +
+  //  speed dots (Task 16 -- plan H2/Task-12; the FIRST author
+  //  overlay)
+  // ------------------------------------------------------------
+  //  AUTHOR MODE ONLY (ModeManager.is('author')): user / embed
+  //  and the 6 live single-camera scenes (which are NOT author
+  //  mode) are byte-runtime-unchanged -- every code path below is
+  //  gated by ModeManager and the OverlayScene layer is
+  //  registered with modes:['author'] so its node is hidden AND
+  //  its update() is skipped outside author mode (the Task-0
+  //  OverlayScene contract). No parallel rAF / no parallel
+  //  listener: the rebuild + active-key tracking fan out from the
+  //  ONE OverlayScene.update() tick. Reuses, never reinvents:
+  //    * buildPlayer / sampleAt = the SuperSplat cubic-Hermite
+  //      spline (the single source of truth for path geometry --
+  //      NO spline math here; the polyline + speed dots are read
+  //      straight off sampleAt's time parameterization).
+  //    * world / quat convention = IDENTICAL to the live player:
+  //      tick() writes camera.position.set(s.pos) +
+  //      camera.quaternion.set(s.quat), so a keyframe's pos/quat
+  //      is the camera's world pose. The frustum is the THREE
+  //      camera local basis (looks down -Z, +Y up, +X right)
+  //      transformed by that same pos/quat -> it points exactly
+  //      where the camera will fly (the splat's 180-X flip is on
+  //      the SPLAT, not the camera/keyframes, so the overlay
+  //      group's identity world transform is correct -- same as
+  //      the annotation markers).
+  //    * active path = the #path-select dropdown value (selEl) --
+  //      the same authored path the live player plays; absent ->
+  //      the first camera_paths entry (selEl's default option).
+  //    * Task-0 scaffold: ONE OverlayScene layer (its node is the
+  //      trajectory group); the "Show trajectory" toggle lives in
+  //      the Task-12 #author-root (CSS-gated to authormode
+  //      already), styled inline like #sp-hud (no new CSS region).
+  //  window.__editor is a TEST-ONLY introspection surface
+  //  (mirrors window.__clip / __transport: getters + deterministic
+  //  hooks; no production reader; inert without the harness).
+  // ============================================================
+  const _EDITOR_AUTHOR = ModeManager.is('author');
+  // ~96 samples per inter-keyframe SEGMENT for the polyline (the
+  // spec's target resolution). Speed dots step the path at a FIXED
+  // TIME interval so their on-path spacing = (speed * dt): dense
+  // where the camera is slow, sparse where it is fast (a slower
+  // segment of the SAME spatial length spans more time -> more
+  // dots -- exactly the inverse-speed relationship the harness
+  // asserts). dt is derived from the spline's OWN duration (a
+  // fixed count of equal-time steps) so it scales with any path.
+  const _TRAJ_SAMPLES_PER_SEG = 96;
+  const _TRAJ_DOT_STEPS = 240;
+  // Frustum size: a small fraction of the scene scale (the authored
+  // start-view distance) so the little camera pyramids read at the
+  // path's scale without dominating the splat. Floored so a tiny
+  // scene still shows them.
+  const _TRAJ_FRUSTUM_LEN = Math.max(0.4, (_initDist || 8) * 0.06);
+  const _TRAJ_FRUSTUM_HALF = _TRAJ_FRUSTUM_LEN * 0.6;
+
+  // The ONE trajectory group (the OverlayScene layer's node). Its
+  // children are rebuilt whenever the active path / its keyframes
+  // change; the active-key highlight is refreshed every tick from
+  // the live playhead. Created always (cheap empty Group) but only
+  // ever populated / ticked in author mode (the layer's modes gate
+  // + the _EDITOR_AUTHOR guards below make it fully inert
+  // otherwise: no geometry, no window.__editor render effect).
+  const _trajGroup = new THREE.Group();
+  _trajGroup.name = 'editor-trajectory';
+  let _trajLine = null;          // THREE.Line polyline (sampleAt)
+  let _trajDots = null;          // THREE.Points speed dots
+  const _trajFrusta = [];        // [{{ mesh, kfIndex, baseQuat:[xyzw], pos:[xyz] }}]
+  let _trajShow = true;          // "Show trajectory" toggle (default ON)
+  let _trajBuiltPathId = null;   // active path id the geometry was built for
+  let _trajBuiltSig = '';        // keyframe signature (rebuild on edit)
+  let _trajActiveKf = -1;        // active/scrub keyframe index (-1 = none)
+  let _trajDotPositions = [];    // [[x,y,z], ...] for window.__editor
+  let _trajDotSegCounts = [];    // per-segment dot count (parallel to segments)
+
+  // The colours: the resting trajectory is a calm orange (matches
+  // the #path-hud accent); the active/scrub keyframe's frustum is
+  // a bright cyan AND scaled up so it is unmistakably distinct.
+  const _TRAJ_COL = 0xff8a3d;
+  const _TRAJ_COL_ACTIVE = 0x35e0ff;
+  const _TRAJ_ACTIVE_SCALE = 1.7;
+
+  function _trajActivePath() {{
+    // The dropdown's current value is the authored active path
+    // (set to cfg.default_path_id at init, else the first option).
+    // Fall back to the first camera_paths entry so the overlay
+    // still shows something before any selection.
+    const id = (selEl && selEl.value) ? selEl.value : null;
+    let p = id ? cameraPaths.find(x => x && x.id === id) : null;
+    if (!p && cameraPaths.length) p = cameraPaths[0];
+    return p || null;
+  }}
+
+  function _trajKfSig(p) {{
+    // Cheap structural signature so a live keyframe edit (the
+    // editor mutates camera_paths in place in later tasks) forces
+    // a geometry rebuild without deep-watching.
+    if (!p || !p.keyframes) return '';
+    let s = (p.id || '') + '|' + (p.loop ? 1 : 0) + '|' +
+            (typeof p.smoothness === 'number' ? p.smoothness : 1) + '|' +
+            (typeof p.play_speed === 'number' ? p.play_speed : 1) + '|' +
+            p.keyframes.length + '|';
+    for (const k of p.keyframes) {{
+      s += (k.t || 0) + ',' +
+           (k.pos ? k.pos.join(',') : '') + ';' +
+           (k.quat ? k.quat.join(',') : '') + ';' +
+           (typeof k.fov === 'number' ? k.fov : '') + ';' +
+           (k.interp || '') + ';' + (k.hold_s || 0) + '|';
+    }}
+    return s;
+  }}
+
+  // Build a small wireframe camera frustum (apex at the camera
+  // position, rectangular base one _TRAJ_FRUSTUM_LEN ahead) in the
+  // THREE camera local basis: -Z forward, +Y up, +X right -- the
+  // EXACT basis the live player applies (camera.quaternion.set(
+  // s.quat)). Returned at the origin with identity rotation; the
+  // caller sets .position / .quaternion from the keyframe so it
+  // lands precisely where the camera will be.
+  function _trajMakeFrustum(col) {{
+    const d = _TRAJ_FRUSTUM_LEN, h = _TRAJ_FRUSTUM_HALF;
+    // Apex (camera origin) + 4 image-plane corners at z = -d.
+    const A = [0, 0, 0];
+    const TL = [-h,  h, -d], TR = [ h,  h, -d];
+    const BR = [ h, -h, -d], BL = [-h, -h, -d];
+    // Apex->corners + the base rectangle + a small "up" tick on
+    // the top edge so the roll (quat) is visually unambiguous.
+    const UP = [0, h * 1.5, -d];
+    const segs = [
+      A, TL,  A, TR,  A, BR,  A, BL,
+      TL, TR, TR, BR, BR, BL, BL, TL,
+      TL, UP, UP, TR,
+    ];
+    const pos = new Float32Array(segs.length * 3);
+    for (let i = 0; i < segs.length; i++) {{
+      pos[i*3] = segs[i][0]; pos[i*3+1] = segs[i][1]; pos[i*3+2] = segs[i][2];
+    }}
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const m = new THREE.LineBasicMaterial({{ color: col }});
+    m.depthTest = false; m.depthWrite = false; m.transparent = true;
+    const seg = new THREE.LineSegments(g, m);
+    seg.renderOrder = 11;
+    return seg;
+  }}
+
+  function _trajClear() {{
+    while (_trajGroup.children.length) {{
+      const c = _trajGroup.children.pop();
+      if (c.geometry) try {{ c.geometry.dispose(); }} catch (e) {{}}
+      if (c.material) try {{ c.material.dispose(); }} catch (e) {{}}
+    }}
+    _trajLine = null; _trajDots = null;
+    _trajFrusta.length = 0;
+    _trajDotPositions = []; _trajDotSegCounts = [];
+  }}
+
+  function _trajRebuild(p) {{
+    _trajClear();
+    _trajBuiltPathId = p ? (p.id || null) : null;
+    _trajBuiltSig = _trajKfSig(p);
+    _trajActiveKf = -1;
+    if (!p) return;
+    const player = buildPlayer(p);
+    if (!player) return;   // < 2 keyframes -> nothing to draw
+    const times = player.times;
+    const kfs = player.sortedKfs;
+    const nSeg = times.length - 1;
+
+    // ---- Polyline: ~_TRAJ_SAMPLES_PER_SEG samples per segment,
+    //      sampled off the SAME spline the player flies (sampleAt).
+    const pts = [];
+    for (let si = 0; si < nSeg; si++) {{
+      const t0 = times[si], t1 = times[si + 1];
+      // Sample (0 .. SAMPLES) on this segment; skip the shared
+      // start sample on every segment after the first so the
+      // polyline has no duplicate vertices at the knots.
+      const start = si === 0 ? 0 : 1;
+      for (let k = start; k <= _TRAJ_SAMPLES_PER_SEG; k++) {{
+        const t = t0 + (t1 - t0) * (k / _TRAJ_SAMPLES_PER_SEG);
+        const s = sampleAt(player, t);
+        pts.push(s.pos[0], s.pos[1], s.pos[2]);
+      }}
+    }}
+    {{
+      const arr = new Float32Array(pts);
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+      const m = new THREE.LineBasicMaterial({{ color: _TRAJ_COL }});
+      m.depthTest = false; m.depthWrite = false; m.transparent = true;
+      _trajLine = new THREE.Line(g, m);
+      _trajLine.renderOrder = 11;
+      _trajGroup.add(_trajLine);
+    }}
+
+    // ---- Per-keyframe frustum, oriented by that keyframe's quat
+    //      (the same world/quat convention the player applies).
+    for (let i = 0; i < kfs.length; i++) {{
+      const kf = kfs[i];
+      if (!kf || !kf.pos) continue;
+      const q = (kf.quat && kf.quat.length === 4)
+        ? kf.quat : [0, 0, 0, 1];
+      const fr = _trajMakeFrustum(_TRAJ_COL);
+      fr.position.set(kf.pos[0], kf.pos[1], kf.pos[2]);
+      fr.quaternion.set(q[0], q[1], q[2], q[3]);
+      _trajGroup.add(fr);
+      _trajFrusta.push({{ mesh: fr, kfIndex: i,
+        baseQuat: [q[0], q[1], q[2], q[3]],
+        pos: [kf.pos[0], kf.pos[1], kf.pos[2]] }});
+    }}
+
+    // ---- Speed dots: FIXED time step dt over the whole path so
+    //      the on-path spacing = (local speed * dt). dt is a fixed
+    //      fraction of the spline's own duration (a constant count
+    //      of equal-TIME steps); per-segment dot count therefore
+    //      scales with segment DURATION and the on-path density
+    //      scales INVERSELY with segment speed (dense=slow,
+    //      sparse=fast) -- read straight off sampleAt's time
+    //      parameterization, never a spatial-arc heuristic.
+    const dur = player.duration || 0;
+    if (dur > 0) {{
+      const dt = dur / _TRAJ_DOT_STEPS;
+      const segCounts = new Array(nSeg).fill(0);
+      const dpos = [];
+      // Step strictly INSIDE the path (skip the exact endpoints so
+      // a dot is unambiguously attributable to one segment).
+      for (let t = dt; t < dur; t += dt) {{
+        const s = sampleAt(player, t);
+        dpos.push(s.pos[0], s.pos[1], s.pos[2]);
+        _trajDotPositions.push([s.pos[0], s.pos[1], s.pos[2]]);
+        // Attribute this dot to its segment (the spline time
+        // parameterization -- which segment's [t0,t1] contains t).
+        let sg = 0;
+        while (sg < nSeg - 1 && times[sg + 1] <= t) sg++;
+        segCounts[sg]++;
+      }}
+      _trajDotSegCounts = segCounts;
+      if (dpos.length) {{
+        const arr = new Float32Array(dpos);
+        const g = new THREE.BufferGeometry();
+        g.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+        const m = new THREE.PointsMaterial({{
+          color: _TRAJ_COL, size: Math.max(2, _TRAJ_FRUSTUM_HALF * 0.5),
+          sizeAttenuation: true }});
+        m.depthTest = false; m.depthWrite = false; m.transparent = true;
+        _trajDots = new THREE.Points(g, m);
+        _trajDots.renderOrder = 11;
+        _trajGroup.add(_trajDots);
+      }}
+    }}
+  }}
+
+  // The current playhead (seconds, retimed spline time) the user
+  // is parked at -- the live player clock while a path plays /
+  // scrubs, else the #path-scrub slider position mapped through
+  // the active path's duration. Drives WHICH keyframe frustum is
+  // highlighted (the "active/scrub" key the spec requires).
+  function _trajPlayhead(player) {{
+    if (!player) return null;
+    if (_player && _activePathId &&
+        _activePathId === _trajBuiltPathId) {{
+      // A path is actively driving the camera (Play or a scrub
+      // grab) -- use its real clock, EXACT same formula as tick().
+      const sp = _player.playSpeed || 1.0;
+      let tn = ((performance.now() - _t0) / 1000) * sp;
+      if (_player.loop && tn > _player.duration)
+        tn = tn % _player.duration;
+      return Math.max(0, Math.min(tn, player.duration));
+    }}
+    // Not playing: the scrub slider (0..1000) -> path time.
+    if (scrubEl) {{
+      const f = (parseFloat(scrubEl.value) || 0) / 1000;
+      return Math.max(0, Math.min(f, 1)) * player.duration;
+    }}
+    return 0;
+  }}
+
+  // Refresh the active/scrub keyframe highlight from the current
+  // playhead: the highlighted key is the one sampleAt maps the
+  // playhead to (its _kfIndex -- the SAME source-keyframe index
+  // the player uses for annotation triggers). Cheap; only touches
+  // material colour + scale on a real change.
+  let _trajPhPlayer = null;
+  function _trajRefreshActive() {{
+    if (!_trajPhPlayer) {{
+      const ap = _trajActivePath();
+      _trajPhPlayer = ap ? buildPlayer(ap) : null;
+    }}
+    let idx = -1;
+    if (_trajPhPlayer) {{
+      const ph = _trajPlayhead(_trajPhPlayer);
+      if (ph !== null) {{
+        const s = sampleAt(_trajPhPlayer, ph);
+        idx = (typeof s._kfIndex === 'number') ? s._kfIndex : -1;
+      }}
+    }}
+    if (idx === _trajActiveKf) return;
+    _trajActiveKf = idx;
+    for (const f of _trajFrusta) {{
+      const on = f.kfIndex === idx;
+      const col = on ? _TRAJ_COL_ACTIVE : _TRAJ_COL;
+      if (f.mesh.material) f.mesh.material.color.setHex(col);
+      const sc = on ? _TRAJ_ACTIVE_SCALE : 1.0;
+      f.mesh.scale.setScalar(sc);
+    }}
+  }}
+
+  // The "Show trajectory" toggle. Injected into the Task-12
+  // #author-root (already CSS-gated to authormode -- no new CSS
+  // region, inline-styled like #sp-hud, exactly the Task-15
+  // #user-play approach). Default ON: an editor wants the path
+  // visible. Only built in author mode.
+  let _trajToggleEl = null;
+  function _trajApplyShow() {{
+    _trajGroup.visible = _trajShow &&
+      ModeManager.is('author') && _trajGroup.children.length > 0;
+  }}
+  if (_EDITOR_AUTHOR) {{
+    const root = document.getElementById('author-root');
+    if (root) {{
+      const wrap = document.createElement('label');
+      wrap.id = 'editor-traj-toggle';
+      wrap.style.cssText =
+        'position:absolute;top:12px;left:12px;z-index:50;' +
+        'display:flex;align-items:center;gap:7px;' +
+        'padding:7px 11px;border-radius:7px;cursor:pointer;' +
+        'font:13px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;' +
+        'color:#eee;background:rgba(20,20,20,0.72);' +
+        '-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);' +
+        'user-select:none;';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.checked = _trajShow;
+      cb.id = 'editor-traj-show';
+      cb.style.cssText = 'cursor:pointer;margin:0;';
+      const txt = document.createElement('span');
+      txt.textContent = 'Show trajectory';
+      wrap.appendChild(cb); wrap.appendChild(txt);
+      root.appendChild(wrap);
+      _trajToggleEl = cb;
+      cb.addEventListener('change', () => {{
+        _trajShow = !!cb.checked;
+        _trajApplyShow();
+      }});
+    }}
+  }}
+
+  // ONE OverlayScene layer: node = the trajectory group; modes =
+  // ['author'] so OverlayScene hides the node AND skips update()
+  // outside author mode (Task-0 contract -> fully inert in user /
+  // embed / the 6 live scenes). update() (a) rebuilds geometry
+  // when the active path / its keyframes change, (b) refreshes the
+  // active-key highlight from the live playhead. No parallel rAF.
+  const _trajLayer = {{
+    id: 'editor-trajectory',
+    modes: ['author'],
+    node: _trajGroup,
+    update() {{
+      if (!ModeManager.is('author')) return;
+      const p = _trajActivePath();
+      const pid = p ? (p.id || null) : null;
+      const sig = _trajKfSig(p);
+      if (pid !== _trajBuiltPathId || sig !== _trajBuiltSig) {{
+        _trajRebuild(p);
+        _trajPhPlayer = p ? buildPlayer(p) : null;
+        _trajActiveKf = -1;
+      }}
+      _trajRefreshActive();
+      _trajApplyShow();
+    }},
+  }};
+  OverlayScene.register(_trajLayer);
+
+  // TEST/extension surface (mirrors window.__sp / __sceneview /
+  // __clip / __transport): lets the scene-less Playwright harness
+  // assert the trajectory polyline / per-keyframe frusta / speed
+  // dots / active-key highlight / toggle WITHOUT a real .rad (all
+  // pure THREE geometry off sampleAt + the keyframes). Harmless,
+  // always on; getters only (no production reader) + a couple of
+  // TEST-ONLY deterministic hooks (same convention as
+  // window.__clip.restart()). Inert in non-author mode (the layer
+  // never builds geometry there -> empty/false everywhere).
+  try {{
+    window.__editor = {{
+      get author() {{ return ModeManager.is('author'); }},
+      get show() {{ return _trajShow; }},
+      // Polyline vertex count (3 floats per point).
+      get linePointCount() {{
+        if (!_trajLine || !_trajLine.geometry) return 0;
+        const a = _trajLine.geometry.getAttribute('position');
+        return a ? a.count : 0;
+      }},
+      get samplesPerSeg() {{ return _TRAJ_SAMPLES_PER_SEG; }},
+      // One entry per keyframe frustum, with its world pose so the
+      // harness can assert each is oriented by ITS keyframe quat.
+      get frusta() {{
+        return _trajFrusta.map(f => ({{
+          kfIndex: f.kfIndex,
+          pos: f.pos.slice(),
+          quat: f.baseQuat.slice(),
+          active: f.kfIndex === _trajActiveKf,
+          scale: f.mesh ? f.mesh.scale.x : 1,
+          color: (f.mesh && f.mesh.material)
+            ? f.mesh.material.color.getHex() : 0,
+          inGroup: !!(f.mesh && f.mesh.parent === _trajGroup),
+        }}));
+      }},
+      get frustumCount() {{ return _trajFrusta.length; }},
+      get activeKf() {{ return _trajActiveKf; }},
+      // Speed-dot positions + per-segment counts (the inverse-speed
+      // relationship: more dots in a slower / longer-duration
+      // segment for the SAME fixed time step).
+      get dotCount() {{ return _trajDotPositions.length; }},
+      get dotPositions() {{
+        return _trajDotPositions.map(d => d.slice());
+      }},
+      get dotSegCounts() {{ return _trajDotSegCounts.slice(); }},
+      get activePathId() {{ return _trajBuiltPathId; }},
+      get groupVisible() {{
+        return !!(_trajGroup.visible &&
+          _trajGroup.children.length > 0);
+      }},
+      get groupInScene() {{
+        // The OverlayScene group is scene.add()-ed once (Task 0);
+        // our node is parented under it ONLY in author mode.
+        return !!(_trajGroup.parent &&
+          _trajGroup.parent === OverlayScene.group);
+      }},
+      // TEST-ONLY: drive the "Show trajectory" toggle exactly as a
+      // user click would (fires the same change handler).
+      setShow(v) {{
+        _trajShow = !!v;
+        if (_trajToggleEl) _trajToggleEl.checked = _trajShow;
+        _trajApplyShow();
+        return _trajShow;
+      }},
+      // TEST-ONLY: force a geometry rebuild for the active path
+      // (deterministic; same spirit as window.__clip.restart()).
+      rebuild() {{
+        const p = _trajActivePath();
+        _trajRebuild(p);
+        _trajPhPlayer = p ? buildPlayer(p) : null;
+        _trajRefreshActive();
+        _trajApplyShow();
+        return _trajFrusta.length;
+      }},
+      // TEST-ONLY: set the scrub position (0..1) and refresh the
+      // active-key highlight so the harness can assert the
+      // active/scrub frustum tracks the playhead deterministically.
+      // Drives the REAL scrub: set #path-scrub then dispatch its
+      // actual 'input' event so the EXISTING production scrub handler
+      // runs (it takes over `_player` for the selected path AND
+      // rebases `_t0` so the live playhead == the scrubbed time --
+      // exactly a user grabbing the scrub). This makes the
+      // active-key deterministic even if the author-mode
+      // default-path auto-tour is mid-playback (the scrub takes the
+      // camera over, same as for a real user); we do NOT reimplement
+      // the scrub math here (single source of truth).
+      scrubTo(f) {{
+        if (scrubEl) {{
+          const v = Math.max(0, Math.min(1, +f || 0)) * 1000;
+          scrubEl.value = v;
+          try {{
+            scrubEl.dispatchEvent(new Event('input', {{ bubbles: true }}));
+          }} catch (e) {{}}
+        }}
+        _trajRefreshActive();
+        return _trajActiveKf;
+      }},
+    }};
+  }} catch (e) {{}}
+
   // ---- Frame loop ----
   const cam = cfg.camera || _DEFAULTS.camera;
   const splatCountEl = document.getElementById('splat-count');

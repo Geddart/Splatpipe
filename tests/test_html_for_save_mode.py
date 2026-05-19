@@ -28,18 +28,53 @@ from splatpipe.core.events import ProgressEvent, StepResult
 from splatpipe.steps.publish import publish_scene
 from splatpipe.viewers.spark.template import html_for
 
-# --- Moving baseline (Task 15) -------------------------------------------
+# --- Moving baseline (Task 16) -------------------------------------------
 # The byte-identity guard pins the PREVIOUS task's COMMITTED generated
 # output and asserts the only delta is THIS task's deliberate change. The
 # baseline therefore moves forward one commit each task (see the regen
-# recipe below). For Task 15 the pinned baseline is the committed template
-# at HEAD ``7acdd39`` (the commit BEFORE Task 15's edit -- i.e. Task 14
-# committed + its test follow-up) -- which ALREADY contains Task 8's inert
-# SAVE_* block, Task 10's two visibilitychange blocks, Task 11's in-place
-# spline change, Task 12's three dual-UI regions, Task 13's three regions
-# (loading-blur DOM, deferred autostart, intro IIFE) AND Task 14's grown
-# T13-AS ClipPlayer + the T14-PW prewarm guard-twin + the T14-AF broadened
-# auto-focus guard. ``html_for("HarnessScene")`` there is 207431 bytes.
+# recipe below). For Task 16 the pinned baseline is the committed template
+# at HEAD ``cfb0835`` (the commit BEFORE Task 16's edit -- i.e. Task 15
+# committed: feat(viewer) end-user interrupt + resume + per-cut idle
+# auto-orbit) -- which ALREADY contains Task 8's inert SAVE_* block,
+# Task 10's two visibilitychange blocks, Task 11's in-place spline change,
+# Task 12's three dual-UI regions, Task 13's three regions (loading-blur
+# DOM, deferred autostart, intro IIFE), Task 14's grown T13-AS ClipPlayer
+# + the T14-PW prewarm guard-twin + the T14-AF broadened auto-focus
+# guard, AND Task 15's end-user transport (grown T13-AS again + the
+# T15-OB _buildOrbitPath delegation refactor).
+# ``html_for("HarnessScene")`` there is 225847 bytes.
+#
+# Task 16 (author editor -- viewport trajectory + camera frustums +
+# speed dots; the FIRST author-mode overlay, plan H2/Task-12) is PURELY
+# ADDITIVE (recipe 2a): ONE NEW region (T16-TRAJ) that bounds ONLY the
+# new author-overlay block (the trajectory THREE.Group + its
+# _trajRebuild/_trajRefreshActive/_trajMakeFrustum helpers, the
+# OverlayScene ``_trajLayer`` registration, the "Show trajectory"
+# #author-root toggle, and the TEST-ONLY ``window.__editor`` surface).
+# It adds NO other deltas (no CSS region -- the toggle is inline-styled
+# like #sp-hud; the #author-root DOM root already exists from Task 12;
+# the spline / player / clip / transport code is untouched). The whole
+# block is AUTHOR-MODE-gated (ModeManager.is('author') + the
+# OverlayScene layer's modes:['author']) so for ``"HarnessScene"``
+# (NOT author mode) it produces ZERO rendered-HTML delta OUTSIDE the
+# T16-TRAJ region -- the byte-lock proves the 6 live single-camera
+# scenes (also NOT author mode) are byte-identical.
+#
+# T16-TRAJ (NEW additive region, recipe 2a): bounded by the UNCHANGED
+# ``  applySplatBudget(_initialBudget);`` line (START) and the UNCHANGED
+# ``  // ---- Frame loop ----`` comment (END). BOTH pre-exist EXACTLY
+# ONCE in BOTH the ``cfb0835`` baseline and the current HTML, and in
+# ``cfb0835`` the ONLY thing between them is a single blank line (zero
+# foreign code -- a pure section boundary, exactly the T14-PW-style
+# inert-scaffolding additive invariant). Every Task-16 line sits
+# strictly between that blank line and the END comment, so excising the
+# SAME [START..END] from ``cfb0835`` removes ONLY the two bounding lines
+# + the blank, while excising it from the current HTML removes those
+# SAME framing lines PLUS the whole new author-overlay block -> equal
+# remainders (the additive-region invariant). ``_excise`` asserts the
+# START unique + the (non-close_after) END unique-after-start, so a
+# future template edit that duplicates/moves either fails LOUD rather
+# than silently mis-excising.
 #
 # Task 15 (end-user transport -- click-interrupt + bottom resume +
 # per-shot idle auto-orbit) is the cinematic end-user shell's interaction
@@ -102,10 +137,38 @@ from splatpipe.viewers.spark.template import html_for
 # asserted-surviving (explicit ``in stripped`` checks below pin that
 # contract too -- never relaxed).
 #
+# ``_PRE_TASK16_REMAINDER_*`` = LEN/SHA-256 of the ``cfb0835`` baseline
+# AFTER excising the SAME TEN regions with the SAME anchors -- the nine
+# prior-task regions PLUS the new T16-TRAJ region (computed from
+# ``git cat-file blob cfb0835:.../template.py`` byte-faithfully -- NOT
+# the dirty tree; the ``pagedExtSplats`` stray makes the dirty tree
+# FAIL this BY DESIGN, so the guard still bites). This is what the
+# assertion below uses.
+_PRE_TASK16_REMAINDER_LEN = 155585
+_PRE_TASK16_REMAINDER_SHA = (
+    "f4cb11b385dedc2d018fc4342766285c0805f147c080b44d9de1fcd250370226"
+)
+# Full ``cfb0835`` baseline fingerprint (documentation / cross-check;
+# the remainder pin above is what the assertion uses).
+_PRE_TASK16_FULL_LEN = 225847
+_PRE_TASK16_FULL_SHA = (
+    "839214c828ac6dfe2b3b7e6e71f7dd278f4cc97db981176fe8188d8d6ae071a2"
+)
+# T16-TRAJ region anchors (NEW 2a additive: the author-overlay block).
+# START + END both pre-exist UNCHANGED and EXACTLY ONCE in BOTH
+# ``cfb0835`` and the current HTML; in ``cfb0835`` the only thing
+# between them is one blank line (zero foreign code -- the additive
+# invariant). ALL Task-16 lines sit strictly between them.
+_T16_TRAJ_START = "  applySplatBudget(_initialBudget);\n"
+_T16_TRAJ_END = "  // ---- Frame loop ----\n"
+
+# --- Prior moving-baseline note (Task 15, kept for provenance) -----------
 # ``_PRE_TASK15_REMAINDER_*`` = LEN/SHA-256 of the ``7acdd39`` baseline
 # AFTER excising the SAME nine regions with the SAME anchors (computed
 # from ``git cat-file blob 7acdd39:.../template.py`` byte-faithfully --
-# NOT the dirty tree).
+# NOT the dirty tree). Superseded by the ``cfb0835``-based Task-16 pin
+# above (a moving baseline -- one commit forward); retained as
+# provenance / cross-check.
 _PRE_TASK15_REMAINDER_LEN = 155648
 _PRE_TASK15_REMAINDER_SHA = (
     "82b384a80f406580dafd331d98112a40f6c044b466c202cf743836e440c634f0"
@@ -589,8 +652,38 @@ def _excise(text: str, start_anchor: str, end_token: str,
 #   remain enforced, and prior tasks' anchored blocks must stay
 #   asserted-surviving.
 def test_defaults_are_regression_safe_existing_scenes_byte_identical():
-    """Task 15 (end-user transport -- click-interrupt + bottom resume +
-    per-shot idle auto-orbit) is the cinematic end-user shell's
+    """Task 16 (author editor -- viewport trajectory + camera frustums +
+    speed dots; the FIRST author-mode overlay, plan H2/Task-12) is
+    PURELY ADDITIVE: ONE NEW region (T16-TRAJ, recipe 2a) bounding ONLY
+    the new author-overlay block (the trajectory THREE.Group + the
+    _trajRebuild/_trajRefreshActive/_trajMakeFrustum helpers + the
+    OverlayScene ``_trajLayer`` registration + the "Show trajectory"
+    #author-root inline-styled toggle + the TEST-ONLY ``window.__editor``
+    surface), bounded by the UNCHANGED
+    ``  applySplatBudget(_initialBudget);`` line (START) and the
+    UNCHANGED ``  // ---- Frame loop ----`` comment (END) -- BOTH
+    pre-exist EXACTLY ONCE in BOTH the ``cfb0835`` baseline and the
+    current HTML, and in ``cfb0835`` the ONLY content between them is a
+    single blank line (zero foreign code -- the T14-PW-style additive
+    invariant). Excising every deliberately-touched region (the Task-11
+    spline + the three Task-12 + the three Task-13 + the two Task-14
+    + the Task-15 T15-OB + the NEW Task-16 T16-TRAJ, each bounded by
+    anchors that pre-exist UNCHANGED and appear exactly once in BOTH
+    ``cfb0835`` and the current HTML) from the current generated HTML
+    must reproduce the ``cfb0835`` committed template's SAME ten-region
+    excision byte-for-byte (same length, same SHA-256). The whole
+    Task-16 block is AUTHOR-MODE-gated (ModeManager.is('author') + the
+    OverlayScene layer's modes:['author']) so for ``"HarnessScene"``
+    (NOT author mode -- like the 6 live single-camera scenes) it
+    produces ZERO rendered-HTML delta OUTSIDE T16-TRAJ and is
+    byte-runtime-inert: a DELIBERATE, byte-lock-excised change, NOT a
+    regression. Every prior task's anchored content (Task 8 SAVE_*,
+    Task 10 blocks, Task 11-15 regions) stays asserted-surviving below
+    (the new region only NARROWS what is compared -- never relaxed).
+
+    Prior moving-baseline provenance (Task 15, kept): Task 15 (end-user
+    transport -- click-interrupt + bottom resume + per-shot idle
+    auto-orbit) is the cinematic end-user shell's
     interaction layer. It touches TWO regions: (T13-AS, MODIFIED-IN-PLACE
     AGAIN, recipe 2b) the SAME unchanged ``if (cfg.default_path_id) {``
     START / ``// ---- Bench launchers ...`` END that bounded Task 13's
@@ -695,26 +788,44 @@ def test_defaults_are_regression_safe_existing_scenes_byte_identical():
     # delegation CALL is the deliberately-touched content; asserted
     # present here, asserted gone after the T15-OB excision below.
     assert "return _orbitPathAround(" in html               # Task 15 T15-OB
+    # Task 16's deliberate additions ARE present (the WHOLE author-overlay
+    # block lives in the NEW T16-TRAJ region, recipe 2a -- excised below,
+    # so it must be present here first). ``window.__editor`` is the
+    # Task-16 TEST-ONLY surface (mirrors ``window.__clip`` /
+    # ``__transport``); ``editor-trajectory`` is the OverlayScene layer
+    # id / group name; ``_trajRebuild`` builds the polyline+frusta+dots;
+    # ``Author editor -- viewport trajectory`` is the section banner.
+    assert "Author editor -- viewport trajectory" in html   # Task 16 banner
+    assert "function _trajRebuild" in html                   # Task 16 build
+    assert "function _trajMakeFrustum" in html               # Task 16 frustum
+    assert "OverlayScene.register(_trajLayer)" in html        # Task 16 layer
+    assert "window.__editor" in html                          # Task 16 surface
+    assert "editor-traj-toggle" in html                       # Task 16 toggle
 
-    # Excise the NINE deliberately-touched regions. The Task-11 spline
-    # first (its ORIGINAL anchors, unchanged by Tasks 12/13/14 -- keeps
-    # Task-11's contract asserted-surviving against the moved ``842b50f``
+    # Excise the TEN deliberately-touched regions. The Task-11 spline
+    # first (its ORIGINAL anchors, unchanged by Tasks 12-16 -- keeps
+    # Task-11's contract asserted-surviving against the moved ``cfb0835``
     # baseline), then each Task-12 region, then each Task-13 region
-    # (T13-AS now GROWN by Task 14, same anchors), then the NEW Task-14
-    # prewarm guard-twin region (T14-PW), then the Task-14 review-
-    # follow-up auto-focus guard region (T14-AF, recipe 2b modify-in-
-    # place), then the NEW Task-15 ``_buildOrbitPath`` delegation region
-    # (T15-OB, recipe 2b modify-in-place). Every START/END anchor
-    # pre-exists UNCHANGED and exactly once in both the ``7acdd39``
-    # baseline and current, so the same [START..END] removes the
-    # corresponding baseline slice and the grown/added/modified current
-    # slice; ``_excise`` asserts each START unique + each non-close_after
-    # END unique-after-start (fail-loud on a duplicate/missing anchor).
-    # The Task-15 transport block sits in the grown T13-AS region (same
-    # anchors as Task 13/14, unmoved START); T15-OB is disjoint from and
-    # textually AFTER T13-AS (its START ``  function _buildOrbitPath() {``
-    # is the first line after the T13-AS END comment) so excising T13-AS
-    # first never disturbs T15-OB's anchors.
+    # (T13-AS now GROWN by Task 14 AND 15, same anchors), then the
+    # Task-14 prewarm guard-twin region (T14-PW), then the Task-14
+    # review-follow-up auto-focus guard region (T14-AF, recipe 2b
+    # modify-in-place), then the Task-15 ``_buildOrbitPath`` delegation
+    # region (T15-OB, recipe 2b modify-in-place), then the NEW Task-16
+    # author-overlay region (T16-TRAJ, recipe 2a additive). Every
+    # START/END anchor pre-exists UNCHANGED and exactly once in both the
+    # ``cfb0835`` baseline and current, so the same [START..END] removes
+    # the corresponding baseline slice and the grown/added/modified
+    # current slice; ``_excise`` asserts each START unique + each
+    # non-close_after END unique-after-start (fail-loud on a
+    # duplicate/missing anchor). The Task-15 transport block sits in the
+    # grown T13-AS region (same anchors as Task 13/14, unmoved START);
+    # T15-OB is disjoint from and textually AFTER T13-AS so excising
+    # T13-AS first never disturbs T15-OB's anchors. T16-TRAJ is disjoint
+    # from and textually AFTER both (its START
+    # ``  applySplatBudget(_initialBudget);`` is in the splat-budget
+    # init block, well below the bench/transport code) so the prior
+    # excisions never disturb its anchors, and its bounded baseline
+    # interior is a single blank line (the additive invariant).
     stripped = _excise(
         html, _SPLINE_REGION_START, _SPLINE_REGION_END_TOK,
         close_after=_SPLINE_REGION_CLOSE_AFTER,
@@ -728,6 +839,7 @@ def test_defaults_are_regression_safe_existing_scenes_byte_identical():
     stripped = _excise(stripped, _T14_PW_START, _T14_PW_END)
     stripped = _excise(stripped, _T14_AF_START, _T14_AF_END)
     stripped = _excise(stripped, _T15_OB_START, _T15_OB_END)
+    stripped = _excise(stripped, _T16_TRAJ_START, _T16_TRAJ_END)
 
     # The ENTIRE spline region must be gone → that excision spanned exactly
     # the deliberately-touched code (a leftover means it under-cut and the
@@ -801,6 +913,32 @@ def test_defaults_are_regression_safe_existing_scenes_byte_identical():
     # definition was the deliberately-touched code (proves T15-OB did not
     # over-cut into the unrelated bench/preload call sites).
     assert "const orbitPath = _buildOrbitPath();" in stripped  # call site kept
+    # The NEW Task-16 author-overlay region (T16-TRAJ, recipe 2a
+    # additive) must ALSO be fully gone -- its excision spanned exactly
+    # the deliberately-touched author-overlay block (the START line
+    # ``applySplatBudget(_initialBudget);`` through the unchanged
+    # ``// ---- Frame loop ----`` END), not a byte more/less.
+    # ``window.__editor`` (the test surface), ``function _trajRebuild``
+    # / ``function _trajMakeFrustum`` (the build helpers),
+    # ``OverlayScene.register(_trajLayer)`` (the layer registration)
+    # and the ``Author editor -- viewport trajectory`` banner are each
+    # unique to this region; their absence proves it excised cleanly.
+    assert "Author editor -- viewport trajectory" not in stripped  # T16 gone
+    assert "function _trajRebuild" not in stripped         # T16 build gone
+    assert "function _trajMakeFrustum" not in stripped     # T16 frustum gone
+    assert ("OverlayScene.register(_trajLayer)"
+            not in stripped)                                # T16 layer gone
+    assert "window.__editor" not in stripped                # T16 surface gone
+    assert "editor-traj-toggle" not in stripped             # T16 toggle gone
+    # The T16-TRAJ START anchor LINE is excised WITH the region, but
+    # ``applySplatBudget`` (the FUNCTION, defined far above) and the
+    # ``// ---- Frame loop ----`` END comment are themselves removed too
+    # (START..END inclusive); the splat-budget machinery just ABOVE the
+    # START (the URL_BUDGET / pickDefaultBudget wiring) is OUTSIDE
+    # T16-TRAJ and MUST survive (proves T16-TRAJ did not widen upward
+    # into the pre-existing splat-budget init).
+    assert "function applySplatBudget" in stripped         # budget fn kept
+    assert "pickDefaultBudget" in stripped                  # budget init kept
     # Regression-critical: the root-chunk eviction guard itself is the
     # T14-PW START anchor LINE, so it is excised WITH the region -- but its
     # SIBLING machinery just ABOVE the START (the PINNED_ROOT_CHUNK_COUNT
@@ -821,21 +959,27 @@ def test_defaults_are_regression_safe_existing_scenes_byte_identical():
     assert "_hidAt" in stripped                           # Task 10 survives
     assert "visibilitychange" in stripped                 # Task 10 survives
 
-    # Byte-for-byte identical to the ``7acdd39`` committed template with
-    # the SAME nine regions excised -> NO unintended drift anywhere outside
-    # the deliberate Task-8/10/11/12/13/14/15 changes (FAILS loudly if
-    # e.g. a stray uncommitted block elsewhere in the template leaked in
-    # -- this is exactly how the 4 unstaged strays are kept out of the
-    # Task-15 commit; the pagedExtSplats stray, OUTSIDE all nine regions,
-    # makes this FAIL in the dirty tree BY DESIGN -> the guard still
-    # bites).
-    assert len(stripped) == _PRE_TASK15_REMAINDER_LEN, (
-        f"length drift: {len(stripped)} != {_PRE_TASK15_REMAINDER_LEN} "
-        "(an UNINTENDED change leaked OUTSIDE the nine deliberate regions)"
+    # Byte-for-byte identical to the ``cfb0835`` committed template with
+    # the SAME TEN regions excised -> NO unintended drift anywhere
+    # outside the deliberate Task-8/10/11/12/13/14/15/16 changes (FAILS
+    # loudly if e.g. a stray uncommitted block elsewhere in the template
+    # leaked in -- this is exactly how the 4 unstaged strays are kept out
+    # of the Task-16 commit; the pagedExtSplats stray, OUTSIDE all ten
+    # regions, makes this FAIL in the dirty tree BY DESIGN -> the guard
+    # still bites). The Task-16 author overlay is a DELIBERATE,
+    # byte-lock-excised change (the FIRST author-mode feature, plan
+    # H2/Task-12) -- NOT a regression for the 6 live single-camera
+    # scenes: they are NOT author mode, so the OverlayScene layer's
+    # modes:['author'] gate + the ModeManager.is('author') guards make
+    # the whole block byte-runtime-inert for them (and the byte-lock
+    # proves their generated HTML is byte-identical OUTSIDE T16-TRAJ).
+    assert len(stripped) == _PRE_TASK16_REMAINDER_LEN, (
+        f"length drift: {len(stripped)} != {_PRE_TASK16_REMAINDER_LEN} "
+        "(an UNINTENDED change leaked OUTSIDE the ten deliberate regions)"
     )
     assert (
         hashlib.sha256(stripped.encode()).hexdigest()
-        == _PRE_TASK15_REMAINDER_SHA
+        == _PRE_TASK16_REMAINDER_SHA
     )
 
 

@@ -131,6 +131,69 @@ _VIEWER_NOCLIPS_DIR = _MANUAL_DIR / "_viewer_noclips"
 # byte-identical.
 _VIEWER_TRANSPORT_DIR = _MANUAL_DIR / "_viewer_transport"
 
+# --- Task-16 variant: author editor trajectory/frustums/speed-dots -----
+# Same generated viewer, driven with ``?author=1`` (=> ModeManager
+# resolves author mode -> the Task-16 trajectory overlay + window.__editor
+# build). The scene config carries a 3-keyframe camera path with TWO
+# segments of deliberately different speed so the inverse-speed dot
+# relationship is unambiguous in the scene-less harness:
+#   * segment 0 (kf0 t=0 -> kf1 t=100): a LONG-DURATION, short-distance
+#     leg = SLOW. A fixed-time-step dot pass therefore drops MANY dots
+#     here (it spans ~91% of the path duration).
+#   * segment 1 (kf1 t=100 -> kf2 t=110): a SHORT-DURATION, long-distance
+#     leg = FAST. Same fixed time step => FEW dots (it spans ~9% of the
+#     duration) even though it covers more ground.
+# => dots(slow seg) >> dots(fast seg) for the SAME dt: the spec's
+# "spacing scales inversely with segment speed" (dense=slow, sparse=fast),
+# asserted as a RATIO DIRECTION (slow > fast), never a magic number.
+# Each keyframe carries a DISTINCT quat (identity / a +Y yaw / a +X
+# pitch) so the harness can assert each frustum is oriented by ITS OWN
+# keyframe quat (not a shared/global orientation). `default_path_id`
+# selects it so selEl.value (the active path the overlay tracks) is
+# deterministic without a click. No clips/cameras: author mode is NOT
+# the multi-camera end-user tour -- the overlay tracks the single
+# authored path the editor is editing.
+_VIEWER_AUTHOR_DIR = _MANUAL_DIR / "_viewer_author"
+
+# Distinct keyframe quats (xyzw). kf0 = identity (looks down -Z). kf1 =
+# +90 deg yaw about world +Y. kf2 = +90 deg pitch about world +X. All
+# unit quaternions; clearly pairwise-different so the per-keyframe
+# frustum-orientation assertion cannot pass on a shared orientation.
+_T16_Q_IDENT = [0.0, 0.0, 0.0, 1.0]
+_T16_Q_YAW90 = [0.0, 0.7071067811865476, 0.0, 0.7071067811865476]
+_T16_Q_PITCH90 = [0.7071067811865476, 0.0, 0.0, 0.7071067811865476]
+
+
+def _t16_author_config() -> dict:
+    """3-keyframe single path; segment 0 SLOW (long-duration), segment 1
+    FAST (short-duration); distinct per-keyframe quats. ``?author=1`` on
+    the iframe makes the viewer build the Task-16 trajectory overlay."""
+    return {
+        "annotations": [],
+        "default_path_id": "authorPath",
+        "intro": {"type": "none"},
+        "camera_paths": [
+            {
+                "id": "authorPath",
+                "name": "Author editor path",
+                "loop": False,
+                "smoothness": 1.0,
+                "play_speed": 1.0,
+                "keyframes": [
+                    # kf0 -> kf1: t spans 0..100 (SLOW) over a short hop.
+                    {"t": 0.0, "pos": [0.0, 0.0, 0.0],
+                     "quat": list(_T16_Q_IDENT), "fov": 60.0},
+                    {"t": 100.0, "pos": [4.0, 0.0, 0.0],
+                     "quat": list(_T16_Q_YAW90), "fov": 60.0},
+                    # kf1 -> kf2: t spans 100..110 (FAST) over a long hop.
+                    {"t": 110.0, "pos": [4.0, 0.0, -80.0],
+                     "quat": list(_T16_Q_PITCH90), "fov": 50.0},
+                ],
+            }
+        ],
+    }
+
+
 # Camera A's authored orbit pivot -- deliberately FAR from both the world
 # origin AND camera B's path (x=500) so "orbits the authored pivot, not
 # origin" is unambiguous in the scene-less harness.
@@ -394,6 +457,9 @@ def generate() -> Path:
       * ``_viewer_transport/`` -- a 2-camera/2-clip scene whose cameras
         carry distinct authored ``orbit_pivot``s; Task-15 end-user
         interrupt + resume-from-nearest-cut + per-shot idle auto-orbit.
+      * ``_viewer_author/`` -- a 3-keyframe single-path scene (driven
+        with ``?author=1`` by the harness); Task-16 author trajectory
+        polyline + per-keyframe frusta + inverse-speed dots + toggle.
     Returns the Task-0 ``_viewer/`` dir (the harness page resolves the rest
     relatively).
     """
@@ -407,6 +473,7 @@ def generate() -> Path:
     _VIEWER_CLIPS_DIR.mkdir(parents=True, exist_ok=True)
     _VIEWER_NOCLIPS_DIR.mkdir(parents=True, exist_ok=True)
     _VIEWER_TRANSPORT_DIR.mkdir(parents=True, exist_ok=True)
+    _VIEWER_AUTHOR_DIR.mkdir(parents=True, exist_ok=True)
     # Same generated viewer for ALL variants — only the config differs.
     html = html_for("HarnessScene")
     (_VIEWER_DIR / "index.html").write_text(html, encoding="utf-8", newline="")
@@ -419,6 +486,7 @@ def generate() -> Path:
     (_VIEWER_CLIPS_DIR / "index.html").write_text(html, encoding="utf-8", newline="")
     (_VIEWER_NOCLIPS_DIR / "index.html").write_text(html, encoding="utf-8", newline="")
     (_VIEWER_TRANSPORT_DIR / "index.html").write_text(html, encoding="utf-8", newline="")
+    (_VIEWER_AUTHOR_DIR / "index.html").write_text(html, encoding="utf-8", newline="")
     # A stub config so the no-store fetch succeeds and the viewer takes its
     # normal (non-error) path; no scene.rad is referenced/needed for the
     # framework-init assertions.
@@ -460,6 +528,11 @@ def generate() -> Path:
     # authored orbit_pivots (the interrupt/resume/idle-orbit fixture).
     (_VIEWER_TRANSPORT_DIR / "viewer-config.json").write_text(
         json.dumps(_t15_transport_config()), encoding="utf-8", newline=""
+    )
+    # Task-16: a 3-keyframe single path (slow seg 0 / fast seg 1, distinct
+    # per-keyframe quats); the harness drives this iframe with ?author=1.
+    (_VIEWER_AUTHOR_DIR / "viewer-config.json").write_text(
+        json.dumps(_t16_author_config()), encoding="utf-8", newline=""
     )
     return _VIEWER_DIR
 
@@ -505,7 +578,7 @@ def main(argv: list[str] | None = None) -> int:
     for _vd in (_VIEWER_PATH_DIR, _VIEWER_LIN_DIR, _VIEWER_NOLIN_DIR,
                 _VIEWER_STEP_DIR, _VIEWER_INTRO_DIR, _VIEWER_INTRONONE_DIR,
                 _VIEWER_CLIPS_DIR, _VIEWER_NOCLIPS_DIR,
-                _VIEWER_TRANSPORT_DIR):
+                _VIEWER_TRANSPORT_DIR, _VIEWER_AUTHOR_DIR):
         print(f"generated {_vd / 'index.html'} "
               f"({(_vd / 'index.html').stat().st_size} bytes)")
     if args.serve is not None:

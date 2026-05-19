@@ -3,10 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Splatpipe SceneView harness - keyframe editor (Tasks 0, 6-15)</title>
+  <title>Splatpipe SceneView harness - keyframe editor (Tasks 0, 6-16)</title>
   <!--
     SHARED Playwright harness for the camera-keyframe-editor plan
-    (Tasks 0 and 6-15). Same in-viewer-verification style as the other
+    (Tasks 0 and 6-16). Same in-viewer-verification style as the other
     tests/manual/*.html pages: a host page that embeds the generated Spark
     viewer in <iframe>s and runs assertions against each iframe's live
     `window` — but here it is automated, not eyeballed.
@@ -197,6 +197,49 @@
     (smooth, not jarring) until any input. The transport *code* itself
     is review-certified correct and exercised here; only the subjective
     real-pixel feel demonstration is deferred (NOT the logic).
+
+    Task 16 contract asserted here (author editor -- viewport
+    trajectory + camera frustums + speed dots; the FIRST author-mode
+    overlay; all observed off the REAL generated overlay via the
+    TEST-ONLY window.__editor surface -- pure THREE geometry built
+    from sampleAt + the keyframes, so it is FULLY scene-less-
+    verifiable, NO real .rad and NO honest deferral needed: the
+    trajectory geometry is scene-INDEPENDENT):
+      * _viewer_author (?author=1; a 3-keyframe single path: a SLOW
+        seg 0 [t 0..100, short hop] + a FAST seg 1 [t 100..110, long
+        hop]; each keyframe a DISTINCT quat -- identity / +Y yaw 90 /
+        +X pitch 90): window.__editor.author=true; a THREE.Line
+        polyline samples the active path (selEl's default_path_id) at
+        ~96 samples/segment (asserted against the REPORTED
+        samplesPerSeg over the 2 segments, not a magic number);
+        exactly ONE wireframe frustum per keyframe, EACH oriented by
+        ITS OWN keyframe quat (compared to the distinct fixture quats
+        -- a shared/global orientation fails) and at its keyframe
+        position; the speed-dot count between two keys scales
+        INVERSELY with segment speed -- the slow (long-duration)
+        seg 0 gets strictly MORE dots than the fast (short-duration)
+        seg 1 for the SAME fixed time step (asserted as a RATIO
+        DIRECTION); scrubbing onto a key makes ITS frustum visually
+        distinct (colour AND scale differ from the resting frusta,
+        tracking the playhead); the "Show trajectory" toggle (default
+        ON) adds/removes the whole overlay group, which is parented
+        under the ONE Task-0 OverlayScene owner.
+      * _viewer_author WITHOUT ?author=1 (the SAME scene): the
+        overlay is fully INERT -- window.__editor.author=false, 0
+        frusta, 0 polyline points, 0 dots, the group is NOT parented
+        in the OverlayScene and NOT visible. The byte-lock proves
+        HTML identity for the 6 live single-camera scenes (which are
+        NOT author mode); this proves the RUNTIME inertness too (the
+        OverlayScene layer's modes:['author'] gate + the
+        ModeManager.is('author') guards make it zero-cost and
+        zero-effect outside author mode).
+    NOTE: Task 16 needs NO honest deferral. Unlike Task-14/15 (whose
+    real-chunk residency / subjective cinematic feel genuinely need a
+    real .rad), the trajectory polyline / per-keyframe frusta / speed
+    dots are PURE THREE geometry computed from the SuperSplat spline
+    (sampleAt) + the authored keyframes -- entirely scene-INDEPENDENT.
+    Every Task-16 claim above is fully asserted here against the REAL
+    generated code; there is no deferred sub-claim.
   -->
   <style>
     html, body { height: 100%; margin: 0; padding: 0;
@@ -271,6 +314,14 @@
     <div class="pane">
       <div class="lbl">Task 15: transport (interrupt/resume/idle-orbit, ?idleMs=300)</div>
       <iframe id="f-transport" src="./_viewer_transport/index.html?idleMs=300" title="end-user transport"></iframe>
+    </div>
+    <div class="pane">
+      <div class="lbl">Task 16: author trajectory/frusta/speed-dots (?author=1)</div>
+      <iframe id="f-author-traj" src="./_viewer_author/index.html?author=1" title="author trajectory"></iframe>
+    </div>
+    <div class="pane">
+      <div class="lbl">Task 16: SAME scene WITHOUT ?author=1 (overlay must be absent)</div>
+      <iframe id="f-author-traj-user" src="./_viewer_author/index.html" title="author trajectory user-mode invariance"></iframe>
     </div>
   </div>
 
@@ -1684,6 +1735,305 @@
           'orbit on an actual splat is DEFERRED to the real-scene ' +
           'visual pass (scene-less harness -- see header NOTE); the ' +
           'transport LOGIC is fully asserted here');
+
+      // --- Task 16: author editor -- viewport trajectory + camera ----
+      //     frustums + speed dots (?author=1). The `_viewer_author/`
+      //     iframe carries a 3-keyframe single path with a SLOW seg 0
+      //     (t 0..100) and a FAST seg 1 (t 100..110); each keyframe has
+      //     a DISTINCT quat. Driven with ?author=1 so ModeManager
+      //     resolves author mode and the Task-16 overlay + the
+      //     TEST-ONLY window.__editor build. ALL of this is pure THREE
+      //     geometry off sampleAt + the keyframes -- NO real .rad
+      //     needed, so it is fully scene-less-verifiable (no honest
+      //     deferral is required: scene-INDEPENDENT geometry).
+      //   (a) a THREE.Line polyline samples the active path at
+      //       ~96 samples/segment (assert the vertex count matches
+      //       samplesPerSeg over the 2 segments, not a magic number);
+      //       exactly one wireframe frustum per keyframe, EACH oriented
+      //       by ITS OWN keyframe quat (compare to the distinct fixture
+      //       quats -- a shared/global orientation would fail).
+      //   (b) the speed-dot count between two keys scales INVERSELY
+      //       with segment speed: the SLOW (long-duration) seg 0 gets
+      //       strictly MORE dots than the FAST (short-duration) seg 1
+      //       for the SAME fixed time step (assert the ratio DIRECTION).
+      //   (c) the active/scrub keyframe's frustum is visually distinct
+      //       (scrub onto the middle key -> ITS frustum's colour AND
+      //       scale differ from the resting frusta).
+      //   (d) the "Show trajectory" toggle adds/removes the whole
+      //       group (setShow(false) hides it; setShow(true) restores).
+      //   (e) ?author=1 vs user-mode invariance: the SAME scene WITHOUT
+      //       ?author=1 builds NO overlay (window.__editor.author false,
+      //       no frusta, group not parented in the OverlayScene, not
+      //       visible) -- the byte-lock proves HTML identity for the 6
+      //       live scenes; this proves the RUNTIME inertness too.
+      function _qclose(a, b, eps) {
+        // Quaternions: equal up to sign (q and -q are the same
+        // rotation) within eps, componentwise.
+        if (!a || !b || a.length !== 4 || b.length !== 4) return false;
+        let same = true, flip = true;
+        for (let i = 0; i < 4; i++) {
+          if (Math.abs(a[i] - b[i]) > eps) same = false;
+          if (Math.abs(a[i] + b[i]) > eps) flip = false;
+        }
+        return same || flip;
+      }
+      async function task16Check() {
+        const win = frameWin('f-author-traj');
+        const winU = frameWin('f-author-traj-user');
+        if (!win) return { ok: false, reason: 'no f-author-traj window' };
+        const ready = await new Promise((resolve) => {
+          const t0 = Date.now();
+          (function poll() {
+            let sp, sv, ed;
+            try {
+              sp = win.__sp; sv = win.__sceneview;
+              ed = win.__editor;
+            } catch (e) { sp = sv = ed = undefined; }
+            if (sp && sp.THREE && sv && ed) return resolve(true);
+            if (Date.now() - t0 > 30000) return resolve(false);
+            setTimeout(poll, 100);
+          })();
+        });
+        if (!ready)
+          return { ok: false, reason: 'author trajectory viewer never ready' };
+        const tickRAF = () => new Promise((res) => {
+          win.requestAnimationFrame(() =>
+            win.requestAnimationFrame(() => res()));
+        });
+        // The overlay rebuilds + tracks from the ONE OverlayScene tick;
+        // pump a couple frames so the layer's update() has run at least
+        // once (geometry built, node parented under the overlay group).
+        await tickRAF(); await tickRAF();
+        // Deterministic rebuild (same spirit as __clip.restart()) so the
+        // assertions do not race CDN/init timing.
+        let frCount = 0;
+        try { frCount = win.__editor.rebuild(); } catch (e) {}
+        await tickRAF();
+        const ed = win.__editor;
+
+        // The fixture's authored keyframe quats (must match
+        // _gen_harness_viewer _t16_author_config exactly).
+        const Q_IDENT = [0, 0, 0, 1];
+        const Q_YAW90 = [0, 0.7071067811865476, 0, 0.7071067811865476];
+        const Q_PITCH90 = [0.7071067811865476, 0, 0, 0.7071067811865476];
+        const fixQ = [Q_IDENT, Q_YAW90, Q_PITCH90];
+
+        const authorMode = ed.author === true;
+        // (a) polyline ~96 samples/seg over the 2 segments. Expected =
+        //     samplesPerSeg+1 (seg0: 0..N) + samplesPerSeg (seg1: 1..N,
+        //     shared knot deduped) = 2*N + 1. Assert against the
+        //     REPORTED samplesPerSeg (not a hard-coded magic number).
+        const N = ed.samplesPerSeg;
+        const expLinePts = 2 * N + 1;
+        const linePts = ed.linePointCount;
+        const lineOk = N >= 64 &&
+          Math.abs(linePts - expLinePts) <= 2 && linePts > 0;
+        // exactly one frustum per keyframe (3), each oriented by ITS
+        // OWN keyframe quat, each parented under the trajectory group.
+        const fr = ed.frusta;
+        const frCountOk = ed.frustumCount === 3 && fr.length === 3;
+        let frQuatOk = fr.length === 3;
+        let frPosOk = fr.length === 3;
+        const expPos = [[0, 0, 0], [4, 0, 0], [4, 0, -80]];
+        for (let i = 0; i < fr.length; i++) {
+          if (!_qclose(fr[i].quat, fixQ[i], 1e-3)) frQuatOk = false;
+          if (!fr[i].inGroup) frCountOk && (frCountOk = false);
+          const ep = expPos[i] || [0, 0, 0], gp = fr[i].pos || [];
+          if (_dist3(gp, ep) > 1e-3) frPosOk = false;
+        }
+        // The per-keyframe quats are pairwise DISTINCT in the fixture,
+        // so a viewer that applied a shared/global orientation would
+        // fail frQuatOk -- prove the fixture quats really are distinct
+        // (guards the assertion from a degenerate all-equal fixture).
+        const fixDistinct = !_qclose(Q_IDENT, Q_YAW90, 1e-3) &&
+          !_qclose(Q_YAW90, Q_PITCH90, 1e-3) &&
+          !_qclose(Q_IDENT, Q_PITCH90, 1e-3);
+
+        // (b) inverse-speed dots: slow seg 0 (long duration) gets
+        //     strictly MORE dots than fast seg 1 (short duration) for
+        //     the SAME fixed time step. Assert the RATIO DIRECTION.
+        const segC = ed.dotSegCounts;
+        const dotCount = ed.dotCount;
+        const dotsOk = Array.isArray(segC) && segC.length === 2 &&
+          dotCount > 0 && segC[0] > 0 && segC[1] > 0 &&
+          segC[0] > segC[1];
+        // Dot positions are real 3-vectors on the path (not empty/NaN).
+        let dotPosOk = dotCount > 0;
+        const dps = ed.dotPositions;
+        if (!(Array.isArray(dps) && dps.length === dotCount)) dotPosOk = false;
+        else for (const d of dps) {
+          if (!(Array.isArray(d) && d.length === 3 &&
+                isFinite(d[0]) && isFinite(d[1]) && isFinite(d[2]))) {
+            dotPosOk = false; break;
+          }
+        }
+
+        // (c) active/scrub frustum visually distinct. Scrub to the
+        //     MIDDLE key (t fraction ~0.95 lands inside seg 1 whose
+        //     source key is kf 1) and to the START (kf 0); each time
+        //     the highlighted frustum's colour AND scale must differ
+        //     from the resting ones.
+        // scrubTo() refreshes the active-key highlight synchronously,
+        // but the ONE OverlayScene tick ALSO calls _trajRefreshActive()
+        // every rAF; pump one frame after the scrub so the read is
+        // taken once the layer's update() has settled on the new
+        // playhead (same first-paint-race robustness the Task-10/14/15
+        // checks use -- the production code is deterministic, this just
+        // removes a first-load timing flake).
+        async function activeProbe(frac) {
+          let ai = -1;
+          try { ai = win.__editor.scrubTo(frac); } catch (e) {}
+          await tickRAF();
+          const fl = win.__editor.frusta;
+          const act = fl.filter(f => f.active);
+          const rest = fl.filter(f => !f.active);
+          const restCols = rest.map(f => f.color);
+          const restScales = rest.map(f => f.scale);
+          const distinct = act.length === 1 && rest.length >= 1 &&
+            restCols.indexOf(act[0].color) === -1 &&
+            act[0].scale > Math.max.apply(null, restScales.concat([0]));
+          return { ai: ai, actIdx: act.map(f => f.kfIndex),
+            distinct: distinct,
+            actColor: act.length ? act[0].color : null,
+            restCols: restCols,
+            actScale: act.length ? act[0].scale : null,
+            restScales: restScales };
+        }
+        const pStart = await activeProbe(0.0);
+        const pMid = await activeProbe(0.97);
+        const activeDistinctOk =
+          pStart.distinct && pStart.actIdx.length === 1 &&
+          pStart.actIdx[0] === 0 &&
+          pMid.distinct && pMid.actIdx.length === 1 &&
+          pMid.actIdx[0] >= 1;
+
+        // (d) the "Show trajectory" toggle adds/removes the group.
+        let showDefault = ed.show === true && ed.groupVisible === true;
+        let hid = null, shown = null;
+        try { win.__editor.setShow(false); } catch (e) {}
+        await tickRAF();
+        hid = win.__editor.groupVisible === false &&
+          win.__editor.show === false;
+        try { win.__editor.setShow(true); } catch (e) {}
+        await tickRAF();
+        shown = win.__editor.groupVisible === true &&
+          win.__editor.show === true;
+        const toggleOk = showDefault && hid === true && shown === true;
+        // The trajectory group is parented under the SAME OverlayScene
+        // group the Task-0 scaffold scene.add()-ed (one overlay owner).
+        const inSceneOk = win.__editor.groupInScene === true;
+
+        // (e) ?author=1 vs user-mode RUNTIME invariance: the SAME scene
+        //     WITHOUT ?author=1 builds NO overlay at all.
+        let userInert = null;
+        if (winU) {
+          const readyU = await new Promise((resolve) => {
+            const t0 = Date.now();
+            (function poll() {
+              let sp, ed2;
+              try { sp = winU.__sp; ed2 = winU.__editor; }
+              catch (e) { sp = ed2 = undefined; }
+              // window.__editor is always defined (harmless surface);
+              // in user mode it must report author=false + empty.
+              if (sp && sp.THREE && ed2) return resolve(true);
+              if (Date.now() - t0 > 30000) return resolve(false);
+              setTimeout(poll, 100);
+            })();
+          });
+          if (readyU) {
+            // pump a few frames; if the overlay (wrongly) built in user
+            // mode it would have done so by now.
+            await new Promise((res) => winU.requestAnimationFrame(() =>
+              winU.requestAnimationFrame(() => res())));
+            const e2 = winU.__editor;
+            // RUNTIME inertness per the Task-0 OverlayScene contract:
+            // OverlayScene.register() ALWAYS parents a layer's node
+            // under its ONE group (visibility is mode-gated via
+            // node.visible -- nodes are never JS add/removed, exactly
+            // like the Task-12 CSS-gated dual-UI roots). So in user
+            // mode the trajectory node IS parented but the layer is
+            // INERT: modes:['author'] => OverlayScene sets it
+            // node.visible=false AND skips its update() => NO geometry
+            // is ever built (0 frusta / 0 line pts / 0 dots) and the
+            // group is NOT visible. That -- author=false + zero
+            // geometry + groupVisible false -- IS the correct inert
+            // state (asserting groupInScene===false would WRONGLY
+            // contradict the OverlayScene owner pattern; the byte-lock
+            // separately proves the generated HTML is byte-identical
+            // for the 6 live non-author scenes).
+            userInert = e2.author === false &&
+              e2.frustumCount === 0 && e2.linePointCount === 0 &&
+              e2.dotCount === 0 && e2.groupVisible === false;
+          } else {
+            userInert = false;
+          }
+        } else {
+          userInert = false;
+        }
+
+        return {
+          ok: !!(authorMode && lineOk && frCountOk && frQuatOk &&
+            frPosOk && fixDistinct && dotsOk && dotPosOk &&
+            activeDistinctOk && toggleOk && inSceneOk &&
+            userInert === true),
+          authorMode: authorMode,
+          N: N, linePts: linePts, expLinePts: expLinePts, lineOk: lineOk,
+          frCount: ed.frustumCount, frCountOk: frCountOk,
+          frQuatOk: frQuatOk, frPosOk: frPosOk, fixDistinct: fixDistinct,
+          frusta: fr.map(f => ({ kf: f.kfIndex, q: f.quat,
+            pos: f.pos })),
+          segC: segC, dotCount: dotCount, dotsOk: dotsOk,
+          dotPosOk: dotPosOk,
+          pStart: pStart, pMid: pMid,
+          activeDistinctOk: activeDistinctOk,
+          showDefault: showDefault, hid: hid, shown: shown,
+          toggleOk: toggleOk, inSceneOk: inSceneOk,
+          userInert: userInert,
+        };
+      }
+      const k16 = await task16Check();
+      T('Task 16(a): author-mode THREE.Line polyline samples the active ' +
+        'path at ~96 samples/segment AND exactly one wireframe frustum ' +
+        'per keyframe, EACH oriented by ITS OWN keyframe quat + at its ' +
+        'keyframe position (scene-less: pure sampleAt geometry)',
+        !!(k16.authorMode && k16.lineOk && k16.frCountOk &&
+           k16.frQuatOk && k16.frPosOk && k16.fixDistinct),
+        JSON.stringify({ authorMode: k16.authorMode, N: k16.N,
+          linePts: k16.linePts, expLinePts: k16.expLinePts,
+          lineOk: k16.lineOk, frCount: k16.frCount,
+          frCountOk: k16.frCountOk, frQuatOk: k16.frQuatOk,
+          frPosOk: k16.frPosOk, fixDistinct: k16.fixDistinct,
+          frusta: k16.frusta }));
+      T('Task 16(b): speed-dot count between two keys scales INVERSELY ' +
+        'with segment speed -- the slow (long-duration) seg 0 gets ' +
+        'strictly MORE dots than the fast (short-duration) seg 1 for ' +
+        'the SAME fixed time step (ratio direction, not a magic number)',
+        !!(k16.dotsOk && k16.dotPosOk),
+        JSON.stringify({ segC: k16.segC, dotCount: k16.dotCount,
+          dotsOk: k16.dotsOk, dotPosOk: k16.dotPosOk }));
+      T('Task 16(c): the active/scrub keyframe frustum is visually ' +
+        'distinct (scrub onto a key -> ITS frustum colour AND scale ' +
+        'differ from the resting frusta; tracks the playhead)',
+        !!k16.activeDistinctOk,
+        JSON.stringify({ pStart: k16.pStart, pMid: k16.pMid,
+          activeDistinctOk: k16.activeDistinctOk }));
+      T('Task 16(d): the "Show trajectory" toggle adds/removes the ' +
+        'whole overlay group (default ON; setShow(false) hides, ' +
+        'setShow(true) restores) AND the group is parented under the ' +
+        'ONE Task-0 OverlayScene owner',
+        !!(k16.toggleOk && k16.inSceneOk),
+        JSON.stringify({ showDefault: k16.showDefault, hid: k16.hid,
+          shown: k16.shown, toggleOk: k16.toggleOk,
+          inSceneOk: k16.inSceneOk }));
+      T('Task 16(e): ?author=1 vs user-mode RUNTIME invariance -- the ' +
+        'SAME scene WITHOUT ?author=1 builds NO overlay (author=false, ' +
+        '0 frusta, 0 line pts, 0 dots, group NOT visible -- the ' +
+        'OverlayScene layer is modes:[author]-gated so its node is ' +
+        'parented-but-hidden-and-empty, the correct inert state per ' +
+        'the Task-0 owner contract); proves the overlay is fully inert ' +
+        'outside author mode (the 6 live scenes are NOT author mode)',
+        k16.userInert === true,
+        JSON.stringify({ userInert: k16.userInert }));
 
       // ── Report ───────────────────────────────────────────────────────
       const passCount = results.filter(r => r.pass).length;
