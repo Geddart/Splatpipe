@@ -268,9 +268,21 @@ _VIEWER_TEMPLATE = """\
          timeline (#editor-timeline is bottom:0, ~70px tall, z-index
          48) so the keyboard hint is no longer occluded in author
          mode. In usermode there is no timeline so the slightly
-         higher bottom is harmless. Still pointer-events:none. */
-      position: absolute; bottom: 84px; left: 20px; z-index: 60;
-      color: rgba(255,255,255,0.4); font-size: 11px; pointer-events: none;
+         higher bottom is harmless. Still pointer-events:none.
+         B3: legibility over a BRIGHT scene -- a subtle semi-opaque
+         dark rounded backing + a stronger text shadow + a higher-
+         contrast colour so the hint is clearly readable in author
+         mode (where it sits over the merged control row) yet stays
+         unobtrusive for end users (small, dim, no pointer events;
+         still embed-hidden via body.embed). A tiny bottom nudge +
+         max-width keeps it from crowding the control row. */
+      position: absolute; bottom: 92px; left: 20px; z-index: 60;
+      color: rgba(255,255,255,0.78); font-size: 11px;
+      pointer-events: none; max-width: min(72vw, 760px);
+      padding: 5px 9px; border-radius: 6px;
+      background: rgba(0,0,0,0.42);
+      -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px);
+      text-shadow: 0 1px 3px rgba(0,0,0,0.85);
     }}
 
     #css2d-root {{
@@ -6077,6 +6089,19 @@ _VIEWER_TEMPLATE = """\
     let _gzImportPromise = null;  // memoised dynamic import
     let _gzPopEl = null;          // the interp popover element
     let _gzCtlHelper = null;      // the gizmo's visible helper object
+    let _gzAltOrbiting = false;   // B1: an Alt+Left orbit gesture is live
+    let _gzAltPrevGz = null;      // _gzCtl.enabled saved across the gesture
+    let _gzAltPrevTan = null;     // _tanCtl.enabled saved across the gesture
+    // B2 stacked-keyframe click-cycle state. _gzPkLastX/Y = the screen
+    // px of the previous pick; _gzPkCands = the sorted candidate kf
+    // indices of that pick; _gzPkIdx = how deep we are in that stack;
+    // _gzPkSig = the _trajBuiltSig at that pick (a frustum rebuild
+    // invalidates the cycle). Reset on selection-cleared, on rebuild,
+    // and when the click moves past _GZ_PK_SAME_PX.
+    let _gzPkLastX = null, _gzPkLastY = null;
+    let _gzPkCands = [];
+    let _gzPkIdx = 0;
+    let _gzPkSig = null;
 
     function _gzActivePath() {{
       return (typeof _trajActivePath === 'function')
@@ -6284,6 +6309,10 @@ _VIEWER_TEMPLATE = """\
     // re-attach -- attach/detach is its designed lifecycle.
     function _gzDetach() {{
       _gzSelKf = -1;
+      // B2: selection cleared -> forget the stacked-click cycle so the
+      // NEXT pick starts at the front-most again (declarations are
+      // hoisted in this IIFE -- _gzPkResetCycle is defined below).
+      _gzPkResetCycle();
       if (_gzCtl) {{
         try {{ _gzCtl.detach(); }} catch (e) {{}}
       }}
@@ -6836,33 +6865,86 @@ _VIEWER_TEMPLATE = """\
     //      owns the pointer then) and while OrbitControls is mid-
     //      gesture is naturally fine (a frustum hit is a discrete
     //      click, not a drag).
+    // B2: forget the stacked-click cycle. Called on selection-cleared
+    // and whenever the candidate set / click position is no longer the
+    // same stack (so the NEXT click selects the front-most again).
+    function _gzPkResetCycle() {{
+      _gzPkLastX = null;
+      _gzPkLastY = null;
+      _gzPkCands = [];
+      _gzPkIdx = 0;
+      _gzPkSig = null;
+    }}
+    // B2 pick target: a FIXED SCREEN-SPACE radius (~5 px, ~10 px on
+    //   retina) centred on each keyframe's camera-icon PIVOT -- NOT a
+    //   widened raycaster Line threshold (the old code set
+    //   `_raycaster.params.Line.threshold = _trajFrHalf * 0.6`, which
+    //   is SCENE-RELATIVE METRES -> a multi-metre invisible grab
+    //   volume on a large scene that also OCCLUDED anything behind it
+    //   and made a target-behind-a-target unselectable). A pure
+    //   2D screen-distance test on the PROJECTED keyframe position is
+    //   inherently non-occluding (depth is irrelevant to the hit
+    //   test) and constant in pixels at any scene scale. When several
+    //   keyframes fall inside that radius, repeated clicks at ~the
+    //   same screen point CYCLE front -> behind -> ... -> wrap (sorted
+    //   by camera distance, nearest first). Returns the chosen
+    //   keyframe index (the path keyframes[] index == frustum
+    //   kfIndex), fed UNCHANGED to _gzAttach(idx); -1 = nothing in
+    //   range (the caller then deselects, exactly as before).
+    const _GZ_PK_V = new THREE.Vector3();
+    const _GZ_PK_SAME_PX = 6;   // "same screen point" tolerance (px)
     function _gzPickFrustum(clientX, clientY) {{
-      if (!_trajFrusta.length) return -1;
+      if (!_trajFrusta.length) {{ _gzPkResetCycle(); return -1; }}
       const rect = renderer.domElement.getBoundingClientRect();
-      _ndc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
-      _ndc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
-      _raycaster.setFromCamera(_ndc, camera);
-      // LineSegments need a forgiving threshold; the frusta are
-      // small wireframes. Pick the nearest hit frustum's kfIndex.
-      const prevT = _raycaster.params.Line
-        ? _raycaster.params.Line.threshold : 1;
-      if (_raycaster.params.Line) {{
-        _raycaster.params.Line.threshold =
-          Math.max(prevT, _trajFrHalf * 0.6);
-      }}
-      let best = -1, bestDist = Infinity;
+      if (!rect.width || !rect.height) return -1;
+      const radiusPx =
+        (window.devicePixelRatio && window.devicePixelRatio > 1)
+          ? 10 : 5;
+      // Project every keyframe pivot to screen px; collect the ones
+      // within radiusPx, remembering each one's camera distance for
+      // the front->back ordering. A point BEHIND the camera (NDC
+      // z > 1 after project()) is never a candidate.
+      const cands = [];
       for (const f of _trajFrusta) {{
-        if (!f.mesh) continue;
-        const hits = _raycaster.intersectObject(f.mesh, false);
-        if (hits.length && hits[0].distance < bestDist) {{
-          bestDist = hits[0].distance;
-          best = f.kfIndex;
+        if (!f.pos || f.pos.length !== 3) continue;
+        _GZ_PK_V.set(f.pos[0], f.pos[1], f.pos[2]);
+        const camDist = _GZ_PK_V.distanceTo(camera.position);
+        _GZ_PK_V.project(camera);
+        if (_GZ_PK_V.z > 1) continue;   // behind the camera
+        const sx = rect.left + (_GZ_PK_V.x * 0.5 + 0.5) * rect.width;
+        const sy = rect.top + (-_GZ_PK_V.y * 0.5 + 0.5) * rect.height;
+        const dx = sx - clientX, dy = sy - clientY;
+        if ((dx * dx + dy * dy) <= (radiusPx * radiusPx)) {{
+          cands.push({{ idx: f.kfIndex, camDist: camDist }});
         }}
       }}
-      if (_raycaster.params.Line) {{
-        _raycaster.params.Line.threshold = prevT;
+      if (!cands.length) {{ _gzPkResetCycle(); return -1; }}
+      // Front -> back (nearest camera distance first).
+      cands.sort((a, b) => a.camDist - b.camDist);
+      const order = cands.map((c) => c.idx);
+      // Stacked-cycle: same screen point (within _GZ_PK_SAME_PX) AND
+      // the SAME candidate stack AND the SAME frustum build -> advance
+      // one deeper (mod N, so it wraps back to the front-most);
+      // otherwise this is a fresh pick -> front-most (index 0).
+      const sig = _trajBuiltSig;
+      const samePoint =
+        _gzPkLastX !== null &&
+        Math.abs(clientX - _gzPkLastX) <= _GZ_PK_SAME_PX &&
+        Math.abs(clientY - _gzPkLastY) <= _GZ_PK_SAME_PX;
+      const sameStack =
+        _gzPkSig === sig &&
+        _gzPkCands.length === order.length &&
+        _gzPkCands.every((v, k) => v === order[k]);
+      if (samePoint && sameStack) {{
+        _gzPkIdx = (_gzPkIdx + 1) % order.length;
+      }} else {{
+        _gzPkIdx = 0;
       }}
-      return best;
+      _gzPkLastX = clientX;
+      _gzPkLastY = clientY;
+      _gzPkCands = order;
+      _gzPkSig = sig;
+      return order[_gzPkIdx];
     }}
     // Is the pointerdown (clientX/Y) over a TransformControls gizmo
     // HANDLE? We run in CAPTURE phase, BEFORE TransformControls' own
@@ -6894,6 +6976,21 @@ _VIEWER_TEMPLATE = """\
     function _gzOnCanvasDown(ev) {{
       if (!ModeManager.is('author')) return;
       if (ev.button !== undefined && ev.button !== 0) return;
+      // B1 -- NAVIGATION SUPREMACY: Alt+Left ALWAYS orbits the
+      //   camera, overriding gizmo / tangent-handle / frustum
+      //   selection no matter what is under the pointer. Return at
+      //   the VERY TOP (before the tangent retarget + every pick) so
+      //   this capture handler never stopPropagation()s -> the event
+      //   bubbles to OrbitControls' own (bubble-phase) pointerdown,
+      //   which maps plain LEFT -> ROTATE. The TransformControls
+      //   instances are ALSO neutralised for the gesture by the
+      //   window-level Alt guard registered below (a capture-phase
+      //   return alone cannot stop TC's own bubble pointerdown -- the
+      //   inverse of the _gzPointerOnGizmo problem). _gzAltOrbiting
+      //   stays true until the matching pointerup/cancel so TC is
+      //   disabled for the whole drag.
+      if (ev.altKey) return;
+      if (_gzAltOrbiting) return;   // mid Alt-orbit (TC neutralised)
       if (_gzDragging || _tanDragging) return;   // a gizmo owns it
       // 1. The TANGENT handles are visually TOPMOST. FIRST re-point
       //    the live handle TC onto whichever handle SQUARE the
@@ -6941,6 +7038,52 @@ _VIEWER_TEMPLATE = """\
         ev.stopPropagation();
       }}
     }}
+    // ---- B1 Alt-orbit TransformControls neutraliser. _gzOnCanvasDown
+    //   already returns early on ev.altKey (so it never
+    //   stopPropagation()s and the event reaches OrbitControls). But
+    //   each TransformControls instance (_gzCtl, _tanCtl) has its OWN
+    //   bubble-phase pointerdown that starts a drag whenever its hover
+    //   axis is set -- a capture-phase return cannot stop that (the
+    //   inverse of _gzPointerOnGizmo's problem). So on an Alt+Left
+    //   pointerdown, disable BOTH controls for the duration of the
+    //   gesture and restore them EXACTLY to their prior enabled state
+    //   on the matching pointerup/cancel (they may legitimately be
+    //   disabled already). OrbitControls is NOT gated here (the
+    //   auto-tour is already suppressed in author mode and the left-
+    //   orbit path has no _player block) -> Alt+Left = clean orbit.
+    //   Registered in CAPTURE phase on window so it runs before TC's
+    //   document-level bubble pointerdown.
+    function _gzAltDown(ev) {{
+      if (!ModeManager.is('author')) return;
+      if (ev.button !== undefined && ev.button !== 0) return;
+      if (!ev.altKey) return;
+      if (_gzAltOrbiting) return;        // already neutralised
+      _gzAltOrbiting = true;
+      if (_gzCtl) {{
+        _gzAltPrevGz = _gzCtl.enabled;
+        _gzCtl.enabled = false;
+      }}
+      if (_tanCtl) {{
+        _gzAltPrevTan = _tanCtl.enabled;
+        _tanCtl.enabled = false;
+      }}
+    }}
+    function _gzAltRestore() {{
+      if (!_gzAltOrbiting) return;
+      _gzAltOrbiting = false;
+      if (_gzCtl && _gzAltPrevGz !== null) {{
+        _gzCtl.enabled = _gzAltPrevGz;
+      }}
+      if (_tanCtl && _gzAltPrevTan !== null) {{
+        _tanCtl.enabled = _gzAltPrevTan;
+      }}
+      _gzAltPrevGz = null;
+      _gzAltPrevTan = null;
+    }}
+    window.addEventListener('pointerdown', _gzAltDown, true);
+    window.addEventListener('pointerup', _gzAltRestore);
+    window.addEventListener('pointercancel', _gzAltRestore);
+
     // Capture phase so we see the pointerdown before OrbitControls'
     // own canvas listener (it is attached without capture); only
     // when we actually consume a frustum hit do we stopPropagation.
