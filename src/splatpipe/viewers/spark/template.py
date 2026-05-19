@@ -379,6 +379,7 @@ _VIEWER_TEMPLATE = """\
        populate them. */
     body.usermode #author-root {{ display: none; }}
     body.authormode #user-transport {{ display: none; }}
+    body.authormode #path-mini {{ display: none !important; }}
 
     /* Task 13 -- cinematic loading-blur + intro fade (the END-USER shell,
        plan SS-A3). Same CSS-gating mechanism as the Task-12 dual-UI roots
