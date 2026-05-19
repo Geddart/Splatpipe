@@ -2352,6 +2352,9 @@ _VIEWER_TEMPLATE = """\
   // virtual cameras and the raw paths so a created name never
   // duplicates an existing camera/path label.
   function _camSelNextName() {{
+    // Gap-fill semantics: returns the LOWEST unused "Camera N", so a
+    // deleted slot is reused -- e.g. {{Camera 1, Camera 3}} -> "Camera 2"
+    // (NOT a monotonic counter). Future rename UI is a separate concern.
     const used = new Set();
     const cams = Array.isArray(cfg.cameras) ? cfg.cameras : [];
     for (const c of cams) {{ if (c && c.name) used.add(c.name); }}
@@ -2475,11 +2478,22 @@ _VIEWER_TEMPLATE = """\
       // #camera-select change does). typeof-guarded like the
       // _stopTour call above (this function only runs at user-
       // interaction time, well after both are defined).
-      if (typeof _userInterrupted !== 'undefined') {{
-        _userInterrupted = false;
-      }}
-      if (typeof _showUserPlay === 'function') {{
-        try {{ _showUserPlay(false); }} catch (e) {{}}
+      // GATE on `_player`: startPath(val) calls buildPlayer(val);
+      // when val's path has <2 keyframes, buildPlayer returns null
+      // and startPath shows an alert + returns WITHOUT setting
+      // _player -- playback never began. Without this guard the
+      // teardown below would silently drop _userInterrupted /
+      // hide #user-play even though no new tour started. Edge
+      // case (only reachable on a freshly-created camera with an
+      // empty keyframes list selected via dropdown before Record),
+      // but cheap to fix correctly.
+      if (_player) {{
+        if (typeof _userInterrupted !== 'undefined') {{
+          _userInterrupted = false;
+        }}
+        if (typeof _showUserPlay === 'function') {{
+          try {{ _showUserPlay(false); }} catch (e) {{}}
+        }}
       }}
     }}
     // AUTHOR: bind only -- the editor/timeline/gizmo rebind off
@@ -2511,7 +2525,16 @@ _VIEWER_TEMPLATE = """\
       // AUTHOR-ONLY: the create affordance, always LAST. An
       // end-user never gets this option (selector itself stays
       // end-user-visible from Phase 1; only CREATE is gated).
-      if (_EDITOR_AUTHOR) {{
+      // _camSelBuildOptions runs at MODULE INIT TIME (via
+      // _camSelInit below), BEFORE the `const _EDITOR_AUTHOR =
+      // ModeManager.is('author')` declaration further down -- so
+      // reading `_EDITOR_AUTHOR` here would throw a TDZ
+      // ReferenceError on every page load (freezes the viewer).
+      // Call `ModeManager.is('author')` directly: ModeManager is a
+      // module-scope const declared well above this site, and its
+      // `is(...)` accessor is safe to invoke at any time after that
+      // declaration. Semantically identical to `_EDITOR_AUTHOR`.
+      if (ModeManager.is('author')) {{
         const cOpt = document.createElement('option');
         cOpt.value = _CAM_CREATE;
         cOpt.textContent = '+ Create camera';
@@ -2577,6 +2600,9 @@ _VIEWER_TEMPLATE = """\
     // path is visible to BOTH the editor AND the save patch.
     cameraPaths.push(newPath);
     cfg.camera_paths = cameraPaths;
+    // cfg.cameras is MUTATED here; _clipCameras / _clipMode were
+    // frozen at init by design -- Phase 2 does NOT activate clip mode
+    // at runtime. Create-camera + clip is a future-phase concern.
     if (!Array.isArray(cfg.cameras)) cfg.cameras = [];
     cfg.cameras.push({{ id: camId, name: name, path_id: pathId }});
     // Authored-selection persistence: reuse cfg.default_path_id (no
