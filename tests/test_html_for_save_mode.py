@@ -1520,6 +1520,141 @@ def test_camera_path_overlay_is_scene_relative_not_fixed():
 
 
 # --------------------------------------------------------------------------
+# my16 follow-up: the sample TICKS must be tiny + white + fixed-size,
+# and the motion LINE must carry a subtle per-vertex gradient
+# --------------------------------------------------------------------------
+# A second real-scene UX defect (the cd119d4 scene-relative frustum
+# fix was correct and is KEPT): the my16 overlay sized the per-sample
+# speed dots off ``Math.max(2, _trajFrHalf * 0.5)`` with
+# ``sizeAttenuation: true`` and coloured them ``_TRAJ_COL`` (orange).
+# Because ``_trajFrHalf`` is the SCENE-RELATIVE frustum half (metres
+# on a large path), every dot became a fat world-space orange blob;
+# 240 of them overlapped into one SOLID ORANGE BAND across the scene
+# when framed from far back. The motion line was a flat-orange
+# ``LineBasicMaterial({ color: _TRAJ_COL })`` ribbon. The fix makes
+# the ticks DELICATE + WHITE + FIXED screen-space (``_TRAJ_TICK_PX``
+# px, ``sizeAttenuation: false`` -> ~2 px at ANY distance, fully
+# decoupled from ``_trajFrHalf``) and gives the line a SUBTLE
+# low-saturation per-vertex HSL gradient (``vertexColors: true`` +
+# a populated ``color`` attribute). This is a SIZING/material change
+# strictly inside the byte-lock T16-TRAJ region (the byte-lock test
+# above proves the eleven-region remainder is UNCHANGED -- wholly
+# region-interior, recipe 2c). NEGATIVE-CONTROLLED against the
+# committed ``cd119d4`` (pre-tick-fix) template, which still has the
+# old ``_trajFrHalf``-keyed orange dots + flat-orange line -- so this
+# assertion provably FAILS against the pre-fix code (a genuine
+# discriminator, not a tautology).
+_TICK_LINE_MARKERS = (
+    "const _TRAJ_TICK_PX",              # fixed px tick size
+    "const _TRAJ_TICK_COL",             # near-white tick colour
+    "const _TRAJ_TICK_OPACITY",         # modest tick alpha
+    "const _TRAJ_LINE_HUE0",            # gradient start hue
+    "const _TRAJ_LINE_HUE1",            # gradient end hue
+    "const _TRAJ_LINE_SAT",             # low gradient saturation
+    "sizeAttenuation: false",           # ticks are screen-space-fixed
+    "vertexColors: true",               # line uses a per-vertex ramp
+    "get tickSize()",                   # window.__editor tick probe
+    "get tickSizeIsFixed()",            # window.__editor attenuation probe
+    "get tickColorIsWhite()",           # window.__editor white probe
+    "get lineHasGradient()",            # window.__editor gradient probe
+    "get lineColorEndsDiffer()",        # window.__editor real-ramp probe
+)
+# The OLD fat-orange-dot sizing the pre-fix code used (scene-relative
+# blob keyed off the frustum half, attenuated -> the solid band).
+_OLD_TICK_MARKERS = (
+    "color: _TRAJ_COL, size: Math.max(2, _trajFrHalf * 0.5),",
+)
+
+
+def test_motion_ticks_are_tiny_white_and_line_has_gradient():
+    """The my16 sample ticks must be SMALL + WHITE + FIXED
+    screen-space (not the old fat scene-relative orange blobs that
+    merged into a band) and the motion line must carry a SUBTLE
+    per-vertex gradient (not a flat-orange ribbon). The cd119d4
+    scene-relative camera-frustum markers must SURVIVE unchanged (no
+    regression). NEGATIVE-CONTROLLED against the committed cd119d4
+    (pre-tick-fix) template -- proving this is a real discriminator,
+    not a tautology."""
+    html = html_for("HarnessScene")
+
+    # (positive) every tick/line marker the FIXED code introduces is
+    # present in the rendered HTML.
+    for mk in _TICK_LINE_MARKERS:
+        assert mk in html, f"tick/line marker missing: {mk!r}"
+    # (positive) the OLD fat-orange-dot sizing is GONE -- no
+    # _trajFrHalf-keyed dot size, no flat-orange line material.
+    for mk in _OLD_TICK_MARKERS:
+        assert mk not in html, f"old fat-orange-dot code still present: {mk!r}"
+    # The flat-orange line material CONSTRUCTION is replaced by the
+    # vertexColors one (assert on the ``new THREE.`` construction form
+    # -- the bare ``LineBasicMaterial({ color: _TRAJ_COL })`` substring
+    # also appears in a doc comment, so the construction call is the
+    # precise discriminator; rendered HTML collapses ``{{``->``{``).
+    assert "new THREE.LineBasicMaterial({ color: _TRAJ_COL })" not in html
+    assert "new THREE.LineBasicMaterial({ vertexColors: true })" in html
+    # (positive) the tick size is a SMALL fixed pixel size and the
+    # gradient hues are a NARROW low-saturation band (a tasteful
+    # ramp, never a saturated rainbow).
+    import re
+    tpx = float(re.search(r"const _TRAJ_TICK_PX = ([0-9.]+);", html).group(1))
+    h0 = float(re.search(r"const _TRAJ_LINE_HUE0 = ([0-9.]+);", html).group(1))
+    h1 = float(re.search(r"const _TRAJ_LINE_HUE1 = ([0-9.]+);", html).group(1))
+    sat = float(re.search(r"const _TRAJ_LINE_SAT = ([0-9.]+);", html).group(1))
+    assert 0.0 < tpx <= 4.0, f"tick px not tiny: {tpx}"
+    assert 0.0 <= sat <= 0.6, f"line saturation not restrained: {sat}"
+    assert abs(h1 - h0) <= 0.5, (
+        f"line hue span too wide (rainbow, not subtle): {h0}->{h1}"
+    )
+    # The tick colour constant is near-white (all channels high) --
+    # parse the hex and assert each byte is bright.
+    tcol = re.search(r"const _TRAJ_TICK_COL = 0x([0-9a-fA-F]{6});", html)
+    assert tcol, "tick colour constant not found"
+    cr = int(tcol.group(1)[0:2], 16)
+    cg = int(tcol.group(1)[2:4], 16)
+    cb = int(tcol.group(1)[4:6], 16)
+    assert cr >= 0xD0 and cg >= 0xD0 and cb >= 0xD0, (
+        f"tick colour not near-white: #{tcol.group(1)}"
+    )
+
+    # The cd119d4 scene-relative camera-FRUSTUM markers MUST survive
+    # untouched -- this pass only restyles the ticks + line, it must
+    # NOT regress the (correct) scene-relative small frustum fix.
+    for mk in (
+        "function _trajPathScale", "function _trajApplyScale",
+        "const _TRAJ_FR_FRAC", "const _TRAJ_FR_MIN", "const _TRAJ_FR_MAX",
+        "let _trajFrLen", "let _trajFrHalf", "get frustumIsWireframe",
+        "m.opacity = 0.85;",
+    ):
+        assert mk in html, f"cd119d4 frustum marker REGRESSED: {mk!r}"
+
+    # (NEGATIVE CONTROL) the committed cd119d4 (pre-tick-fix)
+    # template: the SAME tick/line markers are ABSENT and the OLD
+    # fat-orange-dot sizing IS present -> this test provably FAILS
+    # against the pre-fix code (a genuine discriminator). cd119d4
+    # already has the scene-relative frustum fix (this pass keeps
+    # it), so those frustum markers ARE in the pre-fix template --
+    # they are NOT discriminators here and are NOT asserted absent.
+    pre = _git_blob_module(
+        "cd119d4:src/splatpipe/viewers/spark/template.py")
+    pre_html = pre.html_for("HarnessScene")
+    for mk in _TICK_LINE_MARKERS:
+        assert mk not in pre_html, (
+            f"negative control FAILED: tick/line marker {mk!r} "
+            "unexpectedly already in the pre-fix cd119d4 template "
+            "(the test would not discriminate the fix)"
+        )
+    for mk in _OLD_TICK_MARKERS:
+        assert mk in pre_html, (
+            f"negative control FAILED: pre-fix marker {mk!r} not in "
+            "cd119d4 -- the baseline is not the expected fat-orange-dot code"
+        )
+    # The pre-fix line material IS the flat-orange one (no
+    # vertexColors) -> the fix replaced exactly this.
+    assert "new THREE.LineBasicMaterial({ color: _TRAJ_COL })" in pre_html
+    assert "vertexColors: true" not in pre_html
+
+
+# --------------------------------------------------------------------------
 # (b) explicit kwargs are baked through verbatim
 # --------------------------------------------------------------------------
 

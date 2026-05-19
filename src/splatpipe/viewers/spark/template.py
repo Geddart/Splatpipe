@@ -3766,11 +3766,35 @@ _VIEWER_TEMPLATE = """\
   let _trajDotSegCounts = [];    // per-segment dot count (parallel to segments)
 
   // The colours: the resting trajectory is a calm orange (matches
-  // the #path-hud accent); the active/scrub keyframe's frustum is
-  // a bright cyan AND scaled up so it is unmistakably distinct.
+  // the #path-hud accent -- still used for the per-keyframe camera
+  // frustum wireframes); the active/scrub keyframe's frustum is a
+  // bright cyan AND scaled up so it is unmistakably distinct.
   const _TRAJ_COL = 0xff8a3d;
   const _TRAJ_COL_ACTIVE = 0x35e0ff;
   const _TRAJ_ACTIVE_SCALE = 1.7;
+  // Sample TICKS (the per-position dots): a 3ds-Max-style motion
+  // path reads them as DELICATE WHITE ticks, one per sample, never
+  // a solid mass. They are FIXED screen-space points (size in
+  // pixels, sizeAttenuation OFF) so a tick stays ~2 px at ANY
+  // viewing distance -- decoupled from the SCENE-RELATIVE frustum
+  // size (the old code keyed dot size off _trajFrHalf, which on a
+  // large path made every dot a fat orange blob that merged into
+  // one solid orange band when framed from far back). Near-white,
+  // modest opacity, thin.
+  const _TRAJ_TICK_PX = 2.2;          // fixed point size, in px
+  const _TRAJ_TICK_COL = 0xeaf0f6;    // near-white (cool, not pure)
+  const _TRAJ_TICK_OPACITY = 0.7;     // delicate, not a hard mass
+  // Motion LINE gradient: a THIN polyline (LineBasicMaterial
+  // linewidth is 1 on most platforms -- that is the desired look,
+  // never faked thick) with a SUBTLE per-vertex colour ramp along
+  // its length. A restrained low-saturation cool->warm HSL sweep
+  // (NOT a rainbow): hue glides over a narrow band, saturation /
+  // lightness stay gentle so it reads as a tasteful gradient, not
+  // a flat orange ribbon and not a saturated spectrum.
+  const _TRAJ_LINE_HUE0 = 0.55;       // start hue (cool cyan-blue)
+  const _TRAJ_LINE_HUE1 = 0.92;       // end hue (warm magenta-rose)
+  const _TRAJ_LINE_SAT = 0.45;        // low saturation (restrained)
+  const _TRAJ_LINE_LIT = 0.62;        // gentle, bright-ish lightness
 
   function _trajActivePath() {{
     // The dropdown's current value is the authored active path
@@ -3892,7 +3916,28 @@ _VIEWER_TEMPLATE = """\
       const arr = new Float32Array(pts);
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.BufferAttribute(arr, 3));
-      const m = new THREE.LineBasicMaterial({{ color: _TRAJ_COL }});
+      // Subtle per-vertex gradient along the path length: walk the
+      // vertices in path order (pts is already start->end) and ramp
+      // a low-saturation HSL hue from _TRAJ_LINE_HUE0 to
+      // _TRAJ_LINE_HUE1. Restrained -- a tasteful cool->warm sweep,
+      // NOT a rainbow (saturation/lightness held gentle). The line
+      // stays THIN (LineBasicMaterial linewidth is 1 on virtually
+      // all platforms; that is the intended delicate look -- never
+      // faked thick). vertexColors makes the ramp per-vertex.
+      const nPts = (pts.length / 3) | 0;
+      const cols = new Float32Array(nPts * 3);
+      const _gc = new THREE.Color();
+      for (let vi = 0; vi < nPts; vi++) {{
+        const u = nPts > 1 ? vi / (nPts - 1) : 0;
+        const hue = _TRAJ_LINE_HUE0 +
+          (_TRAJ_LINE_HUE1 - _TRAJ_LINE_HUE0) * u;
+        _gc.setHSL(hue, _TRAJ_LINE_SAT, _TRAJ_LINE_LIT);
+        cols[vi * 3] = _gc.r;
+        cols[vi * 3 + 1] = _gc.g;
+        cols[vi * 3 + 2] = _gc.b;
+      }}
+      g.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+      const m = new THREE.LineBasicMaterial({{ vertexColors: true }});
       m.depthTest = false; m.depthWrite = false; m.transparent = true;
       _trajLine = new THREE.Line(g, m);
       _trajLine.renderOrder = 11;
@@ -3945,9 +3990,20 @@ _VIEWER_TEMPLATE = """\
         const arr = new Float32Array(dpos);
         const g = new THREE.BufferGeometry();
         g.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+        // DELICATE WHITE sample ticks: a FIXED screen-space point
+        // size (_TRAJ_TICK_PX px, sizeAttenuation OFF) so each tick
+        // stays ~2 px at ANY viewing distance and never grows into a
+        // solid mass when the path is framed from far back. Size is
+        // FULLY DECOUPLED from _trajFrHalf / the scene-relative
+        // frustum scale (the old `Math.max(2, _trajFrHalf * 0.5)`
+        // with sizeAttenuation:true was the fat-orange-band bug --
+        // on a large path _trajFrHalf is metres, so attenuated dots
+        // overlapped into one band). Near-white, modest opacity,
+        // thin. One tick per sample position, inverse-speed spacing
+        // unchanged (this only restyles, never re-distributes).
         const m = new THREE.PointsMaterial({{
-          color: _TRAJ_COL, size: Math.max(2, _trajFrHalf * 0.5),
-          sizeAttenuation: true }});
+          color: _TRAJ_TICK_COL, size: _TRAJ_TICK_PX,
+          sizeAttenuation: false, opacity: _TRAJ_TICK_OPACITY }});
         m.depthTest = false; m.depthWrite = false; m.transparent = true;
         _trajDots = new THREE.Points(g, m);
         _trajDots.renderOrder = 11;
@@ -4149,6 +4205,70 @@ _VIEWER_TEMPLATE = """\
         return _trajDotPositions.map(d => d.slice());
       }},
       get dotSegCounts() {{ return _trajDotSegCounts.slice(); }},
+      // Sample-TICK style introspection (the my16 "tiny white ticks"
+      // fix). The harness asserts the ticks are SMALL + WHITE +
+      // FIXED screen-space (not the old fat scene-relative orange
+      // blobs that merged into a band): tickSize = the configured
+      // px size (read off the live PointsMaterial); tickSizeIsFixed
+      // = sizeAttenuation is OFF (px-constant at any distance, the
+      // never-a-band guarantee); tickColor = the dot hex; the
+      // tickColorIsWhite flag is true iff every channel is high
+      // (a near-white tick, never orange); tickOpacity = its
+      // modest alpha. All read off the actual built material so a
+      // regression to the _trajFrHalf-keyed orange dots FAILS.
+      get tickSize() {{
+        return (_trajDots && _trajDots.material)
+          ? _trajDots.material.size : 0;
+      }},
+      get tickSizeIsFixed() {{
+        return !!(_trajDots && _trajDots.material &&
+          _trajDots.material.sizeAttenuation === false);
+      }},
+      get tickColor() {{
+        return (_trajDots && _trajDots.material)
+          ? _trajDots.material.color.getHex() : 0;
+      }},
+      get tickColorIsWhite() {{
+        if (!_trajDots || !_trajDots.material) return false;
+        const c = _trajDots.material.color;
+        return c.r >= 0.85 && c.g >= 0.85 && c.b >= 0.85;
+      }},
+      get tickOpacity() {{
+        return (_trajDots && _trajDots.material)
+          ? _trajDots.material.opacity : 0;
+      }},
+      // Motion-LINE gradient introspection (the my16 "subtle
+      // gradient" fix). lineHasGradient = the line material renders
+      // per-vertex colours (vertexColors ON) AND the geometry
+      // actually carries a populated colour attribute -> a ramp,
+      // not a flat orange ribbon. lineColorCount = that attribute's
+      // vertex count (parallel to linePointCount). lineColorEndsDiffer
+      // = the first vs last vertex colour differ (a real ramp along
+      // the length, not a single constant baked per-vertex). A
+      // regression to the flat ``LineBasicMaterial({{ color: _TRAJ_COL }})``
+      // would make all three FALSE/0.
+      get lineHasGradient() {{
+        if (!_trajLine || !_trajLine.material ||
+            !_trajLine.geometry) return false;
+        const vc = _trajLine.material.vertexColors === true;
+        const ca = _trajLine.geometry.getAttribute('color');
+        return !!(vc && ca && ca.count > 1);
+      }},
+      get lineColorCount() {{
+        if (!_trajLine || !_trajLine.geometry) return 0;
+        const ca = _trajLine.geometry.getAttribute('color');
+        return ca ? ca.count : 0;
+      }},
+      get lineColorEndsDiffer() {{
+        if (!_trajLine || !_trajLine.geometry) return false;
+        const ca = _trajLine.geometry.getAttribute('color');
+        if (!ca || ca.count < 2) return false;
+        const n = ca.count - 1;
+        const dr = Math.abs(ca.getX(0) - ca.getX(n));
+        const dg = Math.abs(ca.getY(0) - ca.getY(n));
+        const db = Math.abs(ca.getZ(0) - ca.getZ(n));
+        return (dr + dg + db) > 0.05;
+      }},
       get activePathId() {{ return _trajBuiltPathId; }},
       get groupVisible() {{
         return !!(_trajGroup.visible &&
