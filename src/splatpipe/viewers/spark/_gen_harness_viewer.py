@@ -164,6 +164,71 @@ _T16_Q_YAW90 = [0.0, 0.7071067811865476, 0.0, 0.7071067811865476]
 _T16_Q_PITCH90 = [0.7071067811865476, 0.0, 0.0, 0.7071067811865476]
 
 
+# --- Task-17 variant: author editor BOTTOM TIMELINE -------------------
+# Same generated viewer, driven with ``?author=1`` (=> ModeManager
+# resolves author mode -> the Task-16 overlay AND the Task-17 bottom
+# timeline strip + the Object.assign-extended window.__editor build).
+# The scene config carries a FOUR-keyframe single camera path with
+# DELIBERATELY DISTINCT segment durations so the timeline's diamond
+# drag / box-select-edge scale / wheel zoom / X-delete are all
+# exercisable and unambiguous in the scene-less harness:
+#   * kf0 t=0   -> kf1 t=2    : SHORT leg
+#   * kf1 t=2   -> kf2 t=20   : LONG leg (a clearly different span)
+#   * kf2 t=20  -> kf3 t=24   : SHORT leg
+# 4 keyframes lets a delete still leave a valid (>= 2) spline and lets
+# a box-select pick a contiguous 2-of-4 sub-span whose proportional
+# edge-scale ratio is unambiguous. ``default_path_id`` selects it so
+# selEl.value (the active path the timeline edits) is deterministic
+# without a click. NO clips/cameras: author mode is the single-path
+# editor, not the multi-camera end-user tour. ``intro:{type:"none"}``
+# is the SAME deliberate TEST ISOLATION as the Task-10/11/14/16
+# fixtures (the timeline mechanics are orthogonal to the intro fade).
+# A 600 s would be overkill; the short total duration (24 s) keeps the
+# auto-tour playhead inside the path for the whole bounded observation
+# AND makes the playhead-vs-auto-tour robustness assertion fast.
+_VIEWER_T17_DIR = _MANUAL_DIR / "_viewer_t17"
+
+# Distinct per-keyframe quats (xyzw) -- reuse the Task-16 set so a
+# diamond/scale edit that (wrongly) perturbed pos/quat instead of ONLY
+# t would be caught (the harness asserts pos/quat are byte-unchanged
+# across a pure temporal edit).
+_T17_Q0 = [0.0, 0.0, 0.0, 1.0]
+_T17_Q1 = [0.0, 0.7071067811865476, 0.0, 0.7071067811865476]
+_T17_Q2 = [0.7071067811865476, 0.0, 0.0, 0.7071067811865476]
+_T17_Q3 = [0.0, 0.0, 0.7071067811865476, 0.7071067811865476]
+
+
+def _t17_timeline_config() -> dict:
+    """4-keyframe single path with distinct segment durations (short /
+    long / short) -- the Task-17 bottom-timeline fixture. ``?author=1``
+    on the iframe builds the Task-16 overlay + the Task-17 timeline +
+    the extended window.__editor surface."""
+    return {
+        "annotations": [],
+        "default_path_id": "tlPath",
+        "intro": {"type": "none"},
+        "camera_paths": [
+            {
+                "id": "tlPath",
+                "name": "Task-17 timeline path",
+                "loop": False,
+                "smoothness": 1.0,
+                "play_speed": 1.0,
+                "keyframes": [
+                    {"t": 0.0, "pos": [0.0, 0.0, 0.0],
+                     "quat": list(_T17_Q0), "fov": 60.0},
+                    {"t": 2.0, "pos": [3.0, 0.0, 0.0],
+                     "quat": list(_T17_Q1), "fov": 60.0},
+                    {"t": 20.0, "pos": [3.0, 0.0, -40.0],
+                     "quat": list(_T17_Q2), "fov": 55.0},
+                    {"t": 24.0, "pos": [10.0, 5.0, -40.0],
+                     "quat": list(_T17_Q3), "fov": 50.0},
+                ],
+            }
+        ],
+    }
+
+
 def _t16_author_config() -> dict:
     """3-keyframe single path; segment 0 SLOW (long-duration), segment 1
     FAST (short-duration); distinct per-keyframe quats. ``?author=1`` on
@@ -460,6 +525,13 @@ def generate() -> Path:
       * ``_viewer_author/`` -- a 3-keyframe single-path scene (driven
         with ``?author=1`` by the harness); Task-16 author trajectory
         polyline + per-keyframe frusta + inverse-speed dots + toggle.
+      * ``_viewer_t17/`` -- a 4-keyframe single-path scene with
+        distinct segment durations (driven with ``?author=1``);
+        Task-17 bottom timeline: diamonds at each kf.t, live-scrub
+        playhead via the real #path-scrub mechanism (robust to the
+        author-mode auto-tour), diamond-drag temporal edit, wheel
+        zoom, box-multiselect + edge-drag span scale, X-delete, the
+        fps-RELABEL-only grid -- all IN-MEMORY (no persistence).
     Returns the Task-0 ``_viewer/`` dir (the harness page resolves the rest
     relatively).
     """
@@ -474,6 +546,7 @@ def generate() -> Path:
     _VIEWER_NOCLIPS_DIR.mkdir(parents=True, exist_ok=True)
     _VIEWER_TRANSPORT_DIR.mkdir(parents=True, exist_ok=True)
     _VIEWER_AUTHOR_DIR.mkdir(parents=True, exist_ok=True)
+    _VIEWER_T17_DIR.mkdir(parents=True, exist_ok=True)
     # Same generated viewer for ALL variants — only the config differs.
     html = html_for("HarnessScene")
     (_VIEWER_DIR / "index.html").write_text(html, encoding="utf-8", newline="")
@@ -487,6 +560,7 @@ def generate() -> Path:
     (_VIEWER_NOCLIPS_DIR / "index.html").write_text(html, encoding="utf-8", newline="")
     (_VIEWER_TRANSPORT_DIR / "index.html").write_text(html, encoding="utf-8", newline="")
     (_VIEWER_AUTHOR_DIR / "index.html").write_text(html, encoding="utf-8", newline="")
+    (_VIEWER_T17_DIR / "index.html").write_text(html, encoding="utf-8", newline="")
     # A stub config so the no-store fetch succeeds and the viewer takes its
     # normal (non-error) path; no scene.rad is referenced/needed for the
     # framework-init assertions.
@@ -534,6 +608,13 @@ def generate() -> Path:
     (_VIEWER_AUTHOR_DIR / "viewer-config.json").write_text(
         json.dumps(_t16_author_config()), encoding="utf-8", newline=""
     )
+    # Task-17: a 4-keyframe single path with distinct segment durations
+    # (short/long/short); the harness drives this iframe with ?author=1
+    # so the Task-17 bottom timeline + the extended window.__editor
+    # build (diamonds/scrub/drag/zoom/box-scale/delete/fps-relabel).
+    (_VIEWER_T17_DIR / "viewer-config.json").write_text(
+        json.dumps(_t17_timeline_config()), encoding="utf-8", newline=""
+    )
     return _VIEWER_DIR
 
 
@@ -578,7 +659,8 @@ def main(argv: list[str] | None = None) -> int:
     for _vd in (_VIEWER_PATH_DIR, _VIEWER_LIN_DIR, _VIEWER_NOLIN_DIR,
                 _VIEWER_STEP_DIR, _VIEWER_INTRO_DIR, _VIEWER_INTRONONE_DIR,
                 _VIEWER_CLIPS_DIR, _VIEWER_NOCLIPS_DIR,
-                _VIEWER_TRANSPORT_DIR, _VIEWER_AUTHOR_DIR):
+                _VIEWER_TRANSPORT_DIR, _VIEWER_AUTHOR_DIR,
+                _VIEWER_T17_DIR):
         print(f"generated {_vd / 'index.html'} "
               f"({(_vd / 'index.html').stat().st_size} bytes)")
     if args.serve is not None:

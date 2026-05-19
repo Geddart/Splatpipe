@@ -28,7 +28,93 @@ from splatpipe.core.events import ProgressEvent, StepResult
 from splatpipe.steps.publish import publish_scene
 from splatpipe.viewers.spark.template import html_for
 
-# --- Moving baseline (Task 16) -------------------------------------------
+# --- Moving baseline (Task 17) -------------------------------------------
+# The byte-identity guard pins the PREVIOUS task's COMMITTED generated
+# output and asserts the only delta is THIS task's deliberate change. The
+# baseline therefore moves forward one commit each task. For Task 17 the
+# pinned baseline is the committed template at HEAD ``c1d5801`` (the commit
+# BEFORE Task 17's edit -- i.e. Task 16 committed: feat(editor) viewport
+# trajectory + camera frustums + speed dots) -- which ALREADY contains
+# every prior task's deliberate, anchored change (Task 8's inert SAVE_*
+# block, Task 10's two visibilitychange blocks, Task 11's in-place spline
+# change, Task 12's three dual-UI regions, Task 13's three regions, Task
+# 14's grown T13-AS ClipPlayer + T14-PW + T14-AF, Task 15's grown T13-AS
+# end-user transport + T15-OB, and Task 16's NEW T16-TRAJ author overlay).
+# ``html_for("HarnessScene")`` there is 246869 bytes.
+#
+# Task 17 (author editor -- bottom timeline: scrub/diamonds/transport/
+# zoom/multiselect/scale; plan H2/Task-13) is a PURE recipe-2c
+# REGION-INTERIOR-ONLY change. Its entire deliberate delta -- the
+# bottom timeline strip DOM/JS injected into the (already-existing,
+# Task-12) ``#author-root`` (a seconds ruler + an OPTIONAL fps RELABEL
+# grid that never mutates a stored ``t``, a draggable diamond per
+# keyframe whose horizontal drag is an IN-MEMORY temporal edit, a
+# live-scrub playhead routed through the EXISTING ``#path-scrub`` real
+# input mechanism, transport reuse, wheel zoom, box-multiselect +
+# selection-edge proportional ``t``-span scale, X-delete) PLUS the
+# EXTENSION of the Task-16 TEST-ONLY ``window.__editor`` surface
+# (``Object.assign``ed timeline getters + deterministic hooks) -- lands
+# STRICTLY INSIDE the EXISTING Task-16 T16-TRAJ region (between the
+# UNCHANGED ``  applySplatBudget(_initialBudget);`` START and the
+# UNCHANGED ``  // ---- Frame loop ----`` END; the new code sits
+# immediately AFTER the Task-16 ``window.__editor`` literal and BEFORE
+# the END comment). It adds NO new region and NO delta OUTSIDE
+# T16-TRAJ: no CSS region (the strip is inline-styled like #sp-hud /
+# the Task-16 toggle), the ``#author-root`` root already exists (Task
+# 12), and the spline / player / #path-scrub / clip / transport code is
+# REUSED, never modified. The whole block is AUTHOR-MODE-gated (the
+# SAME ``_EDITOR_AUTHOR`` = ``ModeManager.is('author')`` flag the
+# Task-16 overlay uses + the strip DOM is only ever built in author
+# mode + the OverlayScene ``_tlLayer`` is ``modes:['author']``) so for
+# ``"HarnessScene"`` (NOT author mode -- like the 6 live single-camera
+# scenes) it produces ZERO rendered-HTML delta OUTSIDE T16-TRAJ and is
+# byte-runtime-inert: a DELIBERATE, byte-lock-excised change, NOT a
+# regression. PERSISTENCE IS NOT TASK-17: nothing here writes/saves;
+# edits mutate the IN-MEMORY active path + rebuild the spline (+ the
+# Task-16 overlay consequently) and stop -- SAVE_MODE / SAVE_ENDPOINT /
+# save_backends are untouched (asserted-surviving below).
+#
+# Per the regen recipe case 2c: a task whose template delta is PURELY
+# 2c (lands strictly inside an already-excised region) does NOT advance
+# ``_PRE_TASKnn_REMAINDER_*`` / ``_FULL_*`` REMAINDER pins -- the
+# remainder is byte-IDENTICAL to the prior task's because the T16-TRAJ
+# excision simply now removes a LARGER span (the prior author-overlay
+# block PLUS the new timeline block). Excising the SAME ELEVEN regions
+# (the Task-11 spline + the three Task-12 + the three Task-13 + the two
+# Task-14 + the Task-15 T15-OB + the Task-16 T16-TRAJ -- every one with
+# its ORIGINAL anchors so every prior contract stays asserted-surviving)
+# from the current generated HTML reproduces the ``c1d5801`` committed
+# template's SAME eleven-region excision byte-for-byte. The
+# ``_PRE_TASK17_*`` pins below are computed from ``c1d5801`` byte-
+# faithfully (via ``git cat-file blob`` -- NOT the dirty tree; the
+# ``pagedExtSplats`` stray makes the dirty tree FAIL this BY DESIGN, so
+# the guard still bites); numerically the REMAINDER pin EQUALS the
+# Task-16 one (the 2c invariant -- a moved/changed remainder pin here
+# would mean the timeline delta LEAKED outside T16-TRAJ; it does not).
+# The FULL ``c1d5801`` fingerprint advances (it is the new committed
+# baseline -- documentation / cross-check; the remainder pin is what
+# the assertion uses). Every prior task's anchored content stays
+# asserted-surviving below (the excision only ever NARROWS what is
+# compared -- never relaxed); the Task-17 timeline surface is asserted
+# present-in-full-html then gone-after-the-T16-TRAJ-excision (proving
+# it really is wholly inside that region, not leaking).
+_PRE_TASK17_REMAINDER_LEN = 155585
+_PRE_TASK17_REMAINDER_SHA = (
+    "f4cb11b385dedc2d018fc4342766285c0805f147c080b44d9de1fcd250370226"
+)
+# Full ``c1d5801`` baseline fingerprint (documentation / cross-check;
+# the remainder pin above is what the assertion uses). The REMAINDER
+# pin is byte-IDENTICAL to ``_PRE_TASK16_REMAINDER_*`` (the recipe-2c
+# invariant: Task 17's delta is wholly inside the Task-16 T16-TRAJ
+# region, so the eleven-region remainder is unchanged); only the FULL
+# fingerprint advances (the new committed baseline has the Task-16
+# author overlay inside T16-TRAJ).
+_PRE_TASK17_FULL_LEN = 246869
+_PRE_TASK17_FULL_SHA = (
+    "7f9dcc500f1512c89f0f45523c3505edd406bb830bb52a363247fc1324790e52"
+)
+
+# --- Prior moving-baseline note (Task 16, kept for provenance) -----------
 # The byte-identity guard pins the PREVIOUS task's COMMITTED generated
 # output and asserts the only delta is THIS task's deliberate change. The
 # baseline therefore moves forward one commit each task (see the regen
@@ -652,7 +738,49 @@ def _excise(text: str, start_anchor: str, end_token: str,
 #   remain enforced, and prior tasks' anchored blocks must stay
 #   asserted-surviving.
 def test_defaults_are_regression_safe_existing_scenes_byte_identical():
-    """Task 16 (author editor -- viewport trajectory + camera frustums +
+    """Task 17 (author editor -- bottom timeline: scrub/diamonds/
+    transport/zoom/multiselect/scale; plan H2/Task-13) is a PURE
+    recipe-2c REGION-INTERIOR-ONLY change: its ENTIRE deliberate delta
+    -- the bottom timeline strip DOM/JS injected into the (already-
+    existing, Task-12) ``#author-root`` (seconds ruler + OPTIONAL
+    fps-RELABEL-only grid + a draggable diamond per keyframe whose
+    horizontal drag is an IN-MEMORY temporal edit + a live-scrub
+    playhead routed through the EXISTING ``#path-scrub`` real input
+    mechanism + transport reuse + wheel zoom + box-multiselect +
+    selection-edge proportional ``t``-span scale + X-delete) PLUS the
+    ``Object.assign`` EXTENSION of the Task-16 TEST-ONLY
+    ``window.__editor`` surface -- lands STRICTLY INSIDE the EXISTING
+    Task-16 T16-TRAJ region (between the UNCHANGED
+    ``  applySplatBudget(_initialBudget);`` START and the UNCHANGED
+    ``  // ---- Frame loop ----`` END, immediately AFTER the Task-16
+    ``window.__editor`` literal). It adds NO new region and NO delta
+    OUTSIDE T16-TRAJ (no CSS region -- inline-styled like #sp-hud / the
+    Task-16 toggle; ``#author-root`` already exists; the spline /
+    player / #path-scrub / clip / transport code is REUSED, never
+    modified), so excising the SAME ELEVEN regions reproduces the
+    ``c1d5801`` committed template's SAME eleven-region excision
+    byte-for-byte and the ``_PRE_TASK17_REMAINDER_*`` pin is
+    byte-IDENTICAL to ``_PRE_TASK16_REMAINDER_*`` (the 2c invariant --
+    the T16-TRAJ excision simply now removes a LARGER span; a
+    changed remainder would mean the timeline LEAKED outside). The
+    whole block is AUTHOR-MODE-gated (the SAME ``_EDITOR_AUTHOR`` =
+    ``ModeManager.is('author')`` flag the Task-16 overlay uses + the
+    strip DOM only ever built in author mode + the OverlayScene
+    ``_tlLayer`` ``modes:['author']``) so for ``"HarnessScene"`` (NOT
+    author mode -- like the 6 live single-camera scenes) it produces
+    ZERO rendered-HTML delta OUTSIDE T16-TRAJ and is byte-runtime-
+    inert: a DELIBERATE, byte-lock-excised change, NOT a regression.
+    PERSISTENCE IS NOT TASK-17: nothing here writes/saves; the Task-8
+    SAVE_* contract is asserted-surviving (the timeline mutates only
+    the IN-MEMORY active path + rebuilds the spline). The Task-17
+    timeline surface is asserted present-in-full-html then
+    gone-after-the-T16-TRAJ-excision (hard proof it is wholly inside
+    that region, not leaking); every prior task's anchored content
+    stays asserted-surviving (the excision only ever NARROWS what is
+    compared -- never relaxed).
+
+    Prior moving-baseline provenance (Task 16, kept): Task 16 (author
+    editor -- viewport trajectory + camera frustums +
     speed dots; the FIRST author-mode overlay, plan H2/Task-12) is
     PURELY ADDITIVE: ONE NEW region (T16-TRAJ, recipe 2a) bounding ONLY
     the new author-overlay block (the trajectory THREE.Group + the
@@ -801,8 +929,35 @@ def test_defaults_are_regression_safe_existing_scenes_byte_identical():
     assert "OverlayScene.register(_trajLayer)" in html        # Task 16 layer
     assert "window.__editor" in html                          # Task 16 surface
     assert "editor-traj-toggle" in html                       # Task 16 toggle
+    # Task 17's deliberate additions ARE present (the WHOLE bottom
+    # timeline block lives STRICTLY INSIDE the Task-16 T16-TRAJ region,
+    # recipe 2c -- it is excised together WITH T16-TRAJ below, so it
+    # must be present here first then gone after that excision; that
+    # present-then-gone pair is the hard proof the timeline is wholly
+    # inside T16-TRAJ and leaks NOTHING outside it). ``editor-timeline``
+    # is the strip's element id; ``function _tlInit`` is the timeline
+    # IIFE; ``function _tlDraw`` renders the ruler+diamonds+playhead;
+    # ``_tlScrubToTime`` routes the live scrub through the EXISTING
+    # ``#path-scrub`` real input mechanism (single source of truth --
+    # robust to the author-mode auto-tour); ``tlScaleSelection`` is the
+    # box-select + edge-drag proportional span-rescale hook;
+    # ``Author editor -- bottom timeline`` is the section banner.
+    assert "Author editor -- bottom timeline" in html          # Task 17 banner
+    assert "function _tlInit" in html                           # Task 17 IIFE
+    assert "function _tlDraw" in html                           # Task 17 render
+    assert "_tlScrubToTime" in html                             # Task 17 scrub
+    assert "OverlayScene.register(_tlLayer)" in html            # Task 17 tick
+    assert "editor-timeline" in html                            # Task 17 strip
+    assert "tlScaleSelection" in html                           # Task 17 hook
+    # Task-17 is PURE recipe-2c: it adds NO new region. The Task-8
+    # SAVE_* contract is the persistence boundary the spec hard-draws
+    # (Task-17 wires NO save) -- assert it is still present in the FULL
+    # html (it survives the excision too; the OUTSIDE-all-regions
+    # survival is re-asserted post-excision below -- never relaxed).
+    assert 'const SAVE_MODE = "cli";' in html              # Task 8 (T17 no-save)
+    assert 'const SAVE_ENDPOINT = "";' in html              # Task 8 (T17 no-save)
 
-    # Excise the TEN deliberately-touched regions. The Task-11 spline
+    # Excise the ELEVEN deliberately-touched regions. The Task-11 spline
     # first (its ORIGINAL anchors, unchanged by Tasks 12-16 -- keeps
     # Task-11's contract asserted-surviving against the moved ``cfb0835``
     # baseline), then each Task-12 region, then each Task-13 region
@@ -930,6 +1085,31 @@ def test_defaults_are_regression_safe_existing_scenes_byte_identical():
             not in stripped)                                # T16 layer gone
     assert "window.__editor" not in stripped                # T16 surface gone
     assert "editor-traj-toggle" not in stripped             # T16 toggle gone
+    # The Task-17 bottom-timeline block (recipe 2c -- it lands STRICTLY
+    # INSIDE the SAME T16-TRAJ region, immediately after the Task-16
+    # ``window.__editor`` literal and before the ``// ---- Frame loop
+    # ----`` END) is therefore excised TOGETHER WITH T16-TRAJ above:
+    # its surface MUST be gone too. ``editor-timeline`` (the strip id),
+    # ``function _tlInit`` / ``function _tlDraw`` (the timeline IIFE +
+    # renderer), ``_tlScrubToTime`` (the live-scrub-via-#path-scrub
+    # router), ``OverlayScene.register(_tlLayer)`` (the per-frame
+    # playhead-sync layer), ``tlScaleSelection`` (the span-rescale
+    # hook) and the ``Author editor -- bottom timeline`` banner are
+    # each UNIQUE to the Task-17 block; their absence proves the
+    # timeline is WHOLLY inside T16-TRAJ and leaks NOTHING into the
+    # compared remainder (the recipe-2c invariant -- if ANY Task-17
+    # line had leaked outside T16-TRAJ it would still be in ``stripped``
+    # here AND the LEN/SHA pin below would mismatch). This is the
+    # present-then-gone pair that makes the 2c absorption hard-proven,
+    # NOT assumed.
+    assert "Author editor -- bottom timeline" not in stripped  # T17 gone
+    assert "function _tlInit" not in stripped              # T17 IIFE gone
+    assert "function _tlDraw" not in stripped              # T17 render gone
+    assert "_tlScrubToTime" not in stripped                # T17 scrub gone
+    assert ("OverlayScene.register(_tlLayer)"
+            not in stripped)                                # T17 layer gone
+    assert "editor-timeline" not in stripped               # T17 strip gone
+    assert "tlScaleSelection" not in stripped              # T17 hook gone
     # The T16-TRAJ START anchor LINE is excised WITH the region, but
     # ``applySplatBudget`` (the FUNCTION, defined far above) and the
     # ``// ---- Frame loop ----`` END comment are themselves removed too
@@ -959,27 +1139,42 @@ def test_defaults_are_regression_safe_existing_scenes_byte_identical():
     assert "_hidAt" in stripped                           # Task 10 survives
     assert "visibilitychange" in stripped                 # Task 10 survives
 
-    # Byte-for-byte identical to the ``cfb0835`` committed template with
-    # the SAME TEN regions excised -> NO unintended drift anywhere
-    # outside the deliberate Task-8/10/11/12/13/14/15/16 changes (FAILS
-    # loudly if e.g. a stray uncommitted block elsewhere in the template
-    # leaked in -- this is exactly how the 4 unstaged strays are kept out
-    # of the Task-16 commit; the pagedExtSplats stray, OUTSIDE all ten
-    # regions, makes this FAIL in the dirty tree BY DESIGN -> the guard
-    # still bites). The Task-16 author overlay is a DELIBERATE,
-    # byte-lock-excised change (the FIRST author-mode feature, plan
-    # H2/Task-12) -- NOT a regression for the 6 live single-camera
-    # scenes: they are NOT author mode, so the OverlayScene layer's
-    # modes:['author'] gate + the ModeManager.is('author') guards make
-    # the whole block byte-runtime-inert for them (and the byte-lock
-    # proves their generated HTML is byte-identical OUTSIDE T16-TRAJ).
-    assert len(stripped) == _PRE_TASK16_REMAINDER_LEN, (
-        f"length drift: {len(stripped)} != {_PRE_TASK16_REMAINDER_LEN} "
-        "(an UNINTENDED change leaked OUTSIDE the ten deliberate regions)"
+    # Byte-for-byte identical to the ``c1d5801`` committed template with
+    # the SAME ELEVEN regions excised -> NO unintended drift anywhere
+    # outside the deliberate Task-8/10/11/12/13/14/15/16/17 changes
+    # (FAILS loudly if e.g. a stray uncommitted block elsewhere in the
+    # template leaked in -- this is exactly how the 4 unstaged strays
+    # are kept out of the Task-17 commit; the pagedExtSplats stray,
+    # OUTSIDE all eleven regions, makes this FAIL in the dirty tree BY
+    # DESIGN -> the guard still bites). Task 17 (the author bottom
+    # timeline -- scrub/diamonds/transport/zoom/multiselect/scale) is a
+    # PURE recipe-2c change: its ENTIRE deliberate delta lands STRICTLY
+    # INSIDE the EXISTING Task-16 T16-TRAJ region (so that region's
+    # excision now removes a LARGER span -- the Task-16 author overlay
+    # PLUS the Task-17 timeline -- and the ELEVEN-region REMAINDER is
+    # byte-IDENTICAL to the Task-16 one; ``_PRE_TASK17_REMAINDER_*`` ==
+    # ``_PRE_TASK16_REMAINDER_*`` BY the 2c invariant, NOT by accident
+    # -- a changed remainder here would mean the timeline LEAKED outside
+    # T16-TRAJ). It is a DELIBERATE, byte-lock-excised change -- NOT a
+    # regression for the 6 live single-camera scenes: they are NOT
+    # author mode, so the SAME ``_EDITOR_AUTHOR`` /
+    # ``ModeManager.is('author')`` gate the Task-16 overlay uses + the
+    # strip DOM only ever built in author mode + the ``_tlLayer``
+    # ``modes:['author']`` make the whole timeline byte-runtime-inert
+    # for them (and the byte-lock proves their generated HTML is
+    # byte-identical OUTSIDE T16-TRAJ). PERSISTENCE is NOT Task-17:
+    # SAVE_MODE / SAVE_ENDPOINT are asserted-surviving (re-pinned just
+    # above) -- the timeline mutates only the IN-MEMORY active path +
+    # rebuilds the spline, it wires no save.
+    assert len(stripped) == _PRE_TASK17_REMAINDER_LEN, (
+        f"length drift: {len(stripped)} != {_PRE_TASK17_REMAINDER_LEN} "
+        "(an UNINTENDED change leaked OUTSIDE the eleven deliberate "
+        "regions -- e.g. a Task-17 timeline line escaped the Task-16 "
+        "T16-TRAJ region the 2c recipe requires it to stay inside)"
     )
     assert (
         hashlib.sha256(stripped.encode()).hexdigest()
-        == _PRE_TASK16_REMAINDER_SHA
+        == _PRE_TASK17_REMAINDER_SHA
     )
 
 
