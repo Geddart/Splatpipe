@@ -95,7 +95,81 @@ from splatpipe.viewers.spark.template import html_for
 # compared -- never relaxed); the Task-18 gizmo/SPCP surface is
 # asserted present-in-full-html then gone-after-the-T16-TRAJ-excision
 # (hard proof it is wholly inside that region, not leaking).
-# --- Moving baseline (Task 19 -- v2-A) -----------------------------------
+# --- Moving baseline (Task 20 -- v2-C Phase 1) ---------------------------
+# v2-C Phase 1 adds the top-bar "Camera" dropdown (#camera-select):
+# Perspective (free-fly) + every animated/scene camera, switching
+# between free-fly and an animated camera's bind (author) / playback
+# (end-user). Like v2-A this DELIBERATELY changes NON-excised,
+# END-USER-rendered HTML (the #camera-select <select> markup is a peer
+# of #splat-budget/#move-speed/#bench-mode in #quality-buttons and is
+# rendered for end users), so the remainder pin DELIBERATELY ADVANCES
+# here (a documented re-pin -- NOT a leak; the byte-lock's charter, top
+# of this file, is to catch UNINTENDED drift, NOT to freeze an
+# intentional end-user change -- same class as the v2-A A1 end-user
+# shell change). WHAT changed and WHY:
+#   * The #camera-select <select> MARKUP (the "Perspective" reserved
+#     non-persisted sentinel option ``value="__perspective__"`` + JS-
+#     populated camera options) is inserted into #quality-buttons,
+#     between the (unchanged) #bench-mode <select> close and the
+#     (unchanged) #bench-btn <button>. This is END-USER-rendered HTML
+#     OUTSIDE every prior region -> ONE new region (T20-CAMSEL-DOM)
+#     bounds it; this is the ONLY part that moves the pin.
+#   * The #camera-select JS wiring (``const _CAM_PERSP``, ``_camSel``,
+#     ``_camSelCameras`` / ``_camSelReflect`` / ``_camSelApply`` /
+#     ``_camSelInit``, the ``change`` handler, and the region-interior
+#     ``_camSelReflect(pathId)`` call added inside the EXISTING
+#     ``startPath``) lands STRICTLY INSIDE the EXISTING Task-19 T19-JS
+#     region (between its UNCHANGED ``  const hud =
+#     document.getElementById('path-hud');`` START and its UNCHANGED
+#     ``  // Pause (don't teleport) ...`` END -- the whole #path-*
+#     wiring block, which already contained startPath/stopPath). It is
+#     therefore PURE recipe-2c: absorbed by the EXISTING T19-JS
+#     excision (that span simply grew), contributing ZERO to the
+#     remainder delta -- NO new JS region.
+#   * The ``_trajActivePath()`` Perspective guard (return null when
+#     #camera-select is on ``__perspective__`` so the author overlay /
+#     gizmo / bottom timeline render NOTHING in free-fly) lands
+#     STRICTLY INSIDE the EXISTING Task-16 T16-TRAJ region (between its
+#     UNCHANGED ``  applySplatBudget(_initialBudget);`` START and
+#     ``  // ---- Frame loop ----`` END) -- also PURE recipe-2c,
+#     absorbed by the EXISTING T16-TRAJ excision, contributing ZERO to
+#     the remainder delta.
+# So v2-C Phase 1 adds exactly ONE new region (T20-CAMSEL-DOM); the JS
+# wiring + the _trajActivePath guard are recipe-2c-absorbed by the
+# EXISTING T19-JS / T16-TRAJ regions and move NOTHING. The pin is
+# RE-DERIVED below byte-faithfully from the COMMITTED ``HEAD`` template
+# (013ca7c, the commit BEFORE this task -- i.e. v2-A batch B committed)
+# AFTER excising the SAME prior THIRTEEN regions PLUS this ONE new one
+# (FOURTEEN total). NOTHING here touches the SPCP encoder
+# (``_encodeSpcp`` / ``_spcpNum``), ``_PATCH_KEYS``, ``core/*``, or the
+# scene_editor.html spline -- "Perspective" is NEVER written to cfg /
+# the SPCP patch (a pure viewer-UI sentinel, exactly like the existing
+# non-persisted 'idle-orbit'/'orbit' sentinels). Every prior task's
+# region is STILL excised with its original anchors (contract
+# preserved -- the excision only ever NARROWS what is compared, never
+# relaxed); the new region is asserted present-in-full-html then
+# gone-after-its-excision, AND the recipe-2c-absorbed JS wiring +
+# guard are asserted present-in-full-html then gone-after-the-T19-JS /
+# T16-TRAJ excision (hard proof they are wholly inside those existing
+# regions and leak NOTHING outside them); Task 8's SAVE_* and BOTH
+# Task-10 blocks stay asserted-surviving (NOT relaxed).
+_PRE_TASK20_REMAINDER_LEN = 150691
+_PRE_TASK20_REMAINDER_SHA = (
+    "b9864077ced9110af8ee932e35127b37a0275095c3ef97b6f80746252b1c356a"
+)
+# Full ``HEAD`` (committed v2-C Phase 1) baseline fingerprint
+# (documentation / cross-check; the remainder pin above is what the
+# assertion uses). Re-derived byte-faithfully from ``git cat-file blob
+# HEAD:src/splatpipe/viewers/spark/template.py`` via a Python
+# subprocess (NEVER a PowerShell ``>`` / pipe -- per the Windows CRLF
+# foot-gun above; the committed template is LF-only and this lock is
+# CRLF-sensitive by design).
+_PRE_TASK20_FULL_LEN = 428381
+_PRE_TASK20_FULL_SHA = (
+    "1a2c11ca0b0c0090a71a5607d0fade99a1ffd27c055e719aa4b564c10d817948"
+)
+
+# --- Prior moving-baseline note (Task 19 -- v2-A, kept for provenance) ----
 # v2-A (the user's feedback round on the camera-keyframe editor) is the
 # FIRST task since Task 8/10/11 to DELIBERATELY change NON-excised,
 # END-USER-rendered HTML, so the remainder pin DELIBERATELY ADVANCES
@@ -557,6 +631,45 @@ _T19_JS_END = (
     "  // Pause (don't teleport) the path player when the tab is "
     "backgrounded.\n"
 )
+
+# -- Task-20 (v2-C Phase 1) deliberately-touched region (the top-bar ----
+# #camera-select dropdown markup -- an intentional END-USER-rendered
+# HTML change per the user's v2-C feedback; recipe 2b). The byte-lock's
+# charter (top of this file) is to catch UNINTENDED drift, NOT to
+# freeze a DELIBERATE end-user change -- so the #camera-select markup
+# gets a documented re-pin (the ONLY pin-moving part of v2-C Phase 1;
+# the #camera-select JS wiring is region-interior inside the EXISTING
+# Task-19 T19-JS region and the _trajActivePath Perspective guard
+# inside the EXISTING Task-16 T16-TRAJ region -- both absorbed by those
+# existing excisions with the pin contribution ZERO, per recipe 2c).
+# ONE new region; the JS wiring is NOT a second region (it lands
+# STRICTLY INSIDE the EXISTING T19-JS span -- the whole #path-* wiring
+# block, which already contained startPath/stopPath -- recipe-2c-
+# absorbed).
+#
+# (T20-CAMSEL-DOM) DOM: the (unchanged) ``        <option value="cold">
+#     Bench: Cold load</option>`` line -- the LAST <option> of the
+#     EXISTING #bench-mode <select> -- through the (unchanged)
+#     ``      <button id="bench-btn" class="quality-btn"`` line that
+#     opens the EXISTING Bench button. Bounds EXACTLY the new
+#     #camera-select markup (its HTML comment + the
+#     ``<select id="camera-select" class="quality-btn" ...>`` + the
+#     reserved ``<option value="__perspective__">Perspective</option>``
+#     sentinel + its ``</select>``), inserted between the (unchanged)
+#     #bench-mode <select> close and the (unchanged) #bench-btn. The
+#     in-between ``      </select>`` (the #bench-mode close) is
+#     UNCHANGED so it cancels in the byte compare (excised from BOTH
+#     baseline and current). Both ends pre-exist UNCHANGED and EXACTLY
+#     ONCE in BOTH ``013ca7c`` and the current HTML (verified) --
+#     ``_excise`` asserts the START unique + the (non-close_after) END
+#     unique-after-start, failing LOUD on a duplicate/missing anchor.
+#     #bench-mode's other <option>s, #splat-budget / #move-speed and
+#     #setstart-btn all sit OUTSIDE this region and stay
+#     asserted-surviving (NOT relaxed).
+_T20_CAMSEL_DOM_START = (
+    '        <option value="cold">Bench: Cold load</option>\n'
+)
+_T20_CAMSEL_DOM_END = '      <button id="bench-btn" class="quality-btn"\n'
 
 # ── Task-12 deliberately-touched regions (all OUTSIDE the spline) ───────
 # Each is bounded by a START anchor + END token that pre-exist UNCHANGED
@@ -1173,6 +1286,47 @@ def test_defaults_are_regression_safe_existing_scenes_byte_identical():
     assert "function _pathSeekHold" in html                     # Task 19 JS
     assert "function _pathStep" in html                         # Task 19 JS
     assert "function _pathIconSync" in html                     # Task 19 JS
+    # Task 20 (v2-C Phase 1) deliberate END-USER additions ARE present
+    # in the FULL html (then asserted GONE after the relevant region is
+    # excised below -- a present-then-gone pair per symbol). The
+    # #camera-select <select> MARKUP -- ``id="camera-select"`` + the
+    # reserved ``<option value="__perspective__">Perspective</option>``
+    # sentinel -- is bounded by the new T20-CAMSEL-DOM region (it moves
+    # the pin). The JS wiring -- ``const _CAM_PERSP`` /
+    # ``function _camSelApply`` / ``function _camSelInit`` /
+    # ``_camSelInit();`` -- is recipe-2c-absorbed into the EXISTING
+    # Task-19 T19-JS region (gone after THAT excision; proves it is
+    # wholly inside the EXISTING #path-* wiring block, NOT a new
+    # region). "Perspective" is a non-persisted sentinel; assert it is
+    # NOT written to cfg / the SPCP patch (it never appears in an
+    # ``SPCP1:`` token literal nor a cfg ``camera_paths``/``cameras``
+    # JSON key context -- only as the <option> value + the JS
+    # sentinel + the _trajActivePath guard literal).
+    assert 'id="camera-select"' in html                         # Task 20 DOM
+    assert '<option value="__perspective__">Perspective</option>' in html  # Task 20 sentinel
+    assert "const _CAM_PERSP = '__perspective__';" in html      # Task 20 JS sentinel
+    assert "function _camSelApply" in html                      # Task 20 JS (T19-JS absorbed)
+    assert "function _camSelInit" in html                       # Task 20 JS (T19-JS absorbed)
+    assert "_camSelInit();" in html                             # Task 20 JS invoked
+    assert "_camSelReflect === 'function') _camSelReflect" in html  # Task 20 startPath hook (T19-JS absorbed)
+    assert "if (_cs && _cs.value === '__perspective__') return null;" in html  # Task 20 _trajActivePath guard (T16-TRAJ absorbed)
+    # "Perspective" is NON-persisted -- it is NEVER emitted into an
+    # SPCP1 token nor a saved cfg. The SPCP encoder (a BYTE-IDENTICAL
+    # JS port of ``core.spcp_token.encode_spcp``) is byte-UNCHANGED by
+    # this task: ``function _encodeSpcp`` / ``function _spcpNum`` exist
+    # (Task 18, asserted above) and the ``__perspective__`` sentinel
+    # appears ONLY in FIVE bounded spots -- the markup HTML comment +
+    # the <option> value (T20-CAMSEL-DOM region) and the ``_CAM_PERSP``
+    # JS const RHS + a ``_trajActivePath`` JS comment + the
+    # ``_trajActivePath`` guard compare literal (recipe-2c-absorbed
+    # into the EXISTING T19-JS / T16-TRAJ regions) -- NEVER inside the
+    # SPCP token-building or a cfg camera-list write. This small +
+    # bounded count is a cheap structural proof the sentinel is not
+    # multiplied through a persisted code path (the byte-lock pin
+    # below is the exact-bytes guard; this count is the human-readable
+    # secondary fingerprint -- a reword of either comment would also
+    # move the pin and be a deliberate re-pin then).
+    assert html.count("__perspective__") == 5                   # 2 comments + option value + _CAM_PERSP const + guard literal
     # Task-18 is PURE recipe-2c: it adds NO new region (the
     # TransformControls import is a DYNAMIC import via the
     # ALREADY-EXISTING ``three/addons/`` importmap mapping -- NOT a new
@@ -1251,6 +1405,22 @@ def test_defaults_are_regression_safe_existing_scenes_byte_identical():
     # regions already excised above (so they are gone too; asserted).
     stripped = _excise(stripped, _T19_CSS_START, _T19_CSS_END)
     stripped = _excise(stripped, _T19_JS_START, _T19_JS_END)
+    # Task 20 (v2-C Phase 1) -- the ONE new deliberate end-user region.
+    # T20-CAMSEL-DOM is disjoint from (and uses anchors NOT consumed by)
+    # every prior region: its START ``        <option value="cold">
+    # Bench: Cold load</option>`` is the LAST #bench-mode <option> and
+    # its END ``      <button id="bench-btn" class="quality-btn"`` the
+    # EXISTING Bench button -- both in #quality-buttons, textually well
+    # ABOVE the spline / T13-AS / T16-TRAJ JS and disjoint from the
+    # T12/T13/T19 CSS+DOM regions (the #quality-buttons strip is its
+    # own block) -- so excising it last never disturbs any prior
+    # anchor. ``_excise`` asserts the START unique + the (non-
+    # close_after) END unique-after-start (fail-loud on a duplicate/
+    # missing anchor). The #camera-select JS wiring + the
+    # _trajActivePath Perspective guard are NOT excised here -- they
+    # are recipe-2c-absorbed into the EXISTING T19-JS / T16-TRAJ
+    # regions already excised above (so they are gone too; asserted).
+    stripped = _excise(stripped, _T20_CAMSEL_DOM_START, _T20_CAMSEL_DOM_END)
 
     # The ENTIRE spline region must be gone → that excision spanned exactly
     # the deliberately-touched code (a leftover means it under-cut and the
@@ -1417,6 +1587,47 @@ def test_defaults_are_regression_safe_existing_scenes_byte_identical():
     assert "#path-mini.shown" not in stripped              # T19-CSS gone
     assert 'id="path-mini"' not in stripped                # _T12_DOM-absorbed gone
     assert "body.embed #path-mini," not in stripped        # _T12_CSS-absorbed gone
+    # Task 20 (v2-C Phase 1): the #camera-select delta MUST be fully
+    # gone after the regions are excised -- the present-then-gone pair
+    # is the hard proof the MARKUP is wholly inside the new
+    # T20-CAMSEL-DOM region and the JS wiring + the _trajActivePath
+    # guard wholly inside the EXISTING T19-JS / T16-TRAJ regions (they
+    # leak NOTHING into the compared remainder). ``id="camera-select"``
+    # + the ``<option value="__perspective__">Perspective</option>``
+    # sentinel are UNIQUE to the T20-CAMSEL-DOM markup;
+    # ``const _CAM_PERSP = '__perspective__';`` /
+    # ``function _camSelApply`` / ``function _camSelInit`` /
+    # ``_camSelInit();`` / the ``_camSelReflect`` startPath hook are
+    # UNIQUE to the T19-JS-absorbed wiring;
+    # ``if (_cs && _cs.value === '__perspective__') return null;`` is
+    # UNIQUE to the T16-TRAJ-absorbed guard. If ANY had leaked outside
+    # its region it would still be in ``stripped`` here AND the LEN/SHA
+    # pin below would mismatch. The sentinel literal is GONE entirely
+    # (all FIVE occurrences were inside excised regions) -- hard proof
+    # it never leaked into the compared (persisted-adjacent) remainder.
+    assert 'id="camera-select"' not in stripped            # T20-CAMSEL-DOM gone
+    assert ('<option value="__perspective__">Perspective</option>'
+            not in stripped)                                # T20-CAMSEL-DOM gone
+    assert ("const _CAM_PERSP = '__perspective__';"
+            not in stripped)                                # T19-JS-absorbed gone
+    assert "function _camSelApply" not in stripped         # T19-JS-absorbed gone
+    assert "function _camSelInit" not in stripped          # T19-JS-absorbed gone
+    assert "_camSelInit();" not in stripped                # T19-JS-absorbed gone
+    assert ("_camSelReflect === 'function') _camSelReflect"
+            not in stripped)                                # T19-JS-absorbed gone
+    assert ("if (_cs && _cs.value === '__perspective__') return null;"
+            not in stripped)                                # T16-TRAJ-absorbed gone
+    assert "__perspective__" not in stripped               # sentinel wholly excised (never leaks)
+    # #bench-mode (the EXISTING dropdown whose LAST <option> is the
+    # T20-CAMSEL-DOM START anchor LINE -- excised WITH the region) :
+    # its other <option>s are ABOVE the START and OUTSIDE the region
+    # and MUST survive (proves T20-CAMSEL-DOM did not widen upward into
+    # the pre-existing #bench-mode options); #setstart-btn (textually
+    # AFTER #bench-btn, OUTSIDE the region) MUST survive too (proves it
+    # did not widen downward).
+    assert 'id="bench-mode"' in stripped                   # bench-mode kept
+    assert '<option value="orbit">Bench: Orbit' in stripped  # bench-mode opts kept
+    assert 'id="setstart-btn"' in stripped                 # setstart-btn kept
     # The #path-hud DOM markup is byte-IDENTICAL (A1 hides it purely
     # via CSS); its 5 ids therefore SURVIVE every excision EXCEPT
     # where the EXISTING _T12_DOM region already excised the
@@ -1473,59 +1684,60 @@ def test_defaults_are_regression_safe_existing_scenes_byte_identical():
     assert "_hidAt" in stripped                           # Task 10 survives
     assert "visibilitychange" in stripped                 # Task 10 survives
 
-    # Byte-for-byte identical to the ``407932a`` committed template with
-    # the SAME ELEVEN regions excised -> NO unintended drift anywhere
-    # outside the deliberate Task-8/10/11/12/13/14/15/16/17/18 changes
-    # (FAILS loudly if e.g. a stray uncommitted block elsewhere in the
-    # template leaked in -- this is exactly how the unstaged strays
-    # are kept out of each commit; the pagedExtSplats stray, OUTSIDE
-    # all THIRTEEN regions, makes this FAIL in the dirty tree BY
-    # DESIGN -> the guard still bites). Task 19 (v2-A) is the FIRST
-    # task since Task 8/10/11 to DELIBERATELY change NON-excised,
-    # END-USER-rendered HTML, so the remainder pin DELIBERATELY
-    # ADVANCES here (``_PRE_TASK19_REMAINDER_*`` != the Task-18 pin) --
-    # a DOCUMENTED re-pin, the byte-lock's charter being to catch
-    # UNINTENDED drift, NOT to freeze an intentional end-user change.
-    # The deliberate delta is the A1 transport-chrome replacement
-    # (#path-hud -> a hidden host + the new #path-mini cluster) + the
-    # A2 keyboard-hint z-fix, wholly bounded by the TWO NEW regions
-    # T19-CSS + T19-JS (plus the #path-mini DOM / ``body.embed
-    # #path-mini,`` recipe-2c-absorbed into the EXISTING _T12_DOM /
-    # _T12_CSS). EVERYTHING ELSE in v2-A -- A3 timeline-transport
-    # band, A4 merged Rec/interp/tangents/Save row, A6 scrub-release-
-    # no-autoplay, A7 anti-aliased fat-line trajectory + clean active
-    # ring, AND the A2 "Show trajectory" toggle reposition -- is PURE
-    # recipe-2c: its ENTIRE delta lands STRICTLY INSIDE the EXISTING
-    # Task-16 T16-TRAJ region, so that region's excision merely spans
-    # a LARGER block and contributes ZERO to the remainder delta. A
-    # changed remainder BEYOND the A1/A2-hint re-pin would mean
-    # something LEAKED (e.g. an A7 fat-line line escaped T16-TRAJ via
-    # a top-level static import / a new importmap entry, or an A1 line
-    # escaped T19-CSS/T19-JS). NOT a regression for the 6 live single-
-    # camera scenes: A1's #path-mini is shown only when a camera path
-    # exists and is embed-stripped; #path-hud stays byte-identically
-    # in the DOM (CSS-hidden host) so the ~30 call sites are intact;
-    # the A2 hint z-fix is a pure z-index/offset bump. The Task-8
+    # Byte-for-byte identical to the ``013ca7c`` committed template with
+    # the SAME FOURTEEN regions excised -> NO unintended drift anywhere
+    # outside the deliberate Task-8/10/11/12/13/14/15/16/17/18/19/20
+    # changes (FAILS loudly if e.g. a stray uncommitted block elsewhere
+    # in the template leaked in -- this is exactly how the unstaged
+    # strays are kept out of each commit; the pagedExtSplats stray,
+    # OUTSIDE all FOURTEEN regions, makes this FAIL in the dirty tree BY
+    # DESIGN -> the guard still bites). Task 20 (v2-C Phase 1) is a
+    # DELIBERATE re-pin: like v2-A it changes NON-excised, END-USER-
+    # rendered HTML (the #camera-select <select> markup), so the
+    # remainder pin DELIBERATELY ADVANCES here
+    # (``_PRE_TASK20_REMAINDER_*`` != the Task-19 pin) -- a DOCUMENTED
+    # re-pin, the byte-lock's charter being to catch UNINTENDED drift,
+    # NOT to freeze an intentional end-user change. The ONLY pin-moving
+    # delta is the #camera-select markup, wholly bounded by the ONE NEW
+    # region T20-CAMSEL-DOM. EVERYTHING ELSE in v2-C Phase 1 -- the
+    # #camera-select JS wiring (``_CAM_PERSP`` / ``_camSel*`` /
+    # ``_camSelInit`` + the region-interior ``_camSelReflect`` call in
+    # the EXISTING ``startPath``) and the ``_trajActivePath()``
+    # Perspective guard -- is PURE recipe-2c: the wiring lands STRICTLY
+    # INSIDE the EXISTING Task-19 T19-JS region (the whole #path-*
+    # wiring block, which already contained startPath/stopPath) and the
+    # guard STRICTLY INSIDE the EXISTING Task-16 T16-TRAJ region, so
+    # those regions' excisions merely span LARGER blocks and contribute
+    # ZERO to the remainder delta. A changed remainder BEYOND the
+    # #camera-select-markup re-pin would mean something LEAKED (e.g. a
+    # _camSel* line escaped T19-JS, or the _trajActivePath guard
+    # escaped T16-TRAJ). NOT a regression for the 6 live single-camera
+    # scenes: #camera-select reuses ``class="quality-btn"`` (no new
+    # CSS), is embed-hidden via the EXISTING #quality-buttons embed
+    # strip, and "Perspective" is a non-persisted sentinel never
+    # written to cfg / the SPCP patch (so a single-path scene still
+    # auto-binds its sole camera exactly as before). The Task-8
     # SAVE_* contract + BOTH Task-10 blocks (``let _hidAt = 0;`` ABOVE
     # T19-JS's START, the visibilitychange handler BELOW its END) live
-    # OUTSIDE all THIRTEEN regions, survive the excision and are
+    # OUTSIDE all FOURTEEN regions, survive the excision and are
     # asserted-present (re-pinned just above -- never relaxed); the
     # shared ``three/addons/`` importmap mapping likewise survives
-    # (v2-A added NO importmap entry -- A7's fat-lines reuse the
-    # existing mapping via a region-interior dynamic import, exactly
-    # like Task-18's TransformControls).
-    assert len(stripped) == _PRE_TASK19_REMAINDER_LEN, (
-        f"length drift: {len(stripped)} != {_PRE_TASK19_REMAINDER_LEN} "
-        "(an UNINTENDED change leaked OUTSIDE the THIRTEEN deliberate "
-        "regions -- e.g. an A7 fat-line / A3/A4/A6 line escaped the "
-        "Task-16 T16-TRAJ region the 2c recipe requires it to stay "
-        "inside, an A1/A2-hint line escaped T19-CSS/T19-JS, or a NEW "
-        "importmap entry was added instead of reusing the existing "
-        "three/addons/ mapping via a dynamic import)"
+    # (v2-C Phase 1 added NO importmap entry / NO SPCP-encoder /
+    # _PATCH_KEYS / core change).
+    assert len(stripped) == _PRE_TASK20_REMAINDER_LEN, (
+        f"length drift: {len(stripped)} != {_PRE_TASK20_REMAINDER_LEN} "
+        "(an UNINTENDED change leaked OUTSIDE the FOURTEEN deliberate "
+        "regions -- e.g. a _camSel* wiring line escaped the EXISTING "
+        "Task-19 T19-JS region the 2c recipe requires it to stay "
+        "inside, the _trajActivePath Perspective guard escaped the "
+        "EXISTING Task-16 T16-TRAJ region, the #camera-select markup "
+        "escaped the new T20-CAMSEL-DOM region, or a NEW importmap "
+        "entry was added instead of reusing the existing three/addons/ "
+        "mapping via a dynamic import)"
     )
     assert (
         hashlib.sha256(stripped.encode()).hexdigest()
-        == _PRE_TASK19_REMAINDER_SHA
+        == _PRE_TASK20_REMAINDER_SHA
     )
 
 

@@ -466,6 +466,20 @@ _VIEWER_TEMPLATE = """\
         <option value="dolly">Bench: Dolly-in</option>
         <option value="cold">Bench: Cold load</option>
       </select>
+      <!-- v2-C Phase 1: the top-bar Camera selector. Perspective
+           (free-fly) + every animated/scene camera. End-user-visible
+           peer of the dropdowns above; hidden in ?embed=1 because it
+           is a child of #quality-buttons (the embed strip already
+           hides that whole container). "Perspective" is a RESERVED
+           non-persisted pseudo-camera sentinel (value
+           "__perspective__", always first, never in cfg / the SPCP
+           patch -- exactly like the 'idle-orbit'/'orbit' _activePathId
+           sentinels). JS (_camSelInit, inside the #path-* wiring
+           region) fills the rest from cfg.cameras / cfg.camera_paths
+           and mirrors the choice into the hidden #path-select. -->
+      <select id="camera-select" class="quality-btn" title="Camera. Perspective = free-fly (orbit / WASD). An animated camera binds the in-viewer editor to its path (author) or plays its tour (end-user).">
+        <option value="__perspective__">Perspective</option>
+      </select>
       <button id="bench-btn" class="quality-btn"
               title="Run the selected benchmark (dropdown at left). Click again to stop early; downloads a JSON trace (+ contact sheet for probe/rotate).">Bench</button>
       <button id="setstart-btn" class="quality-btn"
@@ -2275,6 +2289,165 @@ _VIEWER_TEMPLATE = """\
   if (_miniNext) _miniNext.addEventListener('click', () => _pathStep(1));
   _pathIconSync();
 
+  // ============================================================
+  //  v2-C Phase 1 -- top-bar Camera selector (#camera-select)
+  // ------------------------------------------------------------
+  //  Switches between free-fly ("Perspective") and an animated /
+  //  scene camera's binding (author) or playback (end-user).
+  //  "Perspective" is a RESERVED, NON-persisted pseudo-camera
+  //  sentinel (id literal _CAM_PERSP) -- it is NEVER written to
+  //  cfg, NEVER in the SPCP patch, NEVER a camera_paths/cameras
+  //  entry, purely a viewer-UI sentinel, exactly analogous to the
+  //  non-persisted 'idle-orbit'/'orbit' _activePathId sentinels.
+  //
+  //  #camera-select is the authoritative top-bar selector that
+  //  MIRRORS into the EXISTING hidden #path-select (selEl). The
+  //  ~30 mini-transport / _trajActivePath / _tlActivePath /
+  //  _gzActivePath / scrub / ClipPlayer call sites are NOT
+  //  rewired -- they keep reading selEl.value; this handler just
+  //  writes the chosen path id into selEl.value (the SAME thing
+  //  the play button / scrub already read lazily -- there is no
+  //  explicit selEl 'change' listener, so setting .value IS the
+  //  rebind) and then, for a real camera, AUTHOR = bind only
+  //  (the overlay/timeline/gizmo rebind off selEl on the next
+  //  OverlayScene tick; camera holds still -- A6 scrub-release-
+  //  no-autoplay parity), END-USER = drive that path's tour
+  //  (reusing the existing startPath / clip machinery). For
+  //  Perspective: stopPath() if playing + (end-user) _stopTour()
+  //  (an explicit interrupt, reusing the click-to-interrupt
+  //  machinery -- idle-orbit cancelled), leaving _player===null
+  //  so OrbitControls/WASD owns the camera; the editor overlay
+  //  inertly shows nothing (the _trajActivePath() Perspective
+  //  guard returns null). This whole block lands strictly INSIDE
+  //  the EXISTING #path-* wiring region so it is byte-lock
+  //  recipe-2c (absorbed; the remainder pin is unaffected by it
+  //  -- only the end-user #camera-select <select> MARKUP, which
+  //  is OUTSIDE every region, needs the deliberate re-pin).
+  const _CAM_PERSP = '__perspective__';
+  const _camSel = document.getElementById('camera-select');
+  // The animated/scene cameras the dropdown lists. Prefer the
+  // virtual-camera list (cfg.cameras: {{id,name,path_id}}); else
+  // fall back to the raw camera_paths (value=path id, label=path
+  // name or "Camera N"). Each entry is {{ value:<pathId>, label }}.
+  function _camSelCameras() {{
+    const out = [];
+    const cams = Array.isArray(cfg.cameras) ? cfg.cameras : [];
+    if (cams.length > 0) {{
+      for (const c of cams) {{
+        if (!c || !c.path_id) continue;
+        out.push({{ value: c.path_id, label: c.name || c.path_id }});
+      }}
+      if (out.length > 0) return out;
+    }}
+    let n = 0;
+    for (const p of cameraPaths) {{
+      if (!p || !p.id) continue;
+      n += 1;
+      out.push({{ value: p.id, label: p.name || ('Camera ' + n) }});
+    }}
+    return out;
+  }}
+  // True while we are programmatically setting _camSel.value (so
+  // the 'change' handler does not re-enter / fight the mirror).
+  let _camSelSyncing = false;
+  // Reflect an externally-chosen active path (ClipPlayer / the
+  // hidden #path-select / a resumed tour) back into #camera-select
+  // when it trivially maps to one of our options; otherwise leave
+  // it (full bidirectional robustness is Phase 2). NEVER selects
+  // the Perspective sentinel from a real path id.
+  function _camSelReflect(pathId) {{
+    if (!_camSel) return;
+    if (!pathId) return;
+    let has = false;
+    for (const o of _camSel.options) {{
+      if (o.value === pathId) {{ has = true; break; }}
+    }}
+    if (!has) return;
+    if (_camSel.value === pathId) return;
+    _camSelSyncing = true;
+    try {{ _camSel.value = pathId; }} catch (e) {{}}
+    _camSelSyncing = false;
+  }}
+  // Apply a #camera-select choice. val === _CAM_PERSP => free-fly;
+  // else bind/drive the chosen path. AUTHOR binds only (no auto-
+  // play); END-USER starts that path's tour.
+  function _camSelApply(val) {{
+    const isUser = ModeManager.is('user');
+    if (!val || val === _CAM_PERSP) {{
+      // Perspective = free-fly. Stop any path playback; in
+      // end-user mode treat it as an explicit interrupt (reuses
+      // the click-to-interrupt machinery -- idle-orbit cancelled,
+      // #user-play handled by _stopTour). Leave _player === null
+      // so OrbitControls/WASD owns the camera.
+      if (isUser && (typeof _stopTour === 'function') &&
+          (_player || (typeof _clipState !== 'undefined' &&
+                       _clipState && _clipState.active))) {{
+        _stopTour({{ byUser: true }});
+      }} else if (_player) {{
+        stopPath();
+      }}
+      if (typeof _cancelIdleOrbit === 'function') {{
+        try {{ _cancelIdleOrbit({{ silent: true }}); }} catch (e) {{}}
+      }}
+      return;
+    }}
+    // A real camera: mirror into the hidden #path-select (selEl)
+    // -- this IS the rebind (every consumer reads selEl.value
+    // lazily; there is no selEl 'change' listener to dispatch).
+    if (selEl) {{
+      try {{ selEl.value = val; }} catch (e) {{}}
+    }}
+    if (isUser) {{
+      // END-USER: drive/preview this path's tour, reusing the
+      // existing path-playback machinery (a fresh explicit
+      // selection, so stop any current playback first).
+      if (typeof _stopTour === 'function' &&
+          (_player || (typeof _clipState !== 'undefined' &&
+                       _clipState && _clipState.active))) {{
+        _stopTour({{ byUser: true }});
+      }} else if (_player) {{
+        stopPath();
+      }}
+      startPath(val);
+    }}
+    // AUTHOR: bind only -- the editor/timeline/gizmo rebind off
+    // selEl on the next OverlayScene tick (_trajActivePath reads
+    // selEl.value); the camera holds still until the user presses
+    // Play/transport. (Consistent with A6: a bind is not a play.)
+  }}
+  function _camSelInit() {{
+    if (!_camSel) return;
+    // Build the camera options after the Perspective sentinel
+    // (always option 0, already in the markup -- never rebuilt).
+    for (const c of _camSelCameras()) {{
+      const opt = document.createElement('option');
+      opt.value = c.value;
+      opt.textContent = c.label;
+      _camSel.appendChild(opt);
+    }}
+    // Initialise to match the scene's default tour if it maps to
+    // one of our options, else Perspective (free-fly default).
+    // NOTE: deliberately NOT written as a bare
+    // `if (cfg.default_path_id) {{` line -- that exact text is the
+    // byte-lock _T13_AS_START anchor and MUST stay unique; use a
+    // local + a truthiness test instead.
+    let init = _CAM_PERSP;
+    const _dpId = cfg.default_path_id || null;
+    if (_dpId) {{
+      for (const o of _camSel.options) {{
+        if (o.value === _dpId) {{ init = _dpId; break; }}
+      }}
+    }}
+    _camSelSyncing = true;
+    _camSel.value = init;
+    _camSelSyncing = false;
+    _camSel.addEventListener('change', () => {{
+      if (_camSelSyncing) return;
+      _camSelApply(_camSel.value);
+    }});
+  }}
+  _camSelInit();
+
   function startPath(pathId) {{
     const p = cameraPaths.find(x => x.id === pathId);
     if (!p) return;
@@ -2289,6 +2462,12 @@ _VIEWER_TEMPLATE = """\
     // same ownership into the single queryable broker.
     InteractionManager.requestPointer('player');
     _pathIconSync();   // A1: glyph -> STOP (now playing)
+    // v2-C Phase 1: keep the top-bar #camera-select in sync when a
+    // path is started from ANY entry (the hidden #path-select play
+    // button, _introStartTour, _resumeTour) -- trivial reflect only
+    // (maps a real path id to an existing option; never selects the
+    // Perspective sentinel). Region-interior (recipe-2c absorbed).
+    if (typeof _camSelReflect === 'function') _camSelReflect(pathId);
   }}
   function stopPath() {{
     _player = null; _activePathId = null; _lastTriggeredAnnotation = null;
@@ -4169,6 +4348,19 @@ _VIEWER_TEMPLATE = """\
   }}
 
   function _trajActivePath() {{
+    // v2-C Phase 1: when the top-bar Camera selector is on the
+    // reserved "Perspective" sentinel the editor is INERT -- the
+    // gizmo / bottom timeline / trajectory render NOTHING even if
+    // cameraPaths is non-empty (free-fly owns the camera; there is
+    // no active path to edit). This is the SINGLE lever that makes
+    // the whole author overlay inert in Perspective: _tlActivePath
+    // and _gzActivePath both delegate to this function. The
+    // sentinel literal must match #camera-select's
+    // <option value="__perspective__"> (a non-persisted pseudo-
+    // camera; never in cfg). Region-interior to T16-TRAJ (the
+    // byte-lock proves this guard moves nothing outside it).
+    const _cs = document.getElementById('camera-select');
+    if (_cs && _cs.value === '__perspective__') return null;
     // The dropdown's current value is the authored active path
     // (set to cfg.default_path_id at init, else the first option).
     // Fall back to the first camera_paths entry so the overlay
