@@ -151,6 +151,69 @@ def test_all_nine_allowed_keys_are_applied():
     assert out["preexisting"] == "x"
 
 
+def test_multicamera_create_patch_whole_replaces_and_keeps_primary_asset():
+    """v2-C Phase 2 "+ Create camera": the in-viewer create
+    affordance grows ``camera_paths`` to >=2 (the new one with an
+    EMPTY ``keyframes: []``), adds a parallel ``cameras``
+    ``{id,name,path_id}`` list, and re-points ``default_path_id`` at
+    the created path -- then Save sends that as the patch. This LOCKS
+    that the UNCHANGED ``merge_camera_scope`` whole-replaces all
+    three multi-entry keys (NOT a deep/append merge -- a created
+    camera that vanished or duplicated on save would be a real
+    regression) while the security-critical ``primary_asset``
+    force-keep (the Speicher-blank production-failure class) still
+    holds against a hostile pointer in the SAME patch. Proof the
+    Phase-2 create flow needed ZERO core change."""
+    existing = {
+        "primary_asset": "bSPEICHER/scene.rad",
+        # a pre-existing single camera + its path (the scene before
+        # the author pressed "+ Create camera")
+        "camera_paths": [{"id": "p_orig000001", "name": "Camera 1",
+                          "keyframes": [{"t": 0.0, "pos": [0, 0, 0]}]}],
+        "cameras": [{"id": "p_camorig001", "name": "Camera 1",
+                     "path_id": "p_orig000001"}],
+        "default_path_id": "p_orig000001",
+        "spark_render": {"clip_xy": 3.0},
+    }
+    # The exact shape _camSelCreate emits: the original path PLUS a
+    # freshly created one with EMPTY keyframes, a grown cameras list,
+    # default_path_id moved to the created path -- and a hostile
+    # primary_asset that must be ignored.
+    patch = {
+        "camera_paths": [
+            {"id": "p_orig000001", "name": "Camera 1",
+             "keyframes": [{"t": 0.0, "pos": [0, 0, 0]}]},
+            {"id": "p_new0000001", "name": "Camera 2", "loop": False,
+             "interpolation": "catmull", "smoothness": 1.0,
+             "play_speed": 1.0, "keyframes": []},
+        ],
+        "cameras": [
+            {"id": "p_camorig001", "name": "Camera 1",
+             "path_id": "p_orig000001"},
+            {"id": "p_camnew0001", "name": "Camera 2",
+             "path_id": "p_new0000001"},
+        ],
+        "default_path_id": "p_new0000001",
+        "primary_asset": "EVIL/attacker.rad",   # must NEVER apply
+    }
+    out = merge_camera_scope(existing, patch)
+
+    # whole-replace (NOT append/deep-merge): exactly the patch's
+    # two-entry lists, the 2nd path's empty keyframes preserved.
+    assert out["camera_paths"] == patch["camera_paths"]
+    assert len(out["camera_paths"]) == 2
+    assert out["camera_paths"][1]["keyframes"] == []
+    assert out["cameras"] == patch["cameras"]
+    assert len(out["cameras"]) == 2
+    # authored-selection persistence: default moved to the created
+    # path (the EXISTING wire key, whole-replaced).
+    assert out["default_path_id"] == "p_new0000001"
+    # LOCKED INVARIANT: pointer is always existing's, never patch's.
+    assert out["primary_asset"] == "bSPEICHER/scene.rad"
+    # untouched siblings preserved.
+    assert out["spark_render"] == {"clip_xy": 3.0}
+
+
 def test_existing_without_primary_asset_does_not_synthesize_one():
     """Faithful extraction: set_start_view never *added* primary_asset; if
     the fetched config lacked it, it stayed absent (the older-deploy case).

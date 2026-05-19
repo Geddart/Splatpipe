@@ -323,6 +323,72 @@ _CASES: list[tuple[str, dict]] = [
             "default_path_id": "bz",
         },
     ),
+    # 7. MULTI-CAMERA (v2-C Phase 2 "+ Create camera"): the EXACT
+    #    payload shape the in-viewer create affordance produces and
+    #    Save emits -- >=2 ``camera_paths`` (the SECOND freshly
+    #    created with an EMPTY ``keyframes: []``, mirroring
+    #    core/path_io.py::new_path), a parallel ``cameras`` list of
+    #    ``{id,name,path_id}`` virtual cameras, and
+    #    ``default_path_id`` pointing at the SECOND (created) path's
+    #    id (the authored-selection persistence -- reuses the
+    #    EXISTING wire key, NO codec / _PATCH_KEYS change). The whole
+    #    point of the Phase-1 architecture is that this multi-camera
+    #    shape round-trips through the UNCHANGED SPCP codec; this
+    #    case LOCKS that (byte-identity + decode round-trip +
+    #    fixed-point, via the three test fns below). Non-vacuous: it
+    #    carries a created ``p_``-prefixed id (the _newCamId ==
+    #    _new_id shape ``set-camera-path`` accepts), an empty-
+    #    keyframes path, and the new-path defaults (catmull /
+    #    smoothness 1.0 / play_speed 1.0 / loop false) alongside a
+    #    populated path with a sub-1e-4 component so the number-
+    #    format branch is still exercised across the multi-entry
+    #    list. A codec that mis-serialised the 2nd (empty) path, the
+    #    cameras list, or the default_path_id pointer would fail
+    #    here immediately.
+    (
+        "multicam",
+        {
+            "v": 1,
+            "scope": "camera_paths",
+            "camera_paths": [
+                {
+                    "id": "p_0123456789",
+                    "name": "Camera 1",
+                    "loop": False,
+                    "interpolation": "catmull",
+                    "smoothness": 1.0,
+                    "play_speed": 1.0,
+                    "keyframes": [
+                        {"t": 0.0, "pos": [0.0, 0.0, 0.0],
+                         "quat": [0, 0, 0, 1], "fov": 60},
+                        {"t": 2.5, "pos": [1.5e-05, -40.0, 3.0],
+                         "quat": [0, 0, 0, 1], "fov": 50},
+                    ],
+                },
+                {
+                    # Freshly created via "+ Create camera": EMPTY
+                    # keyframes (the spline guards <2 -> no throw),
+                    # new_path defaults verbatim.
+                    "id": "p_abcdef0123",
+                    "name": "Camera 2",
+                    "loop": False,
+                    "interpolation": "catmull",
+                    "smoothness": 1.0,
+                    "play_speed": 1.0,
+                    "keyframes": [],
+                },
+            ],
+            "cameras": [
+                {"id": "p_cam0000001", "name": "Camera 1",
+                 "path_id": "p_0123456789"},
+                {"id": "p_cam0000002", "name": "Camera 2",
+                 "path_id": "p_abcdef0123"},
+            ],
+            # Authored-selection persistence -> the SECOND (created)
+            # path. Reuses the EXISTING default_path_id wire key.
+            "default_path_id": "p_abcdef0123",
+        },
+    ),
 ]
 
 

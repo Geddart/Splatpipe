@@ -2324,7 +2324,42 @@ _VIEWER_TEMPLATE = """\
   //  -- only the end-user #camera-select <select> MARKUP, which
   //  is OUTSIDE every region, needs the deliberate re-pin).
   const _CAM_PERSP = '__perspective__';
+  // v2-C Phase 2 -- AUTHOR-ONLY "+ Create camera" sentinel. Like
+  // _CAM_PERSP it is a pure viewer-UI selector value that is NEVER
+  // written to cfg / the SPCP patch / a camera_paths|cameras entry;
+  // it is the LAST #camera-select option and ONLY appended when
+  // _EDITOR_AUTHOR (an end-user never sees / can trigger create).
+  const _CAM_CREATE = '__create__';
   const _camSel = document.getElementById('camera-select');
+  // v2-C Phase 2 -- mirror of core/path_io.py::_new_id ('p_' + 10
+  // hex). The Python schema / set-camera-path accept exactly this
+  // shape, so a JS-created path id round-trips through the EXISTING
+  // SPCP / config_merge contract with ZERO codec change.
+  function _newCamId() {{
+    let h = '';
+    try {{
+      if (window.crypto && typeof window.crypto.randomUUID === 'function') {{
+        h = window.crypto.randomUUID().replace(/-/g, '');
+      }}
+    }} catch (e) {{}}
+    while (h.length < 10) {{
+      h += Math.floor(Math.random() * 16).toString(16);
+    }}
+    return 'p_' + h.slice(0, 10);
+  }}
+  // v2-C Phase 2 -- next non-colliding "Camera N" (mirrors the
+  // editor's existing default-name convention). Scans BOTH the
+  // virtual cameras and the raw paths so a created name never
+  // duplicates an existing camera/path label.
+  function _camSelNextName() {{
+    const used = new Set();
+    const cams = Array.isArray(cfg.cameras) ? cfg.cameras : [];
+    for (const c of cams) {{ if (c && c.name) used.add(c.name); }}
+    for (const p of cameraPaths) {{ if (p && p.name) used.add(p.name); }}
+    let n = 1;
+    while (used.has('Camera ' + n)) n += 1;
+    return 'Camera ' + n;
+  }}
   // The animated/scene cameras the dropdown lists. Prefer the
   // virtual-camera list (cfg.cameras: {{id,name,path_id}}); else
   // fall back to the raw camera_paths (value=path id, label=path
@@ -2373,6 +2408,24 @@ _VIEWER_TEMPLATE = """\
   // play); END-USER starts that path's tour.
   function _camSelApply(val) {{
     const isUser = ModeManager.is('user');
+    // v2-C Phase 2 -- AUTHOR-ONLY "+ Create camera". The create
+    // sentinel is the LAST option and only present for authors;
+    // double-guard with _EDITOR_AUTHOR so an end-user can never
+    // trigger create even if the value were forced. _camSelCreate
+    // re-enters _camSelApply with the NEW real path id (never
+    // _CAM_CREATE), so this branch does not recurse.
+    if (val === _CAM_CREATE) {{
+      if (_EDITOR_AUTHOR) {{
+        _camSelCreate();
+      }} else {{
+        // Defensive: an end-user must never land on create. Fall
+        // back to free-fly (Perspective) -- consistent state.
+        _camSelSyncing = true;
+        if (_camSel) {{ try {{ _camSel.value = _CAM_PERSP; }} catch (e) {{}} }}
+        _camSelSyncing = false;
+      }}
+      return;
+    }}
     if (!val || val === _CAM_PERSP) {{
       // Perspective = free-fly. Stop any path playback; in
       // end-user mode treat it as an explicit interrupt (reuses
@@ -2409,22 +2462,141 @@ _VIEWER_TEMPLATE = """\
         stopPath();
       }}
       startPath(val);
+      // v2-C Phase 2 (P1-deferred fix): switching camera mid-tour
+      // is a FRESH explicit selection that immediately starts a new
+      // tour -- the interrupt the _stopTour above set is over, so
+      // clear it and hide the stale "#user-play" Resume button (it
+      // would otherwise linger over a freshly-playing tour). This
+      // mirrors _resumeTour()'s own teardown EXACTLY
+      // (_userInterrupted = false; _showUserPlay(false)), so it
+      // leaves consistent state and does NOT regress normal
+      // click-to-interrupt / Resume for the default path (that
+      // path never calls _camSelApply -- only an explicit
+      // #camera-select change does). typeof-guarded like the
+      // _stopTour call above (this function only runs at user-
+      // interaction time, well after both are defined).
+      if (typeof _userInterrupted !== 'undefined') {{
+        _userInterrupted = false;
+      }}
+      if (typeof _showUserPlay === 'function') {{
+        try {{ _showUserPlay(false); }} catch (e) {{}}
+      }}
     }}
     // AUTHOR: bind only -- the editor/timeline/gizmo rebind off
     // selEl on the next OverlayScene tick (_trajActivePath reads
     // selEl.value); the camera holds still until the user presses
     // Play/transport. (Consistent with A6: a bind is not a play.)
   }}
+  // v2-C Phase 2 -- (re)build the camera options. Single source of
+  // truth for BOTH #camera-select (Perspective sentinel kept as
+  // option 0 -- never destroyed -- then the cameras, then the
+  // AUTHOR-ONLY "+ Create camera" sentinel last) AND the hidden
+  // #path-select (the ~30 selEl consumers read selEl.value; they
+  // need the new path as a real <option> so selEl.value = id sticks
+  // -- the SAME rebind contract Phase 1 relies on). Reused by init
+  // AND by create (no duplicated option-build).
+  function _camSelBuildOptions() {{
+    if (_camSel) {{
+      // Drop everything AFTER the Perspective sentinel (option 0,
+      // already in the markup -- never rebuilt) then re-add.
+      while (_camSel.options.length > 1) {{
+        _camSel.remove(_camSel.options.length - 1);
+      }}
+      for (const c of _camSelCameras()) {{
+        const opt = document.createElement('option');
+        opt.value = c.value;
+        opt.textContent = c.label;
+        _camSel.appendChild(opt);
+      }}
+      // AUTHOR-ONLY: the create affordance, always LAST. An
+      // end-user never gets this option (selector itself stays
+      // end-user-visible from Phase 1; only CREATE is gated).
+      if (_EDITOR_AUTHOR) {{
+        const cOpt = document.createElement('option');
+        cOpt.value = _CAM_CREATE;
+        cOpt.textContent = '+ Create camera';
+        _camSel.appendChild(cOpt);
+      }}
+    }}
+    // Rebuild the hidden #path-select with the SAME (value=p.id,
+    // text=p.name||p.id) options the ORIGINAL inline build used --
+    // byte-identical for the 6 live single-path scenes (no
+    // cfg.cameras there), plus any freshly-created path -- so
+    // selEl.value = <createdPathId> resolves. The Perspective /
+    // create sentinels are viewer-only (NOT real paths) so they
+    // are deliberately NOT mirrored into selEl.
+    if (selEl) {{
+      selEl.innerHTML = '';
+      for (const p of cameraPaths) {{
+        if (!p || !p.id) continue;
+        const opt = document.createElement('option');
+        opt.value = p.id;
+        opt.textContent = p.name || p.id;
+        selEl.appendChild(opt);
+      }}
+    }}
+  }}
+  // v2-C Phase 2 -- AUTHOR-ONLY "+ Create camera". Builds a fresh
+  // PathDict mirroring core/path_io.py::new_path defaults (id via
+  // _newCamId == _new_id; interpolation 'catmull' == path_io
+  // DEFAULT_INTERPOLATION; smoothness 1.0; play_speed 1.0; loop
+  // false; keyframes []), registers it in BOTH cfg.camera_paths
+  // (== the live cameraPaths alias) AND cfg.cameras ({{id,name,
+  // path_id}} -- the SAME virtual-camera model _clipCameras /
+  // _camSelCameras already consume), rebuilds the options, selects
+  // it, and binds the editor to its (empty) path via the EXISTING
+  // _camSelApply / selEl rebind (NO duplicated rebind logic). The
+  // spline's buildPlayer already guards <2 keyframes, so an empty
+  // keyframes:[] never throws (Record-K then populates it). The
+  // created/selected camera's path id is written to
+  // cfg.default_path_id so the EXISTING _buildPatch / SPCP path
+  // round-trips it -- NO new wire key, NO _encodeSpcp / _PATCH_KEYS
+  // change, primary_asset force-keep untouched (it is excluded by
+  // _buildPatch already -- left that way).
+  function _camSelCreate() {{
+    if (!_EDITOR_AUTHOR) return;
+    const camId = _newCamId();
+    const pathId = _newCamId();
+    const name = _camSelNextName();
+    const newPath = {{
+      id: pathId,
+      name: name,
+      loop: false,
+      interpolation: 'catmull',
+      smoothness: 1.0,
+      play_speed: 1.0,
+      keyframes: [],
+    }};
+    // Push into the LIVE `cameraPaths` binding (what startPath /
+    // buildPlayer / the _camSelCameras fallback / the selEl rebuild
+    // all read) AND keep cfg.camera_paths pointing at that SAME
+    // array (what _buildPatch / the SPCP token / _clipPath read) --
+    // they are normally already the same reference (`const
+    // cameraPaths = cfg.camera_paths || []`), but if cfg had no
+    // camera_paths at init they diverged; re-alias so a created
+    // path is visible to BOTH the editor AND the save patch.
+    cameraPaths.push(newPath);
+    cfg.camera_paths = cameraPaths;
+    if (!Array.isArray(cfg.cameras)) cfg.cameras = [];
+    cfg.cameras.push({{ id: camId, name: name, path_id: pathId }});
+    // Authored-selection persistence: reuse cfg.default_path_id (no
+    // new wire key). _buildPatch / the SPCP token round-trip it.
+    cfg.default_path_id = pathId;
+    _camSelBuildOptions();
+    _camSelSyncing = true;
+    if (_camSel) {{ try {{ _camSel.value = pathId; }} catch (e) {{}} }}
+    _camSelSyncing = false;
+    // Bind via the EXISTING apply path (author branch = bind only;
+    // it mirrors pathId into selEl so _trajActivePath / the gizmo /
+    // timeline / _gzRecordKeyframe operate on the new empty path).
+    _camSelApply(pathId);
+  }}
   function _camSelInit() {{
     if (!_camSel) return;
     // Build the camera options after the Perspective sentinel
-    // (always option 0, already in the markup -- never rebuilt).
-    for (const c of _camSelCameras()) {{
-      const opt = document.createElement('option');
-      opt.value = c.value;
-      opt.textContent = c.label;
-      _camSel.appendChild(opt);
-    }}
+    // (always option 0, already in the markup -- never rebuilt),
+    // mirroring them into the hidden #path-select too.
+    _camSelBuildOptions();
     // Initialise to match the scene's default tour if it maps to
     // one of our options, else Perspective (free-fly default).
     // NOTE: deliberately NOT written as a bare

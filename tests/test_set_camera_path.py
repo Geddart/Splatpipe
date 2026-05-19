@@ -130,6 +130,64 @@ def test_valid_token_merges_and_deploys(monkeypatch):
     assert result.output.isascii()
 
 
+def test_multicamera_token_decode_merge_deploys(monkeypatch):
+    """v2-C Phase 2 "+ Create camera": the viewer emits an SPCP1
+    token whose payload carries MULTIPLE camera_paths (the freshly
+    created one with EMPTY keyframes), a parallel cameras list, and
+    default_path_id pointing at the created path. End-to-end
+    decode+merge via the UNCHANGED set-camera-path relay must land
+    ALL of them on the staged config (whole-replace), force-keep
+    primary_asset, and report n_paths / default_path_id. Proof the
+    Phase-2 create flow round-trips with ZERO codec / relay change."""
+    captured: dict = {}
+    _patch_cli_seam(monkeypatch, captured)
+
+    payload = {
+        "v": 1,
+        "scope": "camera_paths",
+        "camera_paths": [
+            {"id": "p_origpath01", "name": "Camera 1",
+             "loop": False, "interpolation": "catmull",
+             "smoothness": 1.0, "play_speed": 1.0,
+             "keyframes": [
+                 {"t": 0.0, "pos": [0, 0, 0], "quat": [0, 0, 0, 1]},
+                 {"t": 2.0, "pos": [1, 2, 3], "quat": [0, 0, 0, 1]},
+             ]},
+            # freshly created via "+ Create camera": EMPTY keyframes
+            {"id": "p_newpath001", "name": "Camera 2",
+             "loop": False, "interpolation": "catmull",
+             "smoothness": 1.0, "play_speed": 1.0, "keyframes": []},
+        ],
+        "cameras": [
+            {"id": "p_origcam001", "name": "Camera 1",
+             "path_id": "p_origpath01"},
+            {"id": "p_newcam0001", "name": "Camera 2",
+             "path_id": "p_newpath001"},
+        ],
+        "clips": [],
+        # authored-selection persistence -> the created path
+        "default_path_id": "p_newpath001",
+    }
+    token = encode_spcp("multicam-scene", payload)
+    result = runner.invoke(app, ["set-camera-path", token])
+
+    assert result.exit_code == 0, result.output
+    assert captured["slug"] == "multicam-scene"
+    cfg = captured["staged_cfg"]
+    # whole-replace: BOTH paths land, the created one's empty
+    # keyframes preserved; n_paths == 2.
+    assert len(cfg["camera_paths"]) == 2
+    assert cfg["camera_paths"][1]["keyframes"] == []
+    assert len(cfg["cameras"]) == 2
+    # default_path_id points at the created path (the EXISTING wire
+    # key round-tripped through decode+merge).
+    assert cfg["default_path_id"] == "p_newpath001"
+    # primary_asset force-kept from the EXISTING live config.
+    assert cfg["primary_asset"] == "bLIVEKEY/scene.rad"
+    assert result.output.isascii()
+    assert token not in result.output
+
+
 def test_positional_token_different_slug_deploys(monkeypatch):
     """Token is a Typer Argument (positional); a different slug is routed
     correctly through the backend to the deploy target."""
