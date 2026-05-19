@@ -3692,12 +3692,59 @@ _VIEWER_TEMPLATE = """\
   // fixed count of equal-time steps) so it scales with any path.
   const _TRAJ_SAMPLES_PER_SEG = 96;
   const _TRAJ_DOT_STEPS = 240;
-  // Frustum size: a small fraction of the scene scale (the authored
-  // start-view distance) so the little camera pyramids read at the
-  // path's scale without dominating the splat. Floored so a tiny
-  // scene still shows them.
-  const _TRAJ_FRUSTUM_LEN = Math.max(0.4, (_initDist || 8) * 0.06);
-  const _TRAJ_FRUSTUM_HALF = _TRAJ_FRUSTUM_LEN * 0.6;
+  // Frustum size is SCENE-RELATIVE: a small fraction of the ACTIVE
+  // path's OWN spatial scale (the bbox diagonal of its keyframe
+  // positions), NOT a scene-independent constant and NOT the
+  // start-view distance (_initDist is the camera->orbit-target
+  // VIEWING distance for the resting pose -- unrelated to the path's
+  // extent, so a real scene framed from far back made the old
+  // _initDist*0.06 frustum scene-spanning: one pyramid covered ~40%
+  // of the viewport and its always-on-top opaque wireframe read as a
+  // solid orange mass). _TRAJ_FR_FRAC of the path diagonal makes each
+  // little camera pyramid read at the PATH's scale; the absolute
+  // clamp keeps a tiny OR a huge path usable. Recomputed per path in
+  // _trajRebuild (set on _trajFrLen / _trajFrHalf below); a fallback
+  // is used when the path is degenerate (all keyframes coincident).
+  const _TRAJ_FR_FRAC = 0.025;   // frustum apex length = 2.5% of diag
+  const _TRAJ_FR_MIN = 0.06;     // absolute floor (world units)
+  const _TRAJ_FR_MAX = 4.0;      // absolute ceiling (world units)
+  const _TRAJ_FR_FALLBACK = 0.4; // degenerate-path fallback length
+  let _trajFrLen = _TRAJ_FR_FALLBACK;       // active-path frustum length
+  let _trajFrHalf = _TRAJ_FR_FALLBACK * 0.6; // active-path image-plane half
+  // Bbox-diagonal of a keyframe-position list (the active path's OWN
+  // spatial scale). Empty / single / coincident -> 0 (caller falls
+  // back). Pure geometry off the SAME k.pos the player flies; no
+  // spline math here.
+  function _trajPathScale(kfs) {{
+    let lo = [Infinity, Infinity, Infinity];
+    let hi = [-Infinity, -Infinity, -Infinity];
+    let n = 0;
+    for (const k of (kfs || [])) {{
+      if (!k || !k.pos || k.pos.length < 3) continue;
+      for (let a = 0; a < 3; a++) {{
+        const v = +k.pos[a];
+        if (!Number.isFinite(v)) continue;
+        if (v < lo[a]) lo[a] = v;
+        if (v > hi[a]) hi[a] = v;
+      }}
+      n++;
+    }}
+    if (n < 2) return 0;
+    const dx = hi[0] - lo[0], dy = hi[1] - lo[1], dz = hi[2] - lo[2];
+    const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    return Number.isFinite(d) ? d : 0;
+  }}
+  // Set _trajFrLen / _trajFrHalf from the active path's diagonal:
+  // _TRAJ_FR_FRAC of it, clamped to [_TRAJ_FR_MIN, _TRAJ_FR_MAX], and
+  // a fixed fallback for a degenerate path. Called once per rebuild.
+  function _trajApplyScale(kfs) {{
+    const diag = _trajPathScale(kfs);
+    let len = (diag > 0)
+      ? Math.min(_TRAJ_FR_MAX, Math.max(_TRAJ_FR_MIN, diag * _TRAJ_FR_FRAC))
+      : _TRAJ_FR_FALLBACK;
+    _trajFrLen = len;
+    _trajFrHalf = len * 0.6;
+  }}
 
   // The ONE trajectory group (the OverlayScene layer's node). Its
   // children are rebuilt whenever the active path / its keyframes
@@ -3756,14 +3803,15 @@ _VIEWER_TEMPLATE = """\
   }}
 
   // Build a small wireframe camera frustum (apex at the camera
-  // position, rectangular base one _TRAJ_FRUSTUM_LEN ahead) in the
+  // position, rectangular base one _trajFrLen ahead -- the
+  // SCENE-RELATIVE, per-path length set by _trajApplyScale) in the
   // THREE camera local basis: -Z forward, +Y up, +X right -- the
   // EXACT basis the live player applies (camera.quaternion.set(
   // s.quat)). Returned at the origin with identity rotation; the
   // caller sets .position / .quaternion from the keyframe so it
   // lands precisely where the camera will be.
   function _trajMakeFrustum(col) {{
-    const d = _TRAJ_FRUSTUM_LEN, h = _TRAJ_FRUSTUM_HALF;
+    const d = _trajFrLen, h = _trajFrHalf;
     // Apex (camera origin) + 4 image-plane corners at z = -d.
     const A = [0, 0, 0];
     const TL = [-h,  h, -d], TR = [ h,  h, -d];
@@ -3783,7 +3831,14 @@ _VIEWER_TEMPLATE = """\
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     const m = new THREE.LineBasicMaterial({{ color: col }});
+    // Drawn always-on-top (depthTest off, renderOrder 11) so it is
+    // never occluded by the splat; a modest opacity keeps the
+    // wireframe a CLEAN THIN OUTLINE rather than a saturated
+    // always-on-top fill (defense-in-depth: even a degenerate path
+    // scaled to the clamp ceiling can no longer read as a solid
+    // orange mass -- the old scene-spanning bug's visual signature).
     m.depthTest = false; m.depthWrite = false; m.transparent = true;
+    m.opacity = 0.85;
     const seg = new THREE.LineSegments(g, m);
     seg.renderOrder = 11;
     return seg;
@@ -3811,6 +3866,12 @@ _VIEWER_TEMPLATE = """\
     const times = player.times;
     const kfs = player.sortedKfs;
     const nSeg = times.length - 1;
+
+    // ---- SCENE-RELATIVE sizing: derive the frustum / dot scale from
+    //      THIS path's OWN keyframe-position bbox diagonal (NOT a
+    //      scene-independent constant -- the my16-M1 fix). Set before
+    //      any geometry below reads _trajFrLen / _trajFrHalf.
+    _trajApplyScale(kfs);
 
     // ---- Polyline: ~_TRAJ_SAMPLES_PER_SEG samples per segment,
     //      sampled off the SAME spline the player flies (sampleAt).
@@ -3885,7 +3946,7 @@ _VIEWER_TEMPLATE = """\
         const g = new THREE.BufferGeometry();
         g.setAttribute('position', new THREE.BufferAttribute(arr, 3));
         const m = new THREE.PointsMaterial({{
-          color: _TRAJ_COL, size: Math.max(2, _TRAJ_FRUSTUM_HALF * 0.5),
+          color: _TRAJ_COL, size: Math.max(2, _trajFrHalf * 0.5),
           sizeAttenuation: true }});
         m.depthTest = false; m.depthWrite = false; m.transparent = true;
         _trajDots = new THREE.Points(g, m);
@@ -4035,6 +4096,35 @@ _VIEWER_TEMPLATE = """\
         return a ? a.count : 0;
       }},
       get samplesPerSeg() {{ return _TRAJ_SAMPLES_PER_SEG; }},
+      // SCENE-RELATIVE sizing introspection (the my16-M1 fix). The
+      // harness asserts the frustum size is a small fraction of the
+      // ACTIVE path's OWN keyframe bbox diagonal -- it MUST scale
+      // with the path extent, NOT be a scene-independent constant.
+      // pathScale = the active path's diagonal; frustumLen / Half =
+      // the clamped per-path frustum size actually built with;
+      // frustumFrac / Min / Max = the fraction + absolute clamps;
+      // frustumIsWireframe = the geometry is LineSegments with a
+      // Line material (a thin outline, never a filled Mesh -- the
+      // solid-orange-mass guard).
+      get pathScale() {{ return _trajPathScale(
+        (_trajFrusta.length ? _trajFrusta.map(
+          f => ({{ pos: f.pos }})) : [])); }},
+      get frustumLen() {{ return _trajFrLen; }},
+      get frustumHalf() {{ return _trajFrHalf; }},
+      get frustumFrac() {{ return _TRAJ_FR_FRAC; }},
+      get frustumMin() {{ return _TRAJ_FR_MIN; }},
+      get frustumMax() {{ return _TRAJ_FR_MAX; }},
+      get frustumIsWireframe() {{
+        const f = _trajFrusta[0];
+        if (!f || !f.mesh) return false;
+        const isLineSeg = !!(f.mesh.isLineSegments ||
+          (f.mesh.type === 'LineSegments'));
+        const m = f.mesh.material;
+        const isLineMat = !!(m && (m.isLineBasicMaterial ||
+          m.type === 'LineBasicMaterial'));
+        const notMesh = !f.mesh.isMesh;
+        return isLineSeg && isLineMat && notMesh;
+      }},
       // One entry per keyframe frustum, with its world pose so the
       // harness can assert each is oriented by ITS keyframe quat.
       get frusta() {{
@@ -5576,7 +5666,7 @@ _VIEWER_TEMPLATE = """\
         ? _raycaster.params.Line.threshold : 1;
       if (_raycaster.params.Line) {{
         _raycaster.params.Line.threshold =
-          Math.max(prevT, _TRAJ_FRUSTUM_HALF * 0.6);
+          Math.max(prevT, _trajFrHalf * 0.6);
       }}
       let best = -1, bestDist = Infinity;
       for (const f of _trajFrusta) {{

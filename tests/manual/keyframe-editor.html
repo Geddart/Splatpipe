@@ -223,7 +223,17 @@
         distinct (colour AND scale differ from the resting frusta,
         tracking the playhead); the "Show trajectory" toggle (default
         ON) adds/removes the whole overlay group, which is parented
-        under the ONE Task-0 OverlayScene owner.
+        under the ONE Task-0 OverlayScene owner. (f) SCENE-RELATIVE
+        sizing (the my16-M1 fix): the frustum size is a SMALL FRACTION
+        of the ACTIVE path's OWN keyframe-bbox diagonal -- frustumLen
+        == clamp(pathScale * frustumFrac, frustumMin, frustumMax) and
+        TRACKS the path extent (this fixture's diagonal ~= 80.1 so
+        frustumLen ~= 2.0, NOT the ~0.48 the OLD scene-independent
+        _initDist*0.06 formula produced for the SAME scene -- the
+        discriminating negative control); the frustum is a thin
+        wireframe (LineSegments + Line material, NEVER a filled Mesh)
+        so it can never read as the solid orange mass the old scene-
+        spanning size produced.
       * _viewer_author WITHOUT ?author=1 (the SAME scene): the
         overlay is fully INERT -- window.__editor.author=false, 0
         frusta, 0 polyline points, 0 dots, the group is NOT parented
@@ -2067,11 +2077,53 @@
           userInert = false;
         }
 
+        // (f) SCENE-RELATIVE sizing (the my16-M1 fix). The frustum
+        //     size MUST be a small fraction of the ACTIVE path's OWN
+        //     keyframe-position bbox diagonal -- NOT a scene-
+        //     independent constant (the old code sized off _initDist,
+        //     the start-view VIEWING distance, so a real scene framed
+        //     from far back rendered scene-spanning frustums that read
+        //     as a solid orange mass). The fixture path is
+        //     [0,0,0]->[4,0,0]->[4,0,-80] => bbox diagonal
+        //     = sqrt(4^2 + 0 + 80^2) ~= 80.1; with frustumFrac 0.025
+        //     and the [frustumMin, frustumMax] clamp the built
+        //     frustumLen MUST equal clamp(diag*frac) -- and CRUCIALLY
+        //     it must TRACK the path extent (frustumLen ~= pathScale *
+        //     frustumFrac here, NOT a fixed ~0.48 the old _initDist
+        //     formula produced for this same fixture). Also assert the
+        //     frustum is a thin wireframe (LineSegments + Line
+        //     material, never a filled Mesh -- the solid-mass guard).
+        const pScale = ed.pathScale;
+        const fLen = ed.frustumLen;
+        const fHalf = ed.frustumHalf;
+        const fFrac = ed.frustumFrac;
+        const fMin = ed.frustumMin;
+        const fMax = ed.frustumMax;
+        const fWire = ed.frustumIsWireframe === true;
+        // Expected clamped length from the path's OWN diagonal.
+        const expLen = Math.min(fMax, Math.max(fMin, pScale * fFrac));
+        const scaleMatchesPath = pScale > 1 &&
+          Math.abs(fLen - expLen) <= Math.max(1e-4, expLen * 1e-3);
+        // The discriminator vs the OLD fixed code: fLen MUST be a
+        // SMALL FRACTION of the path diagonal AND scale WITH it. For
+        // this fixture diag ~= 80.1 so a path-relative fLen ~= 2.0
+        // (>> the old constant-ish ~0.48). Assert fLen is within a
+        // small-fraction band of pScale (proves it is NOT a fixed
+        // scene-independent value), and is NOT scene-spanning.
+        const fracOfPath = (pScale > 0) ? (fLen / pScale) : 999;
+        const fracInBand = fracOfPath > 0.005 && fracOfPath < 0.08;
+        const notSceneSpanning = fLen < pScale * 0.2;
+        // frustumFrac is a SMALL fraction (a few percent), not unity.
+        const fracIsSmall = fFrac > 0 && fFrac <= 0.06;
+        const halfOk = Math.abs(fHalf - fLen * 0.6) <= 1e-4;
+        const sceneRelOk = !!(scaleMatchesPath && fracInBand &&
+          notSceneSpanning && fracIsSmall && halfOk && fWire);
+
         return {
           ok: !!(authorMode && lineOk && frCountOk && frQuatOk &&
             frPosOk && fixDistinct && dotsOk && dotPosOk &&
             activeDistinctOk && toggleOk && inSceneOk &&
-            userInert === true),
+            userInert === true && sceneRelOk),
           authorMode: authorMode,
           N: N, linePts: linePts, expLinePts: expLinePts, lineOk: lineOk,
           frCount: ed.frustumCount, frCountOk: frCountOk,
@@ -2085,6 +2137,12 @@
           showDefault: showDefault, hid: hid, shown: shown,
           toggleOk: toggleOk, inSceneOk: inSceneOk,
           userInert: userInert,
+          pScale: pScale, fLen: fLen, fHalf: fHalf, fFrac: fFrac,
+          fMin: fMin, fMax: fMax, fWire: fWire, expLen: expLen,
+          fracOfPath: fracOfPath, scaleMatchesPath: scaleMatchesPath,
+          fracInBand: fracInBand, notSceneSpanning: notSceneSpanning,
+          fracIsSmall: fracIsSmall, halfOk: halfOk,
+          sceneRelOk: sceneRelOk,
         };
       }
       const k16 = await task16Check();
@@ -2130,6 +2188,24 @@
         'outside author mode (the 6 live scenes are NOT author mode)',
         k16.userInert === true,
         JSON.stringify({ userInert: k16.userInert }));
+      T('Task 16(f): the camera-path overlay is SCENE-RELATIVE -- the ' +
+        'frustum size is a SMALL FRACTION of the ACTIVE path\'s OWN ' +
+        'keyframe-bbox diagonal (frustumLen == clamp(pathScale * ' +
+        'frustumFrac), tracks the path extent, NOT the old scene-' +
+        'independent _initDist constant), it is NOT scene-spanning, ' +
+        'frustumFrac is a few-percent fraction, and the frustum is a ' +
+        'thin wireframe (LineSegments + Line material, never a filled ' +
+        'Mesh -- the my16-M1 solid-orange-mass fix)',
+        !!k16.sceneRelOk,
+        JSON.stringify({ pScale: k16.pScale, fLen: k16.fLen,
+          fHalf: k16.fHalf, fFrac: k16.fFrac, fMin: k16.fMin,
+          fMax: k16.fMax, fWire: k16.fWire, expLen: k16.expLen,
+          fracOfPath: k16.fracOfPath,
+          scaleMatchesPath: k16.scaleMatchesPath,
+          fracInBand: k16.fracInBand,
+          notSceneSpanning: k16.notSceneSpanning,
+          fracIsSmall: k16.fracIsSmall, halfOk: k16.halfOk,
+          sceneRelOk: k16.sceneRelOk }));
 
       // --- Task 17: author editor -- bottom timeline (scrub/diamonds/
       //     transport/zoom/multiselect/scale). The `_viewer_t17/`

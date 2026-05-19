@@ -99,16 +99,23 @@ _PRE_TASK18_REMAINDER_LEN = 155585
 _PRE_TASK18_REMAINDER_SHA = (
     "f4cb11b385dedc2d018fc4342766285c0805f147c080b44d9de1fcd250370226"
 )
-# Full ``407932a`` baseline fingerprint (documentation / cross-check;
+# Full ``83fc5c8`` baseline fingerprint (documentation / cross-check;
 # the remainder pin above is what the assertion uses). The REMAINDER
 # pin is byte-IDENTICAL to ``_PRE_TASK17_REMAINDER_*`` (the recipe-2c
-# invariant: Task 18's delta is wholly inside the Task-16 T16-TRAJ
-# region, so the eleven-region remainder is unchanged); only the FULL
+# invariant: Task 18's delta -- AND the my16-M1 follow-up that scales
+# the camera-path overlay frusta/dots/picking to the ACTIVE path's
+# OWN keyframe-bbox diagonal instead of the scene-independent
+# _initDist constant -- is wholly inside the Task-16 T16-TRAJ region,
+# so the eleven-region remainder is unchanged; only the FULL
 # fingerprint advances (the new committed baseline has the Task-17
-# timeline inside T16-TRAJ).
-_PRE_TASK18_FULL_LEN = 286845
+# timeline + Task-18 gizmo + the my16-M1 scene-relative-overlay edit
+# inside T16-TRAJ). Re-derived byte-faithfully from
+# ``git cat-file blob 83fc5c8:src/splatpipe/viewers/spark/template.py``
+# (the prior 407932a/286845 value was a stale pre-Task-18 leftover --
+# unused by any assertion, corrected here for provenance).
+_PRE_TASK18_FULL_LEN = 337901
 _PRE_TASK18_FULL_SHA = (
-    "3ad09fb07a1fa85b2f406c67a02fb8aade45b41193a102655e3b52aa9333c032"
+    "611241fc3e2f22d1bdef26863247b84bde01a606836fb796152c1c30459b1eb4"
 )
 
 # --- Prior moving-baseline note (Task 17, kept for provenance) -----------
@@ -1355,6 +1362,161 @@ def test_defaults_are_regression_safe_existing_scenes_byte_identical():
         hashlib.sha256(stripped.encode()).hexdigest()
         == _PRE_TASK18_REMAINDER_SHA
     )
+
+
+# --------------------------------------------------------------------------
+# my16-M1 follow-up: the camera-path overlay must be SCENE-RELATIVE
+# --------------------------------------------------------------------------
+# A real-scene UX defect: the my16 author trajectory overlay sized its
+# per-keyframe camera frusta + speed dots off a SCENE-INDEPENDENT
+# constant -- ``_TRAJ_FRUSTUM_LEN = Math.max(0.4, (_initDist || 8) *
+# 0.06)`` where ``_initDist`` is the camera->orbit-target VIEWING
+# distance for the resting/start pose (UNRELATED to the path's own
+# spatial extent). On a real scene framed from far back ``_initDist``
+# is large, so a frustum became scene-spanning and its always-on-top,
+# fully-opaque (transparent:true but NO explicit opacity) wireframe
+# read as a near-solid orange mass. The fix derives the frustum / dot
+# scale from the ACTIVE path's OWN keyframe-position bbox diagonal
+# (``_trajPathScale`` / ``_trajApplyScale``), clamped, and gives the
+# always-on-top wireframe a modest opacity. This is a SIZING/material
+# fix strictly inside the byte-lock T16-TRAJ region (the byte-lock
+# test above proves the eleven-region remainder is UNCHANGED -- the
+# whole change is region-interior).
+#
+# Asserted at the ``html_for`` level (no browser needed -- the sizing
+# is JS the harness's window.__editor exposes; the Playwright harness
+# keyframe-editor.html Task-16(f) check + the ``_viewer_author``
+# ?author=1 fixture assert the RUNTIME values for the controller's
+# serialized real-scene re-verify). The NEGATIVE CONTROL builds the
+# committed ``83fc5c8`` template in a SEPARATE temp dir (byte-faithful
+# ``git cat-file blob`` via a Python subprocess -- NEVER a PowerShell
+# pipe, per the regen-recipe CRLF caveat) and asserts the SAME
+# scene-relative markers are ABSENT there and the OLD scene-
+# independent ``_initDist``-based frustum sizing IS present -- so this
+# assertion provably FAILS against the pre-fix code (it is a real
+# discriminator, not a tautology).
+def _git_blob_module(rev_path: str):
+    """Import ``git cat-file blob <rev_path>`` as a fresh module from a
+    SEPARATE temp dir, byte-faithfully (raw LF-only bytes straight off
+    the subprocess stdout PIPE -- no PowerShell string round-trip, the
+    regen-recipe CRLF foot-gun). Returns the imported module."""
+    import importlib.util
+    import os
+    import subprocess
+    import tempfile
+
+    repo = Path(__file__).resolve().parents[1]
+    raw = subprocess.run(
+        ["git", "cat-file", "blob", rev_path],
+        stdout=subprocess.PIPE, check=True, cwd=str(repo),
+    ).stdout
+    assert b"\r" not in raw, "git blob unexpectedly has CR (CRLF corruption)"
+    d = tempfile.mkdtemp(prefix="splatpipe_pre_my16m1_")
+    p = os.path.join(d, "template_pre.py")
+    with open(p, "wb") as f:
+        f.write(raw)
+    spec = importlib.util.spec_from_file_location("_template_pre_my16m1", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# The scene-relative markers the FIXED code introduces (all live
+# strictly inside the T16-TRAJ region; the byte-lock proves that).
+_SCENE_REL_MARKERS = (
+    "function _trajPathScale",          # bbox-diagonal helper
+    "function _trajApplyScale",         # per-path scale setter
+    "_trajApplyScale(kfs);",            # called in _trajRebuild
+    "const _TRAJ_FR_FRAC",              # small-fraction constant
+    "const _TRAJ_FR_MIN",               # absolute clamp floor
+    "const _TRAJ_FR_MAX",               # absolute clamp ceiling
+    "let _trajFrLen",                   # per-path frustum length var
+    "let _trajFrHalf",                  # per-path image-plane half var
+    "get frustumIsWireframe",           # window.__editor wireframe probe
+    "get pathScale()",                  # window.__editor path-scale probe
+    "m.opacity = 0.85;",                # the always-on-top opacity fix
+)
+# The scene-INDEPENDENT frustum sizing the OLD (pre-fix) code used.
+_OLD_FIXED_MARKERS = (
+    "const _TRAJ_FRUSTUM_LEN = Math.max(0.4, (_initDist || 8) * 0.06);",
+    "const _TRAJ_FRUSTUM_HALF = _TRAJ_FRUSTUM_LEN * 0.6;",
+)
+
+
+def test_camera_path_overlay_is_scene_relative_not_fixed():
+    """The my16 overlay frustum/dot size must be derived from the
+    ACTIVE path's OWN keyframe-bbox diagonal (scene-relative), NOT a
+    scene-independent constant. NEGATIVE-CONTROLLED against the
+    committed 83fc5c8 (pre-fix) template, which still has the old
+    fixed ``_initDist``-based sizing -- proving this is a real
+    discriminator, not a tautology."""
+    html = html_for("HarnessScene")
+
+    # (positive) the FIXED code's scene-relative markers are ALL
+    # present in the rendered HTML, each EXACTLY once where uniqueness
+    # is meaningful (the helpers / consts / surface getters).
+    for mk in _SCENE_REL_MARKERS:
+        assert mk in html, f"scene-relative marker missing: {mk!r}"
+    # (positive) the OLD scene-independent frustum sizing is GONE --
+    # no _initDist-derived hardcoded frustum size remains anywhere.
+    for mk in _OLD_FIXED_MARKERS:
+        assert mk not in html, f"old fixed-size code still present: {mk!r}"
+    assert "_TRAJ_FRUSTUM_LEN" not in html
+    assert "_TRAJ_FRUSTUM_HALF" not in html
+    # (positive) the scene-relative scale is a SMALL fraction with
+    # sane absolute clamps (a frustum reads like a small camera, not
+    # scene-spanning): frac a few %, min small, max bounded, min<max.
+    import re
+    frac = float(re.search(
+        r"const _TRAJ_FR_FRAC = ([0-9.]+);", html).group(1))
+    fmin = float(re.search(
+        r"const _TRAJ_FR_MIN = ([0-9.]+);", html).group(1))
+    fmax = float(re.search(
+        r"const _TRAJ_FR_MAX = ([0-9.]+);", html).group(1))
+    assert 0.0 < frac <= 0.06, f"frustum fraction not a small %: {frac}"
+    assert 0.0 < fmin < fmax, f"frustum clamp bounds invalid: {fmin}/{fmax}"
+    assert fmax <= 25.0, f"frustum clamp ceiling implausibly large: {fmax}"
+    # The scale is derived from the keyframe POSITIONS' bbox diagonal
+    # (k.pos, the same data the player flies) -- prove the helper uses
+    # the keyframe positions + a sqrt of squared spans, not _initDist.
+    # In the RENDERED html the template's ``{{``/``}}`` are collapsed
+    # by ``str.format`` to single ``{``/``}``; the helper closes with a
+    # 2-space-indent ``\n  }`` line. Slice from the decl to the next
+    # ``_trajApplyScale`` decl (which immediately follows it) so the
+    # body is bounded without brace-counting.
+    _i0 = html.index("function _trajPathScale(kfs) {")
+    _i1 = html.index("function _trajApplyScale(kfs) {", _i0)
+    body = html[_i0:_i1]
+    assert body, "could not isolate _trajPathScale body"
+    assert "k.pos" in body, "_trajPathScale must read keyframe positions"
+    assert "Math.sqrt" in body, "_trajPathScale must compute a diagonal"
+    assert "_initDist" not in body, (
+        "_trajPathScale must NOT depend on the start-view distance"
+    )
+
+    # (NEGATIVE CONTROL) the committed 83fc5c8 (pre-fix) template:
+    # the SAME scene-relative markers are ABSENT and the OLD fixed
+    # _initDist sizing IS present -> this test provably FAILS against
+    # the pre-fix code (a genuine discriminator).
+    pre = _git_blob_module(
+        "83fc5c8:src/splatpipe/viewers/spark/template.py")
+    pre_html = pre.html_for("HarnessScene")
+    for mk in _SCENE_REL_MARKERS:
+        assert mk not in pre_html, (
+            f"negative control FAILED: scene-relative marker {mk!r} "
+            "unexpectedly already in the pre-fix 83fc5c8 template "
+            "(the test would not discriminate the fix)"
+        )
+    for mk in _OLD_FIXED_MARKERS:
+        assert mk in pre_html, (
+            f"negative control FAILED: pre-fix marker {mk!r} not in "
+            "83fc5c8 -- the baseline is not the expected fixed-size code"
+        )
+    # The pre-fix template's frustum size IS the scene-independent
+    # _initDist constant -> for the scene-less HarnessScene it does
+    # NOT scale with any path; the fix replaced exactly this.
+    assert "_TRAJ_FRUSTUM_LEN" in pre_html
+    assert "_trajPathScale" not in pre_html
 
 
 # --------------------------------------------------------------------------
