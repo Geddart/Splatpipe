@@ -250,17 +250,31 @@ def list_bunny_subfolders(
 
 # ---------------------------------------------------------------------------
 # Bunny pull-zone Edge Rule: make the small permanent-slug text files
-# (index.html / viewer-config.json) always edge+browser fresh while the big
-# immutable .rad/.radc keep the 30-day cache. WITHOUT this a re-deployed
-# stable-slug URL keeps serving a 30-day-stale shell (the pull zone's
-# CacheControlMaxAgeOverride overrides the client's cache:'no-store' too;
-# per-URL purge does not reach all edges). See the project memory
+# (the slug-root directory URL / index.html / viewer-config.json) always
+# edge+browser fresh while the big immutable .rad/.radc keep the 30-day
+# cache. WITHOUT this a re-deployed stable-slug URL keeps serving a 30-day-
+# stale shell (the pull zone's CacheControlMaxAgeOverride overrides the
+# client's cache:'no-store' too; per-URL purge does not reach all edges).
+#
+# CRITICAL: the rule is matched against the REQUEST url. The URL the user
+# actually opens is the bare directory `https://.../<slug>/` (and
+# `/<slug>/?author=1&...`) — Bunny serves index.html for it internally but
+# the request URL contains neither "index.html" nor "viewer-config.json", so
+# the `*/index.html` patterns alone never matched it and it fell through to
+# the 30-day CacheControlMaxAgeOverride. That was the recurring
+# stale-build-after-redeploy bug. The slug-root directory patterns below fix
+# it. (`.rad`/`.radc` URLs do not end in `/` and contain no `/?`, so they are
+# unaffected and keep the long immutable cache.) See the project memory
 # `project_bunny_viewer_config_cache`. Idempotent (~2 API calls), matched by
-# Description so re-runs update in place.
+# Description so re-runs update in place (Description MUST stay stable or
+# addOrUpdate duplicates instead of updating).
 # ---------------------------------------------------------------------------
 _EDGE_PULLZONE_HOST = "splatpipe-cdn"
 _EDGE_DESC = "splatpipe: no-edge-cache for permanent-slug index/config (redeploy-safe)"
 _EDGE_URL_PATTERNS = [
+    # The bare slug-root directory URL the user actually opens.
+    "https://splatpipe-cdn.b-cdn.net/*/",
+    "https://splatpipe-cdn.b-cdn.net/*/?*",
     "https://splatpipe-cdn.b-cdn.net/*/index.html",
     "https://splatpipe-cdn.b-cdn.net/*/viewer-config.json",
     "https://splatpipe-cdn.b-cdn.net/index.html",
@@ -353,8 +367,8 @@ def ensure_edge_rules(
            if str(r.get("Description", "")).startswith(_EDGE_DESC)]
     if len(now) < 2:
         raise RuntimeError(f"expected >=2 edge rules, got {len(now)}")
-    _log("edge-rule OK — */index.html + */viewer-config.json bypass "
-         "edge+browser cache; .rad/.radc still long-cached")
+    _log("edge-rule OK — slug-root */ + */index.html + */viewer-config.json "
+         "bypass edge+browser cache; .rad/.radc still long-cached")
     return True
 
 
