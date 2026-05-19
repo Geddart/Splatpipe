@@ -3682,6 +3682,15 @@ _VIEWER_TEMPLATE = """\
   //  hooks; no production reader; inert without the harness).
   // ============================================================
   const _EDITOR_AUTHOR = ModeManager.is('author');
+  // A4: shared ref to the Task-17 bottom-timeline transport ROW. The
+  // _tlInit IIFE sets it to its _tlBar; the LATER _gzInit IIFE reads
+  // it to append the merged Rec/interp/tangents/Save cluster onto the
+  // SAME row (instead of a separate floating #editor-gizmo-bar). Both
+  // IIFEs are region-interior (this whole author block is inside the
+  // byte-lock T16-TRAJ region) and _tlInit runs before _gzInit, so
+  // the ref is populated by the time _gzInit consumes it; if the
+  // timeline is somehow absent _gzInit falls back to its own bar.
+  let _tlBarRow = null;
   // ~96 samples per inter-keyframe SEGMENT for the polyline (the
   // spec's target resolution). Speed dots step the path at a FIXED
   // TIME interval so their on-path spacing = (speed * dt): dense
@@ -3755,8 +3764,9 @@ _VIEWER_TEMPLATE = """\
   // otherwise: no geometry, no window.__editor render effect).
   const _trajGroup = new THREE.Group();
   _trajGroup.name = 'editor-trajectory';
-  let _trajLine = null;          // THREE.Line polyline (sampleAt)
+  let _trajLine = null;          // THREE.Line / fat Line2 polyline (sampleAt)
   let _trajDots = null;          // THREE.Points speed dots
+  let _trajActiveMark = null;    // A7: clean billboard ring at the active kf
   const _trajFrusta = [];        // [{{ mesh, kfIndex, baseQuat:[xyzw], pos:[xyz] }}]
   let _trajShow = true;          // "Show trajectory" toggle (default ON)
   let _trajBuiltPathId = null;   // active path id the geometry was built for
@@ -3795,6 +3805,174 @@ _VIEWER_TEMPLATE = """\
   const _TRAJ_LINE_HUE1 = 0.92;       // end hue (warm magenta-rose)
   const _TRAJ_LINE_SAT = 0.45;        // low saturation (restrained)
   const _TRAJ_LINE_LIT = 0.62;        // gentle, bright-ish lightness
+
+  // ---- A7: anti-aliased fat lines. THREE.Line/LineSegments with
+  //      LineBasicMaterial are 1px-aliased on virtually every
+  //      platform (linewidth is a no-op in WebGL). three's addon
+  //      fat-line classes (Line2 / LineSegments2 + LineMaterial,
+  //      screen-space pixel widths, ANTIALIASED) fix this. They are
+  //      loaded REGION-INTERIOR via a DYNAMIC import of the
+  //      ALREADY-EXISTING ``three/addons/`` importmap mapping (the
+  //      SAME mechanism _gzInit uses for TransformControls -- NO new
+  //      importmap entry, NO top-level static import). The import is
+  //      lazy + failure-safe: if it does not resolve the trajectory
+  //      simply keeps the old thin THREE.Line look (never throws into
+  //      the author UI). Widths are screen-space px (resolution-aware
+  //      -- LineMaterial.resolution is synced from the renderer
+  //      drawing buffer in _trajLayer.update(), the EXISTING per-
+  //      frame OverlayScene tick; no new rAF / resize listener).
+  const _TRAJ_LINE_W = 2.6;           // path polyline width (px)
+  const _TRAJ_FR_LINE_W = 1.8;        // frustum wireframe width (px)
+  const _TAN_FAT_LINE_W = 2.2;        // bezier tangent line width (px)
+  let _fatMod = null;                 // {{ Line2, LineSegments2, LineMaterial, LineGeometry, LineSegmentsGeometry }} | null
+  let _fatTried = false;              // import attempted (success or fail)
+  let _fatPromise = null;             // in-flight import promise
+  const _fatMats = [];               // live LineMaterial instances (resolution sync)
+  const _fatRes = new THREE.Vector2(1, 1);
+  function _fatSyncResolution() {{
+    // Drawing-buffer size (device px) -- LineMaterial wants the
+    // resolution it rasterizes at so the px width is exact. Cheap;
+    // only ever runs in author mode (the layer's modes gate).
+    try {{
+      renderer.getDrawingBufferSize(_fatRes);
+    }} catch (e) {{
+      _fatRes.set(window.innerWidth || 1, window.innerHeight || 1);
+    }}
+    for (const m of _fatMats) {{
+      if (m && m.resolution) m.resolution.set(_fatRes.x, _fatRes.y);
+    }}
+  }}
+  function _fatEnsure() {{
+    // Resolves to the fat-line module or null. Region-interior
+    // dynamic import of the existing three/addons/ mapping. On
+    // success, trigger ONE rebuild so the resting/active geometry is
+    // re-created with the anti-aliased materials.
+    if (_fatTried) return Promise.resolve(_fatMod);
+    if (_fatPromise) return _fatPromise;
+    _fatPromise = Promise.all([
+      import('three/addons/lines/Line2.js'),
+      import('three/addons/lines/LineSegments2.js'),
+      import('three/addons/lines/LineMaterial.js'),
+      import('three/addons/lines/LineGeometry.js'),
+      import('three/addons/lines/LineSegmentsGeometry.js'),
+    ]).then((mods) => {{
+      _fatTried = true;
+      const pick = (m, n) => (m && (m[n] || (m.default && m.default[n]) ||
+        m.default)) || null;
+      const L2 = pick(mods[0], 'Line2');
+      const LS2 = pick(mods[1], 'LineSegments2');
+      const LM = pick(mods[2], 'LineMaterial');
+      const LG = pick(mods[3], 'LineGeometry');
+      const LSG = pick(mods[4], 'LineSegmentsGeometry');
+      if (L2 && LS2 && LM && LG && LSG) {{
+        _fatMod = {{ Line2: L2, LineSegments2: LS2, LineMaterial: LM,
+          LineGeometry: LG, LineSegmentsGeometry: LSG }};
+      }} else {{
+        _fatMod = null;
+      }}
+      // Re-create geometry with the now-available fat materials.
+      if (_fatMod && typeof _trajForceRebuild === 'function') {{
+        try {{ _trajForceRebuild(); }} catch (e) {{}}
+      }}
+      return _fatMod;
+    }}).catch(() => {{ _fatTried = true; _fatMod = null; return null; }});
+    return _fatPromise;
+  }}
+  // A fat (anti-aliased) polyline from a flat [x,y,z,...] array, or
+  // null if the addon is not (yet) loaded -- caller falls back to a
+  // thin THREE.Line. vertexColors carries the existing subtle ramp.
+  function _fatMakeLine(posArr, colArr) {{
+    if (!_fatMod) return null;
+    try {{
+      const g = new _fatMod.LineGeometry();
+      g.setPositions(posArr);
+      if (colArr) g.setColors(colArr);
+      const m = new _fatMod.LineMaterial({{
+        linewidth: _TRAJ_LINE_W, worldUnits: false,
+        vertexColors: !!colArr, dashed: false,
+        alphaToCoverage: true, transparent: true }});
+      m.depthTest = false; m.depthWrite = false;
+      m.resolution.set(_fatRes.x, _fatRes.y);
+      _fatMats.push(m);
+      const ln = new _fatMod.Line2(g, m);
+      ln.computeLineDistances();
+      ln.renderOrder = 11;
+      return ln;
+    }} catch (e) {{ return null; }}
+  }}
+  // A fat (anti-aliased) line-SEGMENTS object (pairs of endpoints)
+  // from a flat [x,y,z,...] array, or null (caller falls back).
+  function _fatMakeSegments(posArr, colorHex, widthPx) {{
+    if (!_fatMod) return null;
+    try {{
+      const g = new _fatMod.LineSegmentsGeometry();
+      g.setPositions(posArr);
+      const m = new _fatMod.LineMaterial({{
+        color: colorHex, linewidth: (widthPx || _TRAJ_FR_LINE_W),
+        worldUnits: false, dashed: false,
+        alphaToCoverage: true, transparent: true, opacity: 0.9 }});
+      m.depthTest = false; m.depthWrite = false;
+      m.resolution.set(_fatRes.x, _fatRes.y);
+      _fatMats.push(m);
+      const seg = new _fatMod.LineSegments2(g, m);
+      seg.renderOrder = 11;
+      return seg;
+    }} catch (e) {{ return null; }}
+  }}
+
+  // ---- A7: a CLEAN active-keyframe marker. The old highlight
+  //      scaled the active frustum x1.7 in-place, so on a dense end
+  //      cluster several oversized wireframes overlapped into a
+  //      "tangled knot". Replaced by a single crisp BILLBOARDED ring
+  //      (a THREE.Sprite carrying an anti-aliased ring CanvasTexture)
+  //      that always faces the camera, stays a stable on-screen size
+  //      (sizeAttenuation off), and is drawn always-on-top -- one
+  //      unambiguous halo at the active key, never a knot. Built once
+  //      (cheap), repositioned per refresh; the frustum itself only
+  //      gets the cyan recolour (NO scale change anymore).
+  let _trajRingTex = null;
+  function _trajRingTexture() {{
+    if (_trajRingTex) return _trajRingTex;
+    try {{
+      const S = 128;
+      const cv = document.createElement('canvas');
+      cv.width = S; cv.height = S;
+      const cx = cv.getContext('2d');
+      cx.clearRect(0, 0, S, S);
+      cx.lineWidth = 9;
+      cx.strokeStyle = 'rgba(53,224,255,0.95)';   // _TRAJ_COL_ACTIVE
+      cx.shadowColor = 'rgba(53,224,255,0.85)';
+      cx.shadowBlur = 8;
+      cx.beginPath();
+      cx.arc(S / 2, S / 2, S / 2 - 12, 0, Math.PI * 2);
+      cx.stroke();
+      const t = new THREE.CanvasTexture(cv);
+      t.minFilter = THREE.LinearFilter;
+      t.magFilter = THREE.LinearFilter;
+      _trajRingTex = t;
+      return t;
+    }} catch (e) {{ return null; }}
+  }}
+  function _trajEnsureRing() {{
+    if (_trajActiveMark) return _trajActiveMark;
+    const tex = _trajRingTexture();
+    if (!tex) return null;
+    try {{
+      const sm = new THREE.SpriteMaterial({{
+        map: tex, transparent: true,
+        depthTest: false, depthWrite: false, sizeAttenuation: false }});
+      const sp = new THREE.Sprite(sm);
+      // Fixed on-screen size (NDC-ish; sizeAttenuation off) so the
+      // halo never grows into a mass when the path is framed far
+      // back -- the SAME decoupling the white speed ticks use.
+      sp.scale.set(0.055, 0.055, 1);
+      sp.renderOrder = 12;       // above frusta (11), below tangents (13)
+      sp.visible = false;
+      _trajActiveMark = sp;
+      _trajGroup.add(sp);
+      return sp;
+    }} catch (e) {{ return null; }}
+  }}
 
   function _trajActivePath() {{
     // The dropdown's current value is the authored active path
@@ -3852,15 +4030,19 @@ _VIEWER_TEMPLATE = """\
     for (let i = 0; i < segs.length; i++) {{
       pos[i*3] = segs[i][0]; pos[i*3+1] = segs[i][1]; pos[i*3+2] = segs[i][2];
     }}
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-    const m = new THREE.LineBasicMaterial({{ color: col }});
-    // Drawn always-on-top (depthTest off, renderOrder 11) so it is
-    // never occluded by the splat; a modest opacity keeps the
-    // wireframe a CLEAN THIN OUTLINE rather than a saturated
+    // A7: anti-aliased fat segments when the addon is loaded; thin
+    // THREE.LineSegments otherwise (graceful, identical geometry).
+    // Both are drawn always-on-top (depthTest off, renderOrder 11) so
+    // they are never occluded by the splat; a modest opacity keeps
+    // the wireframe a CLEAN OUTLINE rather than a saturated
     // always-on-top fill (defense-in-depth: even a degenerate path
     // scaled to the clamp ceiling can no longer read as a solid
     // orange mass -- the old scene-spanning bug's visual signature).
+    const fat = _fatMakeSegments(pos, col, _TRAJ_FR_LINE_W);
+    if (fat) return fat;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const m = new THREE.LineBasicMaterial({{ color: col }});
     m.depthTest = false; m.depthWrite = false; m.transparent = true;
     m.opacity = 0.85;
     const seg = new THREE.LineSegments(g, m);
@@ -3871,12 +4053,33 @@ _VIEWER_TEMPLATE = """\
   function _trajClear() {{
     while (_trajGroup.children.length) {{
       const c = _trajGroup.children.pop();
+      // A7: drop disposed fat LineMaterials from the resolution-sync
+      // list so it never grows unbounded across rebuilds.
+      if (c.material) {{
+        const mi = _fatMats.indexOf(c.material);
+        if (mi !== -1) _fatMats.splice(mi, 1);
+      }}
       if (c.geometry) try {{ c.geometry.dispose(); }} catch (e) {{}}
       if (c.material) try {{ c.material.dispose(); }} catch (e) {{}}
+      if (c.material && c.material.map) try {{ c.material.map.dispose(); }} catch (e) {{}}
+    }}
+    if (_trajActiveMark) {{
+      try {{ _trajGroup.remove(_trajActiveMark); }} catch (e) {{}}
+      _trajActiveMark = null;
     }}
     _trajLine = null; _trajDots = null;
     _trajFrusta.length = 0;
     _trajDotPositions = []; _trajDotSegCounts = [];
+  }}
+  // A7: re-create the trajectory geometry for the CURRENT active path
+  // (used when the fat-line addon finishes loading after the first
+  // thin-line build, or any forced refresh). Cheap; only ever called
+  // in author mode.
+  function _trajForceRebuild() {{
+    _trajBuiltPathId = null; _trajBuiltSig = '';
+    const p = _trajActivePath();
+    if (p) _trajRebuild(p);
+    else _trajClear();
   }}
 
   function _trajRebuild(p) {{
@@ -3913,17 +4116,11 @@ _VIEWER_TEMPLATE = """\
       }}
     }}
     {{
-      const arr = new Float32Array(pts);
-      const g = new THREE.BufferGeometry();
-      g.setAttribute('position', new THREE.BufferAttribute(arr, 3));
       // Subtle per-vertex gradient along the path length: walk the
       // vertices in path order (pts is already start->end) and ramp
       // a low-saturation HSL hue from _TRAJ_LINE_HUE0 to
       // _TRAJ_LINE_HUE1. Restrained -- a tasteful cool->warm sweep,
-      // NOT a rainbow (saturation/lightness held gentle). The line
-      // stays THIN (LineBasicMaterial linewidth is 1 on virtually
-      // all platforms; that is the intended delicate look -- never
-      // faked thick). vertexColors makes the ramp per-vertex.
+      // NOT a rainbow (saturation/lightness held gentle).
       const nPts = (pts.length / 3) | 0;
       const cols = new Float32Array(nPts * 3);
       const _gc = new THREE.Color();
@@ -3936,12 +4133,25 @@ _VIEWER_TEMPLATE = """\
         cols[vi * 3 + 1] = _gc.g;
         cols[vi * 3 + 2] = _gc.b;
       }}
-      g.setAttribute('color', new THREE.BufferAttribute(cols, 3));
-      const m = new THREE.LineBasicMaterial({{ vertexColors: true }});
-      m.depthTest = false; m.depthWrite = false; m.transparent = true;
-      _trajLine = new THREE.Line(g, m);
-      _trajLine.renderOrder = 11;
-      _trajGroup.add(_trajLine);
+      // A7: anti-aliased fat polyline (screen-space px width) when
+      // the addon is loaded; thin THREE.Line otherwise (the old
+      // delicate 1px look -- never throws if the addon is absent).
+      // Same per-vertex gradient either way.
+      const fat = _fatMakeLine(Array.from(pts), Array.from(cols));
+      if (fat) {{
+        _trajLine = fat;
+        _trajGroup.add(_trajLine);
+      }} else {{
+        const arr = new Float32Array(pts);
+        const g = new THREE.BufferGeometry();
+        g.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+        g.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+        const m = new THREE.LineBasicMaterial({{ vertexColors: true }});
+        m.depthTest = false; m.depthWrite = false; m.transparent = true;
+        _trajLine = new THREE.Line(g, m);
+        _trajLine.renderOrder = 11;
+        _trajGroup.add(_trajLine);
+      }}
     }}
 
     // ---- Per-keyframe frustum, oriented by that keyframe's quat
@@ -4058,12 +4268,30 @@ _VIEWER_TEMPLATE = """\
     }}
     if (idx === _trajActiveKf) return;
     _trajActiveKf = idx;
+    let activePos = null;
     for (const f of _trajFrusta) {{
       const on = f.kfIndex === idx;
       const col = on ? _TRAJ_COL_ACTIVE : _TRAJ_COL;
-      if (f.mesh.material) f.mesh.material.color.setHex(col);
-      const sc = on ? _TRAJ_ACTIVE_SCALE : 1.0;
-      f.mesh.scale.setScalar(sc);
+      // LineMaterial (fat) AND LineBasicMaterial (thin) both expose
+      // .color -- recolour works for either. A7: the x1.7
+      // f.mesh.scale.setScalar() is GONE (it was the dense-cluster
+      // "tangled knot"); the active key is now shown by the clean
+      // billboarded ring below + this cyan recolour only.
+      if (f.mesh.material && f.mesh.material.color) {{
+        f.mesh.material.color.setHex(col);
+      }}
+      f.mesh.scale.setScalar(1.0);
+      if (on && f.pos) activePos = f.pos;
+    }}
+    // One crisp halo at the active key (or hidden when none).
+    const ring = _trajEnsureRing();
+    if (ring) {{
+      if (activePos) {{
+        ring.position.set(activePos[0], activePos[1], activePos[2]);
+        ring.visible = _trajGroup.visible;
+      }} else {{
+        ring.visible = false;
+      }}
     }}
   }}
 
@@ -4082,8 +4310,14 @@ _VIEWER_TEMPLATE = """\
     if (root) {{
       const wrap = document.createElement('label');
       wrap.id = 'editor-traj-toggle';
+      // A2: bottom-right, just ABOVE the Task-17 bottom timeline
+      // (strip height _TL_H == 70px; 12px gap -> bottom:82px). Keeps
+      // the top-left corner free and groups it with the bottom
+      // editing chrome. z-index 50 stays above the canvas; the
+      // timeline strip (z-index 48) sits below this gap so they
+      // never overlap.
       wrap.style.cssText =
-        'position:absolute;top:12px;left:12px;z-index:50;' +
+        'position:absolute;bottom:82px;right:12px;z-index:50;' +
         'display:flex;align-items:center;gap:7px;' +
         'padding:7px 11px;border-radius:7px;cursor:pointer;' +
         'font:13px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;' +
@@ -4118,6 +4352,17 @@ _VIEWER_TEMPLATE = """\
     node: _trajGroup,
     update() {{
       if (!ModeManager.is('author')) return;
+      // A7: lazily load the anti-aliased fat-line addon (region-
+      // interior dynamic import; failure-safe). Kicked off here off
+      // the EXISTING per-frame tick -- NO new rAF. _fatEnsure()
+      // self-guards (one import, then a no-op) and triggers ONE
+      // rebuild when it resolves so the thin first-paint upgrades to
+      // fat lines seamlessly.
+      _fatEnsure();
+      // A7: keep LineMaterial.resolution == the renderer drawing
+      // buffer so screen-space px widths stay exact across resizes
+      // (fanned off this EXISTING tick -- NO new resize listener).
+      if (_fatMats.length) _fatSyncResolution();
       const p = _trajActivePath();
       const pid = p ? (p.id || null) : null;
       const sig = _trajKfSig(p);
@@ -4398,7 +4643,15 @@ _VIEWER_TEMPLATE = """\
     //      (px per second) + scroll (seconds of left-edge offset)
     //      are PURE DISPLAY -- they never touch a stored kf.t.
     const _TL_PAD = 8;             // left inset (px) inside the lane
-    const _TL_H = 64;              // strip height (px)
+    // A3/A4: a DEDICATED transport-bar band at the strip top so the
+    // play/pause/loop/fps (+ the A4-merged Rec/interp/tangents/Save)
+    // buttons sit ABOVE the lane and never overlap the seconds ruler
+    // (the old top:6px _tlBar overlapped the ruler band drawn at
+    // canvas-y 0.._TL_RULER_H). The lane is offset down by _TL_BAR_H
+    // (was a hard-coded 24) and the strip grew to keep the same lane
+    // height for the ruler/diamonds/playhead.
+    const _TL_BAR_H = 30;          // transport-bar band height (px)
+    const _TL_H = 64 + (_TL_BAR_H - 24); // strip height (px)
     const _TL_RULER_H = 16;        // seconds-ruler band height (px)
     let _tlZoom = 80;              // px / second (wheel-tunable)
     let _tlScroll = 0;             // seconds at the lane's left edge
@@ -4462,11 +4715,14 @@ _VIEWER_TEMPLATE = """\
 
     // Transport cluster (left): play / pause / loop / fps. Reuses
     // the existing #path-play / #path-stop handlers (no new stop /
-    // play mechanism).
+    // play mechanism). A3: lives in the dedicated top band
+    // (strip-y 0.._TL_BAR_H), vertically centred, clear of the ruler.
+    // A4: the merged Rec/interp/tangents/Save bar is appended onto
+    // this SAME row by _gzInit via the shared _tlBarRow ref below.
     const _tlBar = document.createElement('div');
     _tlBar.style.cssText =
-      'position:absolute;left:8px;top:6px;display:flex;gap:6px;' +
-      'align-items:center;z-index:2;';
+      'position:absolute;left:8px;right:8px;top:0;height:' + _TL_BAR_H +
+      'px;display:flex;gap:6px;align-items:center;z-index:2;';
     function _tlBtn(txt, title) {{
       const b = document.createElement('button');
       b.type = 'button'; b.textContent = txt; b.title = title || '';
@@ -4483,13 +4739,19 @@ _VIEWER_TEMPLATE = """\
     _tlBar.appendChild(_tlPlay); _tlBar.appendChild(_tlPause);
     _tlBar.appendChild(_tlLoop); _tlBar.appendChild(_tlFpsBtn);
     _tlStrip.appendChild(_tlBar);
+    // A4: publish the transport row so _gzInit (runs AFTER this IIFE)
+    // can merge the Rec/interp/tangents/Save cluster onto it instead
+    // of a separate floating #editor-gizmo-bar.
+    _tlBarRow = _tlBar;
 
     // The lane (ruler + diamonds + playhead). A canvas draws the
     // ruler + diamonds + selection box; a thin div is the playhead.
+    // A3: starts BELOW the transport band (_TL_BAR_H) so the ruler
+    // (canvas-y 0.._TL_RULER_H) never sits under the buttons.
     const _tlLane = document.createElement('div');
     _tlLane.style.cssText =
       'position:absolute;left:0;right:0;bottom:0;height:' +
-      (_TL_H - 24) + 'px;cursor:crosshair;';
+      (_TL_H - _TL_BAR_H) + 'px;cursor:crosshair;';
     const _tlCanvas = document.createElement('canvas');
     _tlCanvas.style.cssText =
       'position:absolute;inset:0;width:100%;height:100%;display:block;';
@@ -4929,10 +5191,24 @@ _VIEWER_TEMPLATE = """\
       if (_tlDragMode === 'box') {{
         // Marquee finished; keep whatever fell inside it.
       }}
+      // A6: releasing a ruler-band scrub drag must NOT leave the path
+      // auto-playing. _tlScrubToTime dispatched a real #path-scrub
+      // 'input' which set _player + _t0 (in the past); with no paused
+      // state a non-null _player IS playing (the render loop keeps
+      // advancing _t0). Pause it via the EXISTING stopPath() so
+      // _player === null and the render loop freezes the camera at the
+      // last scrubbed pose; _tlPlayheadT() already falls back to
+      // scrubEl when !_player so the playhead stays put. Confined to
+      // the 'play'/scrub branch (the other drag modes never touched
+      // _player). NOTE: read the flag BEFORE the reset below clears it.
+      const _wasScrub = (_tlDragMode === 'play') || _tlScrubbing;
       _tlDragMode = '';
       _tlDragKf = -1;
       _tlScrubbing = false;
       _tlScaleBase = null;
+      if (_wasScrub && _player) {{
+        try {{ stopPath(); }} catch (e) {{}}
+      }}
       _tlDraw();
     }}
     _tlLane.addEventListener('pointerdown', _tlOnDown);
@@ -5997,6 +6273,28 @@ _VIEWER_TEMPLATE = """\
         return mesh;
       }};
       const _mkLine = (col) => {{
+        // A7: anti-aliased fat tangent line when the addon is
+        // loaded; thin THREE.Line otherwise. _setLine (below)
+        // writes endpoints for BOTH (Line2.setPositions vs the
+        // BufferAttribute) so the per-drag update stays one path.
+        if (_fatMod) {{
+          try {{
+            const g = new _fatMod.LineGeometry();
+            g.setPositions([0, 0, 0, 0, 0, 0]);
+            const m = new _fatMod.LineMaterial({{
+              color: col, linewidth: _TAN_FAT_LINE_W,
+              worldUnits: false, dashed: false,
+              alphaToCoverage: true, transparent: true,
+              opacity: _TAN_LINE_OPACITY }});
+            m.depthTest = false; m.depthWrite = false;
+            m.resolution.set(_fatRes.x, _fatRes.y);
+            _fatMats.push(m);
+            const ln = new _fatMod.Line2(g, m);
+            ln.renderOrder = 12;
+            ln.__fat = true;
+            return ln;
+          }} catch (e) {{ /* fall through to thin */ }}
+        }}
         const g = new THREE.BufferGeometry();
         g.setAttribute('position',
           new THREE.BufferAttribute(new Float32Array(6), 3));
@@ -6066,6 +6364,18 @@ _VIEWER_TEMPLATE = """\
         _tanInBox.scale.setScalar(bs);
       }}
       const _setLine = (ln, bx) => {{
+        // A7: fat Line2 needs LineGeometry.setPositions(); thin
+        // THREE.Line keeps the in-place BufferAttribute write.
+        if (ln.__fat) {{
+          try {{
+            ln.geometry.setPositions([
+              px, py, pz,
+              bx.position.x, bx.position.y, bx.position.z]);
+            if (typeof ln.computeLineDistances === 'function')
+              ln.computeLineDistances();
+          }} catch (e) {{}}
+          return;
+        }}
         const a = ln.geometry.getAttribute('position');
         a.setXYZ(0, px, py, pz);
         a.setXYZ(1, bx.position.x, bx.position.y, bx.position.z);
@@ -6710,25 +7020,42 @@ _VIEWER_TEMPLATE = """\
       return _gzSaveCli();
     }}
 
-    // ---- The author HUD button cluster (Save + a hint). Injected
-    //      into the Task-12 #author-root (CSS-gated to authormode;
-    //      inline-styled like #sp-hud / the Task-16 toggle -- no new
-    //      CSS region). The gizmo space/mode + interp + record are
-    //      keyboard-driven (the spec's R/T/V/K); the Save button is
-    //      the explicit persist action.
+    // ---- The author HUD button cluster (Rec/interp/tangents/Save).
+    //      A4: MERGED onto the Task-17 bottom-timeline transport ROW
+    //      (the same play/pause/loop/fps row) via the shared
+    //      _tlBarRow ref instead of a separate floating bar -- one
+    //      coherent transport cluster, nothing mutually occluding.
+    //      The gizmo space/mode + interp + record are keyboard-driven
+    //      (the spec's R/T/V/K); the Save button is the explicit
+    //      persist action. Falls back to a floating bar in
+    //      #author-root only if the timeline row is somehow absent.
+    //      ``editor-gizmo-bar`` stays the id of this logical group
+    //      (now an inline sub-cluster of the transport row).
     {{
-      const root = document.getElementById('author-root');
+      const _row = _tlBarRow;
+      const root = _row || document.getElementById('author-root');
       if (root) {{
         const bar = document.createElement('div');
         bar.id = 'editor-gizmo-bar';
-        bar.style.cssText =
-          'position:absolute;top:12px;left:160px;z-index:50;' +
-          'display:flex;gap:6px;align-items:center;' +
-          'padding:6px 9px;border-radius:7px;' +
-          'background:rgba(20,20,20,0.72);' +
-          '-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);' +
-          'font:12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;' +
-          'color:#eee;user-select:none;';
+        if (_row) {{
+          // Inline sub-cluster of the timeline transport row: a thin
+          // separator then the buttons, no absolute pos / backdrop
+          // (the row already supplies the panel chrome). marginLeft
+          // pushes it clear of the play/pause/loop/fps group.
+          bar.style.cssText =
+            'display:flex;gap:6px;align-items:center;' +
+            'margin-left:14px;padding-left:14px;' +
+            'border-left:1px solid rgba(255,255,255,0.16);';
+        }} else {{
+          bar.style.cssText =
+            'position:absolute;top:12px;left:160px;z-index:50;' +
+            'display:flex;gap:6px;align-items:center;' +
+            'padding:6px 9px;border-radius:7px;' +
+            'background:rgba(20,20,20,0.72);' +
+            '-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);' +
+            'font:12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;' +
+            'color:#eee;user-select:none;';
+        }}
         const _mkBtn = (txt, title, id) => {{
           const b = document.createElement('button');
           b.type = 'button'; b.textContent = txt;
