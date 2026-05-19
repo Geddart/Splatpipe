@@ -6167,15 +6167,63 @@ _VIEWER_TEMPLATE = """\
     // Show the handles for the selected keyframe (only when it is in
     // bezier mode). Builds geometry + proxies lazily, parks them on
     // the current tangents, makes the group visible. The dedicated TC
-    // is imported but NOT attached until the user actually grabs a
-    // handle (attach-on-pick, like the keyframe gizmo).
+    // is imported AND attached (default = the OUT proxy) so a single
+    // real-mouse grab-and-drag works: _tanRetargetForPointer (called
+    // from the capture-phase pointerdown) re-points the live TC onto
+    // whichever handle the pointer is over BEFORE the yield, so TC's
+    // own bubble-phase pointerDown drives the drag in ONE gesture (the
+    // proven keyframe-gizmo "no-starvation" pattern, applied to the
+    // handles -- NOT a two-gesture attach-then-drag).
     function _tanShow() {{
       if (_gzSelKf < 0 || !_tanIsBezierSel()) {{ _tanHide(); return; }}
       _tanBuild();
       if (_tanGroup.parent !== scene) scene.add(_tanGroup);
       _tanGroup.visible = true;
       _tanRefresh();
-      _tanEnsureCtl();
+      if (_tanOutProxy && _tanOutProxy.parent !== scene) {{
+        scene.add(_tanOutProxy);
+      }}
+      if (_tanInProxy && _tanInProxy.parent !== scene) {{
+        scene.add(_tanInProxy);
+      }}
+      _tanEnsureCtl().then((ctl) => {{
+        if (!ctl || !_tanIsBezierSel() || _gzSelKf < 0) return;
+        // Keep the TC live on a handle so the FIRST real grab drags
+        // immediately (one gesture). Default to OUT; the pointerdown
+        // retarget switches to whichever handle the mouse is over.
+        if (ctl.object !== _tanOutProxy && ctl.object !== _tanInProxy) {{
+          ctl.attach(_tanOutProxy);
+          _tanActiveSide = 'out';
+        }}
+      }});
+    }}
+
+    // Re-point the live handle TC onto whichever handle SQUARE the
+    // pointer is over (called from the capture-phase pointerdown,
+    // BEFORE the _tanPointerOnGizmo yield). This makes a single
+    // grab-and-drag work: by the time _tanPointerOnGizmo runs its
+    // pointerHover, the TC is already attached to the correct handle
+    // proxy, so its bubble-phase pointerDown starts the drag on the
+    // SAME pointerdown (no two-gesture attach step). No-op when no
+    // handle is under the pointer (then the TC keeps its current
+    // target and the yield check simply returns false there).
+    function _tanRetargetForPointer(clientX, clientY) {{
+      if (!_tanCtl || !_tanGroup || !_tanGroup.visible ||
+          !_tanIsBezierSel()) return;
+      const side = _tanPickBox(clientX, clientY);
+      if (!side) return;
+      const proxy = side === 'out' ? _tanOutProxy : _tanInProxy;
+      const box = side === 'out' ? _tanOutBox : _tanInBox;
+      if (!proxy || !box) return;
+      // Park the proxy exactly on the square so the gizmo is under
+      // the pointer, then (re)attach if needed.
+      proxy.position.copy(box.position);
+      proxy.updateMatrixWorld(true);
+      if (proxy.parent !== scene) scene.add(proxy);
+      _tanActiveSide = side;
+      if (_tanCtl.object !== proxy) {{
+        try {{ _tanCtl.attach(proxy); }} catch (e) {{}}
+      }}
     }}
 
     // Hide + detach the handles (deselect / non-bezier / Escape).
@@ -6355,12 +6403,17 @@ _VIEWER_TEMPLATE = """\
       if (!ModeManager.is('author')) return;
       if (ev.button !== undefined && ev.button !== 0) return;
       if (_gzDragging || _tanDragging) return;   // a gizmo owns it
-      // 1. The TANGENT-handle gizmo is visually TOPMOST -- if a real
-      //    pointerdown is over its axis, yield it untouched (its own
-      //    bubble-phase pointerDown drives the drag; capture-phase
-      //    stopPropagation here would starve it -> "the handle would
-      //    not move with a real mouse"). SAME contract as the
-      //    keyframe gizmo below.
+      // 1. The TANGENT handles are visually TOPMOST. FIRST re-point
+      //    the live handle TC onto whichever handle SQUARE the
+      //    pointer is over (one-gesture grab: the TC is already
+      //    attached+live from _tanShow; this just switches it to the
+      //    correct in/out proxy and parks it under the pointer). THEN
+      //    the yield check below sees a handle under the pointer and
+      //    returns -- TC's own bubble-phase pointerDown drives the
+      //    drag on THIS SAME pointerdown (the proven keyframe-gizmo
+      //    no-starvation pattern; capture-phase stopPropagation here
+      //    would starve it).
+      _tanRetargetForPointer(ev.clientX, ev.clientY);
       if (_tanPointerOnGizmo(ev.clientX, ev.clientY)) return;
       // 2. If the keyframe gizmo's own axes were hit, TransformControls
       //    handles it (it has its own bubble-phase pointer listeners).
@@ -6370,12 +6423,15 @@ _VIEWER_TEMPLATE = """\
       //    real handle drag "did not move the keyframe" -- only the
       //    programmatic test API ever moved it). Yield it untouched.
       if (_gzPointerOnGizmo(ev.clientX, ev.clientY)) return;
-      // 3. A click on a tangent-handle SQUARE (for the selected
-      //    bezier keyframe) grabs that handle: attach the dedicated
-      //    handle-TC so the NEXT mouse move (a real trusted drag)
-      //    reshapes the curve. Wins over the frustum pick (the
-      //    handles belong to the already-selected keyframe and sit
-      //    on top of it).
+      // 3. FALLBACK ONLY: a click on a tangent-handle SQUARE when the
+      //    TC was not yet live (the lazy-import race on the very first
+      //    click after a fresh page load -- step 1's retarget needs
+      //    _tanCtl to exist). Attach the handle TC so the NEXT real
+      //    drag works (one gesture thereafter). The normal path is
+      //    step 1 (retarget) + the yield, which drags in ONE gesture;
+      //    this branch only catches the cold-start race so the click
+      //    is not wasted. Wins over the frustum pick (the handles
+      //    belong to the already-selected keyframe, on top of it).
       const side = _tanPickBox(ev.clientX, ev.clientY);
       if (side) {{
         _tanAttachSide(side);
