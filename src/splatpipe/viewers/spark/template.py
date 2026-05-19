@@ -5676,6 +5676,13 @@ _VIEWER_TEMPLATE = """\
         if (np) _player = np;
         else {{ try {{ stopPath(); }} catch (e) {{}} }}
       }}
+      // Re-place the bezier tangent handles after the rebuild: the
+      // keyframe pos may have moved (main gizmo) and _trajApplyScale
+      // may have re-derived _trajFrLen, so the handle distance/box
+      // size + line endpoints must track. No-op when no handles are
+      // shown (function declarations are hoisted in this IIFE so
+      // calling _tanRefresh defined further below is valid).
+      try {{ _tanRefresh(); }} catch (e) {{}}
     }}
 
     // Write the proxy's CURRENT pose back to the selected keyframe
@@ -5800,6 +5807,11 @@ _VIEWER_TEMPLATE = """\
       }}
       if (_gzProxy.parent !== scene) scene.add(_gzProxy);
       _gzSyncProxyFromKf();
+      // If this keyframe already carries explicit bezier tangents,
+      // show its grab-able in/out handles immediately; otherwise
+      // hide any handles from a previous selection (a non-bezier key
+      // has none until the author presses B / the tangents button).
+      if (_tanIsBezierSel()) _tanShow(); else _tanHide();
       _gzEnsureControl().then((ctl) => {{
         if (!ctl || _gzSelKf !== idx) return;
         ctl.attach(_gzProxy);
@@ -5820,7 +5832,459 @@ _VIEWER_TEMPLATE = """\
       if (_gzProxy && _gzProxy.parent) {{
         _gzProxy.parent.remove(_gzProxy);
       }}
+      _tanHide();
       controls.enabled = !InteractionManager.isCameraOwned();
+    }}
+
+    // ============================================================
+    //  GRAB-ABLE BEZIER TANGENT HANDLES (the "Nice Tangents", 3ds-
+    //  Max-style). For the SELECTED keyframe, when its interp is
+    //  `bezier`, draw a small IN-handle + OUT-handle (little squares
+    //  on thin tangent lines) the author DRAGS WITH A REAL MOUSE to
+    //  reshape the curve. This is REAL, not cosmetic: the drag writes
+    //  kf.in_tan / kf.out_tan (and pins kf.interp='bezier'); the
+    //  EXISTING CubicSpline.calcKnots KF_BEZIER branch already maps
+    //  km.in_tan[j]/km.out_tan[j] onto the pos.xyz Hermite tangents
+    //  (mIn/mOut) -- so the trajectory polyline + the Task-17 timeline
+    //  visibly reshape, and the SPCP camera_paths payload round-trips
+    //  the tangents (they are plain number arrays inside a keyframe;
+    //  merge_camera_scope whole-replaces camera_paths and the SPCP
+    //  codec serialises arrays-of-numbers byte-identically -- proven
+    //  by tests/test_spcp_js_port.py). NO spline-math change: the
+    //  schema (path_io.KeyframeDict.in_tan/out_tan) + the spline's
+    //  KF_BEZIER consumption already exist; this is purely the
+    //  "draggable handles are a later phase" UI the spline comment
+    //  anticipated.
+    //  HANDLE <-> TANGENT MATH. The spline tangent for dim j is a
+    //  WORLD-SPACE value-delta over the unit Hermite segment (see
+    //  evaluateSegment: m0=knots[idx+2], m1=knots[idx+dim*3], basis
+    //  p0(1+2t)(1-t)^2 + m0 t(1-t)^2 + p1 t^2(3-2t) + m1 t^2(t-1)).
+    //  The OUT-handle world point = kf.pos + outTan * _TAN_FRAC; the
+    //  IN-handle = kf.pos - inTan * _TAN_FRAC (drawn on the INCOMING
+    //  side, the DCC convention). _TAN_FRAC scales the (time-scaled,
+    //  possibly large) tangent down to a grab-able on-curve length;
+    //  the inverse on drag is exact: tan = (handleWorld - kf.pos) /
+    //  _TAN_FRAC  (out), = (kf.pos - handleWorld) / _TAN_FRAC (in).
+    //  DEFAULT (no explicit tangents yet): derive EXACTLY what the
+    //  spline's KF_BEZIER no-handle fallback uses (the `automatic`
+    //  formula tangent*inScale / tangent*outScale, tangent =
+    //  (pNext-pPrev)/(t_next-t_prev)) so converting a key to bezier
+    //  produces ZERO visual jump (the handles start ON the curve).
+    //  DRAG = a REAL trusted mouse: a DEDICATED translate-only
+    //  TransformControls (the SAME proven addon pattern the keyframe
+    //  gizmo uses -- synthetic pointer events do NOT drive it; only a
+    //  trusted mouse does) attaches to whichever handle proxy the
+    //  pointer grabs; its 'objectChange' recomputes the tangent +
+    //  rebuilds. The pick integrates into the EXISTING
+    //  _gzOnCanvasDown capture handler (yield to the handle TC when
+    //  the pointer is over its gizmo, exactly like the keyframe
+    //  gizmo) so a real handle drag is never starved. All region-
+    //  interior to T16-TRAJ (recipe 2c) -- author-mode only, inert
+    //  for the 6 live scenes.
+    // ============================================================
+    // On-curve handle length = a fraction of the active-path frustum
+    // scale (_trajFrLen is itself scene-relative, set per rebuild by
+    // _trajApplyScale) so handles read at the PATH's scale -- never
+    // scene-spanning, never sub-pixel. The little square is a small
+    // fraction of THAT, like the frustum image-plane.
+    const _TAN_FRAC_OF_FR = 1.6;     // handle distance ~ 1.6x frustum len
+    const _TAN_BOX_OF_FR = 0.34;     // handle square ~ 0.34x frustum len
+    const _TAN_COL_OUT = 0x57ff8a;   // OUT handle: green (3ds-Max-ish)
+    const _TAN_COL_IN = 0xff5d6b;    // IN handle: red
+    const _TAN_LINE_OPACITY = 0.85;
+    let _tanGroup = null;            // THREE.Group: lines + boxes
+    let _tanInProxy = null;          // Object3D the handle-TC drives (IN)
+    let _tanOutProxy = null;         // ... (OUT)
+    let _tanInBox = null, _tanOutBox = null;     // visible squares
+    let _tanInLine = null, _tanOutLine = null;   // kf->handle lines
+    let _tanCtl = null;              // dedicated translate-only TC (lazy)
+    let _tanCtlHelper = null;
+    let _tanCtlImport = null;        // memoised dynamic import
+    let _tanDragging = false;
+    let _tanActiveSide = null;       // 'in' | 'out' while a drag is live
+    const _TAN_TMP = new THREE.Vector3();
+
+    // The world-space tangent length scale (>0). Recomputed off the
+    // live _trajFrLen so it tracks the active path's scale.
+    function _tanFrac() {{
+      const fr = (typeof _trajFrLen === 'number' && _trajFrLen > 0)
+        ? _trajFrLen : 0.4;
+      return fr * _TAN_FRAC_OF_FR;
+    }}
+    function _tanBoxSize() {{
+      const fr = (typeof _trajFrLen === 'number' && _trajFrLen > 0)
+        ? _trajFrLen : 0.4;
+      return fr * _TAN_BOX_OF_FR;
+    }}
+
+    // Is the selected keyframe in explicit-tangent (bezier) mode?
+    function _tanIsBezierSel() {{
+      const kf = _gzSelKfObj();
+      return !!(kf && kf.interp === 'bezier');
+    }}
+
+    // The `automatic`-formula tangent (a world [x,y,z] value-delta)
+    // for the selected keyframe -- IDENTICAL to what the spline's
+    // KF_BEZIER no-handle fallback computes, so a derived default
+    // produces no curve jump. Uses the SORTED keyframes (buildPlayer
+    // order == the spline's knot order). `which` = 'in' | 'out'.
+    function _tanAutoVec(which) {{
+      const p = _gzActivePath();
+      if (!p || !p.keyframes) return [0, 0, 0];
+      const ks = p.keyframes.slice()
+        .sort((a, b) => (a.t || 0) - (b.t || 0));
+      const sel = _gzSelKfObj();
+      let i = ks.indexOf(sel);
+      if (i < 0) return [0, 0, 0];
+      const n = ks.length;
+      const t = (ks[i].t || 0);
+      const tPrev = i > 0 ? (ks[i - 1].t || 0) : t;
+      const tNext = i < n - 1 ? (ks[i + 1].t || 0) : t;
+      const inScale = i > 0 ? (t - tPrev) : (n > 1
+        ? ((ks[1].t || 0) - (ks[0].t || 0)) : 1);
+      const outScale = i < n - 1 ? (tNext - t) : (i > 0
+        ? (t - tPrev) : 1);
+      const out = [0, 0, 0];
+      for (let j = 0; j < 3; j++) {{
+        const pj = (sel.pos && sel.pos.length === 3) ? sel.pos[j] : 0;
+        const pPrev = (i > 0 && ks[i - 1].pos)
+          ? ks[i - 1].pos[j] : pj;
+        const pNext = (i < n - 1 && ks[i + 1].pos)
+          ? ks[i + 1].pos[j] : pj;
+        let tangent;
+        if (i === 0) {{
+          tangent = (tNext - t) ? (pNext - pj) / (tNext - t) : 0;
+        }} else if (i === n - 1) {{
+          tangent = (t - tPrev) ? (pj - pPrev) / (t - tPrev) : 0;
+        }} else {{
+          tangent = (tNext - tPrev)
+            ? (pNext - pPrev) / (tNext - tPrev) : 0;
+        }}
+        out[j] = tangent * (which === 'in' ? inScale : outScale);
+      }}
+      return out;
+    }}
+
+    // Read the selected keyframe's effective in/out tangent vectors
+    // (explicit kf.in_tan/out_tan when present + length 3, else the
+    // `automatic` derived default). Returns {{ inv:[x,y,z],
+    // outv:[x,y,z] }} or null.
+    function _tanVecs() {{
+      const kf = _gzSelKfObj();
+      if (!kf || !kf.pos || kf.pos.length !== 3) return null;
+      const inv = (Array.isArray(kf.in_tan) && kf.in_tan.length === 3)
+        ? kf.in_tan.slice() : _tanAutoVec('in');
+      const outv = (Array.isArray(kf.out_tan) && kf.out_tan.length === 3)
+        ? kf.out_tan.slice() : _tanAutoVec('out');
+      return {{ inv: inv, outv: outv }};
+    }}
+
+    // Build the handle geometry once (lazy). Two small boxes (the
+    // grab-able squares) + two thin lines; positions are set every
+    // refresh. Always-on-top (depthTest off) like the Task-16
+    // overlay so a handle is never hidden behind the splat.
+    function _tanBuild() {{
+      if (_tanGroup) return;
+      _tanGroup = new THREE.Group();
+      _tanGroup.name = 'editor-tangent-handles';
+      const _mkBox = (col) => {{
+        const g = new THREE.BoxGeometry(1, 1, 1);
+        const m = new THREE.MeshBasicMaterial({{
+          color: col, transparent: true, opacity: 0.95 }});
+        m.depthTest = false; m.depthWrite = false;
+        const mesh = new THREE.Mesh(g, m);
+        mesh.renderOrder = 13;   // above frusta (11)
+        return mesh;
+      }};
+      const _mkLine = (col) => {{
+        const g = new THREE.BufferGeometry();
+        g.setAttribute('position',
+          new THREE.BufferAttribute(new Float32Array(6), 3));
+        const m = new THREE.LineBasicMaterial({{
+          color: col, transparent: true,
+          opacity: _TAN_LINE_OPACITY }});
+        m.depthTest = false; m.depthWrite = false;
+        const ln = new THREE.Line(g, m);
+        ln.renderOrder = 12;
+        return ln;
+      }};
+      _tanOutBox = _mkBox(_TAN_COL_OUT);
+      _tanInBox = _mkBox(_TAN_COL_IN);
+      _tanOutLine = _mkLine(_TAN_COL_OUT);
+      _tanInLine = _mkLine(_TAN_COL_IN);
+      _tanGroup.add(_tanOutLine);
+      _tanGroup.add(_tanInLine);
+      _tanGroup.add(_tanOutBox);
+      _tanGroup.add(_tanInBox);
+      if (!_tanOutProxy) {{
+        _tanOutProxy = new THREE.Object3D();
+        _tanOutProxy.name = 'editor-tan-out-proxy';
+      }}
+      if (!_tanInProxy) {{
+        _tanInProxy = new THREE.Object3D();
+        _tanInProxy.name = 'editor-tan-in-proxy';
+      }}
+    }}
+
+    // Position the boxes/lines from the selected keyframe's tangents
+    // (skip the side currently being dragged so the live TC pose is
+    // authoritative for that frame). The proxies are parked at the
+    // handle world points so the dedicated TC sits exactly on the
+    // square. Box size + handle distance are scene-relative.
+    function _tanRefresh() {{
+      if (!_tanGroup || _gzSelKf < 0) return;
+      const kf = _gzSelKfObj();
+      const v = _tanVecs();
+      if (!kf || !v) return;
+      const fr = _tanFrac();
+      const bs = _tanBoxSize();
+      const px = kf.pos[0], py = kf.pos[1], pz = kf.pos[2];
+      const outW = [px + v.outv[0] * fr, py + v.outv[1] * fr,
+        pz + v.outv[2] * fr];
+      const inW = [px - v.inv[0] * fr, py - v.inv[1] * fr,
+        pz - v.inv[2] * fr];
+      if (_tanActiveSide !== 'out') {{
+        _tanOutBox.position.set(outW[0], outW[1], outW[2]);
+        _tanOutBox.scale.setScalar(bs);
+        if (_tanOutProxy) {{
+          _tanOutProxy.position.set(outW[0], outW[1], outW[2]);
+          _tanOutProxy.updateMatrixWorld(true);
+        }}
+      }} else if (_tanOutProxy) {{
+        _tanOutBox.position.copy(_tanOutProxy.position);
+        _tanOutBox.scale.setScalar(bs);
+      }}
+      if (_tanActiveSide !== 'in') {{
+        _tanInBox.position.set(inW[0], inW[1], inW[2]);
+        _tanInBox.scale.setScalar(bs);
+        if (_tanInProxy) {{
+          _tanInProxy.position.set(inW[0], inW[1], inW[2]);
+          _tanInProxy.updateMatrixWorld(true);
+        }}
+      }} else if (_tanInProxy) {{
+        _tanInBox.position.copy(_tanInProxy.position);
+        _tanInBox.scale.setScalar(bs);
+      }}
+      const _setLine = (ln, bx) => {{
+        const a = ln.geometry.getAttribute('position');
+        a.setXYZ(0, px, py, pz);
+        a.setXYZ(1, bx.position.x, bx.position.y, bx.position.z);
+        a.needsUpdate = true;
+      }};
+      _setLine(_tanOutLine, _tanOutBox);
+      _setLine(_tanInLine, _tanInBox);
+    }}
+
+    // Write a dragged handle proxy's world position back to the
+    // selected keyframe's tangent (the inverse of _tanRefresh's
+    // forward map) + PIN kf.interp='bezier' (so the spline's
+    // KF_BEZIER branch consumes it) + rebuild the trajectory/
+    // timeline (the spec's "drag -> curve reshapes"). Also seeds the
+    // OTHER side from its current effective value so converting via a
+    // drag does not snap the unedited side.
+    const _TAN_R = (x) => Math.round(x * 1e5) / 1e5;
+    function _tanWriteFromProxy(side) {{
+      const kf = _gzSelKfObj();
+      if (!kf || !kf.pos || kf.pos.length !== 3) return;
+      const fr = _tanFrac() || 1;
+      const before = _tanVecs();
+      const proxy = side === 'out' ? _tanOutProxy : _tanInProxy;
+      if (!proxy) return;
+      const dx = proxy.position.x - kf.pos[0];
+      const dy = proxy.position.y - kf.pos[1];
+      const dz = proxy.position.z - kf.pos[2];
+      // OUT handle is on the +tan side, IN handle on the -tan side.
+      const s = side === 'out' ? 1 : -1;
+      const tan = [_TAN_R(s * dx / fr), _TAN_R(s * dy / fr),
+        _TAN_R(s * dz / fr)];
+      if (side === 'out') {{
+        kf.out_tan = tan;
+        if (!(Array.isArray(kf.in_tan) && kf.in_tan.length === 3) &&
+            before) kf.in_tan = before.inv.map(_TAN_R);
+      }} else {{
+        kf.in_tan = tan;
+        if (!(Array.isArray(kf.out_tan) && kf.out_tan.length === 3) &&
+            before) kf.out_tan = before.outv.map(_TAN_R);
+      }}
+      kf.interp = 'bezier';   // explicit tangents only bite as bezier
+      _gzAfterEdit();
+      _tanRefresh();
+    }}
+
+    // Lazily import + construct the DEDICATED handle TransformControls
+    // (translate-only). SAME dynamic-import-through-the-existing-
+    // importmap pattern as the keyframe gizmo (no new importmap
+    // entry; region-interior). A REAL mouse drives it -- exactly the
+    // proven pattern; synthetic events do not.
+    function _tanEnsureCtl() {{
+      if (_tanCtl) return Promise.resolve(_tanCtl);
+      if (!_tanCtlImport) {{
+        _tanCtlImport = import(
+          'three/addons/controls/TransformControls.js'
+        ).then((mod) => {{
+          const TC = mod && (mod.TransformControls ||
+            (mod.default && mod.default.TransformControls) ||
+            mod.default);
+          if (!TC) return null;
+          const ctl = new TC(camera, renderer.domElement);
+          ctl.setSize(0.62);
+          ctl.setMode('translate');     // tangents are positional
+          ctl.setSpace('world');
+          const helper = (typeof ctl.getHelper === 'function')
+            ? ctl.getHelper() : ctl;
+          _tanCtlHelper = helper;
+          ctl.addEventListener('dragging-changed', (ev) => {{
+            _tanDragging = !!ev.value;
+            if (_tanDragging) {{
+              // A real handle grab is an authoring gesture: stop any
+              // auto-tour FIRST (idempotent) so the render loop does
+              // not re-sample the OLD spline and stomp the edit.
+              _gzStopTour();
+              InteractionManager.requestPointer('tool');
+              controls.enabled = false;
+            }} else {{
+              _tanActiveSide = null;
+              InteractionManager.releasePointer('tool');
+              if (!InteractionManager.isCameraOwned()) {{
+                controls.enabled = true;
+              }}
+            }}
+          }});
+          ctl.addEventListener('objectChange', () => {{
+            // The proxy currently attached IS the active side.
+            const side = (ctl.object === _tanOutProxy) ? 'out'
+              : (ctl.object === _tanInProxy) ? 'in' : _tanActiveSide;
+            if (side) {{ _tanActiveSide = side; _tanWriteFromProxy(side); }}
+          }});
+          _tanCtl = ctl;
+          if (helper && helper.parent !== scene) scene.add(helper);
+          return ctl;
+        }}).catch(() => null);
+      }}
+      return _tanCtlImport;
+    }}
+
+    // Show the handles for the selected keyframe (only when it is in
+    // bezier mode). Builds geometry + proxies lazily, parks them on
+    // the current tangents, makes the group visible. The dedicated TC
+    // is imported but NOT attached until the user actually grabs a
+    // handle (attach-on-pick, like the keyframe gizmo).
+    function _tanShow() {{
+      if (_gzSelKf < 0 || !_tanIsBezierSel()) {{ _tanHide(); return; }}
+      _tanBuild();
+      if (_tanGroup.parent !== scene) scene.add(_tanGroup);
+      _tanGroup.visible = true;
+      _tanRefresh();
+      _tanEnsureCtl();
+    }}
+
+    // Hide + detach the handles (deselect / non-bezier / Escape).
+    // Removes the group + proxies from the scene (no leak); the TC
+    // instance is memoised for re-attach (its designed lifecycle).
+    function _tanHide() {{
+      _tanActiveSide = null;
+      if (_tanCtl) {{ try {{ _tanCtl.detach(); }} catch (e) {{}} }}
+      if (_tanGroup && _tanGroup.parent) {{
+        _tanGroup.parent.remove(_tanGroup);
+      }}
+      if (_tanGroup) _tanGroup.visible = false;
+      if (_tanOutProxy && _tanOutProxy.parent) {{
+        _tanOutProxy.parent.remove(_tanOutProxy);
+      }}
+      if (_tanInProxy && _tanInProxy.parent) {{
+        _tanInProxy.parent.remove(_tanInProxy);
+      }}
+    }}
+
+    // Convert the selected keyframe to explicit-tangent (bezier)
+    // mode: set kf.interp='bezier' and SEED kf.in_tan/kf.out_tan from
+    // the `automatic` derived defaults so the curve does NOT jump
+    // (the handles appear exactly ON the existing spline). Idempotent
+    // if already bezier with tangents. Then show the handles.
+    function _tanEnableBezier() {{
+      const kf = _gzSelKfObj();
+      if (!kf) return false;
+      _gzStopTour();
+      if (kf.interp !== 'bezier' ||
+          !(Array.isArray(kf.in_tan) && kf.in_tan.length === 3) ||
+          !(Array.isArray(kf.out_tan) && kf.out_tan.length === 3)) {{
+        const v = _tanVecs();   // derived defaults when absent
+        if (v) {{
+          if (!(Array.isArray(kf.in_tan) && kf.in_tan.length === 3)) {{
+            kf.in_tan = v.inv.map(_TAN_R);
+          }}
+          if (!(Array.isArray(kf.out_tan) && kf.out_tan.length === 3)) {{
+            kf.out_tan = v.outv.map(_TAN_R);
+          }}
+        }}
+        kf.interp = 'bezier';
+        _gzAfterEdit();
+      }}
+      _tanShow();
+      return _tanIsBezierSel();
+    }}
+
+    // Attach the dedicated handle-TC to a handle proxy (the pointer
+    // pick resolved which side). Parks the proxy on the current
+    // handle world point first so the gizmo lands on the square.
+    function _tanAttachSide(side) {{
+      if (!_tanIsBezierSel()) return;
+      _tanShow();
+      _tanActiveSide = side;
+      const proxy = side === 'out' ? _tanOutProxy : _tanInProxy;
+      const box = side === 'out' ? _tanOutBox : _tanInBox;
+      if (!proxy || !box) return;
+      proxy.position.copy(box.position);
+      proxy.updateMatrixWorld(true);
+      if (proxy.parent !== scene) scene.add(proxy);
+      _tanEnsureCtl().then((ctl) => {{
+        if (!ctl || _tanActiveSide !== side) return;
+        ctl.attach(proxy);
+      }});
+    }}
+
+    // Is a real pointerdown over a HANDLE-gizmo axis? SAME capture-
+    // phase contract the keyframe gizmo uses: refresh the handle TC's
+    // hover axis from THIS pointer and report whether a handle is
+    // under it -- when true the caller MUST yield the event to the
+    // handle TC untouched (capture-phase stopPropagation would starve
+    // its bubble-phase pointerDown and make a real drag impossible).
+    const _TAN_NDC = new THREE.Vector2();
+    function _tanPointerOnGizmo(clientX, clientY) {{
+      if (!_tanCtl || _tanCtl.object == null) return false;
+      if (_tanCtl.dragging) return true;
+      const rect = renderer.domElement.getBoundingClientRect();
+      _TAN_NDC.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+      _TAN_NDC.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+      try {{ _tanCtl.pointerHover(_TAN_NDC); }}
+      catch (e) {{ return false; }}
+      return _tanCtl.axis !== null && _tanCtl.axis !== undefined;
+    }}
+
+    // Raycast-pick a handle SQUARE at client px -> 'in' | 'out' |
+    // null. Uses the EXISTING scene _raycaster (single source of
+    // truth). Boxes are small so a generous nearest-hit wins.
+    function _tanPickBox(clientX, clientY) {{
+      if (!_tanGroup || !_tanGroup.visible ||
+          !_tanIsBezierSel()) return null;
+      const rect = renderer.domElement.getBoundingClientRect();
+      _ndc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+      _ndc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+      _raycaster.setFromCamera(_ndc, camera);
+      let best = null, bestD = Infinity;
+      if (_tanOutBox) {{
+        const h = _raycaster.intersectObject(_tanOutBox, false);
+        if (h.length && h[0].distance < bestD) {{
+          bestD = h[0].distance; best = 'out';
+        }}
+      }}
+      if (_tanInBox) {{
+        const h = _raycaster.intersectObject(_tanInBox, false);
+        if (h.length && h[0].distance < bestD) {{
+          bestD = h[0].distance; best = 'in';
+        }}
+      }}
+      return best;
     }}
 
     // ---- Pointer pick: a left click on a trajectory frustum
@@ -5890,15 +6354,36 @@ _VIEWER_TEMPLATE = """\
     function _gzOnCanvasDown(ev) {{
       if (!ModeManager.is('author')) return;
       if (ev.button !== undefined && ev.button !== 0) return;
-      if (_gzDragging) return;          // gizmo owns the pointer
-      // If the gizmo's own axes were hit, TransformControls handles
-      // it (it has its own bubble-phase pointer listeners). We MUST
-      // NOT pick a frustum NOR stopPropagation() here -- doing so
-      // starves TC's pointerDown() and the gizmo becomes undraggable
-      // by a real mouse (the long-standing reason a real handle drag
-      // "did not move the keyframe" -- only the programmatic test
-      // API ever moved it). Yield the event to TC untouched.
+      if (_gzDragging || _tanDragging) return;   // a gizmo owns it
+      // 1. The TANGENT-handle gizmo is visually TOPMOST -- if a real
+      //    pointerdown is over its axis, yield it untouched (its own
+      //    bubble-phase pointerDown drives the drag; capture-phase
+      //    stopPropagation here would starve it -> "the handle would
+      //    not move with a real mouse"). SAME contract as the
+      //    keyframe gizmo below.
+      if (_tanPointerOnGizmo(ev.clientX, ev.clientY)) return;
+      // 2. If the keyframe gizmo's own axes were hit, TransformControls
+      //    handles it (it has its own bubble-phase pointer listeners).
+      //    We MUST NOT pick a frustum NOR stopPropagation() here --
+      //    doing so starves TC's pointerDown() and the gizmo becomes
+      //    undraggable by a real mouse (the long-standing reason a
+      //    real handle drag "did not move the keyframe" -- only the
+      //    programmatic test API ever moved it). Yield it untouched.
       if (_gzPointerOnGizmo(ev.clientX, ev.clientY)) return;
+      // 3. A click on a tangent-handle SQUARE (for the selected
+      //    bezier keyframe) grabs that handle: attach the dedicated
+      //    handle-TC so the NEXT mouse move (a real trusted drag)
+      //    reshapes the curve. Wins over the frustum pick (the
+      //    handles belong to the already-selected keyframe and sit
+      //    on top of it).
+      const side = _tanPickBox(ev.clientX, ev.clientY);
+      if (side) {{
+        _tanAttachSide(side);
+        ev.stopPropagation();
+        return;
+      }}
+      // 4. Otherwise: a click on a trajectory frustum selects that
+      //    keyframe (and shows its tangent handles if it is bezier).
       const idx = _gzPickFrustum(ev.clientX, ev.clientY);
       if (idx >= 0) {{
         _gzAttach(idx);
@@ -5941,7 +6426,16 @@ _VIEWER_TEMPLATE = """\
       const kf = _gzSelKfObj();
       if (!kf) return false;
       if (val && _VALID_INTERP[val]) kf.interp = val;
-      _gzAfterEdit();
+      // Picking `bezier` from the interp popover is the same
+      // intent as the tangents button: seed the derived defaults
+      // (no curve jump) + reveal the grab-able handles. Any other
+      // mode hides them (explicit tangents only bite as bezier).
+      if (kf.interp === 'bezier') {{
+        _tanEnableBezier();
+      }} else {{
+        _gzAfterEdit();
+        _tanHide();
+      }}
       return kf.interp === val;
     }}
     function _gzOpenPopover() {{
@@ -6194,23 +6688,30 @@ _VIEWER_TEMPLATE = """\
           'editor-rec-btn');
         const interpBtn = _mkBtn('interp (V)',
           'Set the selected keyframe interpolation', 'editor-interp-btn');
+        const tanBtn = _mkBtn('tangents (B)',
+          'Show grab-able bezier in/out tangent handles on the ' +
+          'selected keyframe (drag them to shape the curve)',
+          'editor-tan-btn');
         const saveBtn = _mkBtn('Save',
           'Save camera paths (cli: emit SPCP1 token; http: POST)',
           'editor-save-btn');
         recBtn.addEventListener('click', () => {{ _gzRecordKeyframe(); }});
         interpBtn.addEventListener('click', () => {{ _gzOpenPopover(); }});
+        tanBtn.addEventListener('click', () => {{ _tanEnableBezier(); }});
         saveBtn.addEventListener('click', () => {{ _gzSave(); }});
         bar.appendChild(recBtn);
         bar.appendChild(interpBtn);
+        bar.appendChild(tanBtn);
         bar.appendChild(saveBtn);
         root.appendChild(bar);
       }}
     }}
 
     // ---- Keyboard: R/T (translate/rotate), SPACE (World<->Screen),
-    //      V (interp popover), K (record). Author-mode only; ignored
-    //      while typing in an input/textarea (the Save card's
-    //      textareas) so copying the token does not trigger Record.
+    //      V (interp popover), B (bezier tangent handles), K
+    //      (record). Author-mode only; ignored while typing in an
+    //      input/textarea (the Save card's textareas) so copying the
+    //      token does not trigger Record.
     window.addEventListener('keydown', (ev) => {{
       if (!ModeManager.is('author')) return;
       const ae = document.activeElement;
@@ -6226,10 +6727,16 @@ _VIEWER_TEMPLATE = """\
         ev.preventDefault();    // stop the page scrolling on Space
       }} else if (k === 'v' || k === 'V') {{
         if (_gzPopEl) _gzClosePopover(); else _gzOpenPopover();
+      }} else if (k === 'b' || k === 'B') {{
+        // Reveal (or, if already shown for a non-bezier key,
+        // convert + reveal) the grab-able bezier tangent handles
+        // on the selected keyframe. No-op without a selection.
+        _tanEnableBezier();
       }} else if (k === 'k' || k === 'K') {{
         _gzRecordKeyframe();
       }} else if (k === 'Escape') {{
         _gzClosePopover();
+        _tanHide();
         _gzDetach();
       }}
     }});
@@ -6475,6 +6982,117 @@ _VIEWER_TEMPLATE = """\
             const o = document.getElementById('gz-save-overlay');
             if (o) {{ o.remove(); return true; }}
             return false;
+          }},
+          // ---- Bezier tangent-handle surface (TEST-ONLY) --------
+          // Are the in/out tangent handles currently shown?
+          get tanHandlesVisible() {{
+            return !!(_tanGroup && _tanGroup.parent === scene &&
+              _tanGroup.visible);
+          }},
+          get tanSelIsBezier() {{ return _tanIsBezierSel(); }},
+          // The selected keyframe's STORED explicit tangents (the
+          // SAME in-memory arrays the spline reads + Save emits) --
+          // null until the key is bezier with handles. So the
+          // harness can assert a drag CHANGED kf.in_tan/out_tan.
+          get tanSelTans() {{
+            const kf = _gzSelKfObj();
+            if (!kf) return null;
+            return {{
+              interp: kf.interp || null,
+              in_tan: (Array.isArray(kf.in_tan)
+                && kf.in_tan.length === 3) ? kf.in_tan.slice() : null,
+              out_tan: (Array.isArray(kf.out_tan)
+                && kf.out_tan.length === 3)
+                ? kf.out_tan.slice() : null,
+            }};
+          }},
+          // The current handle SQUARE world positions (what the
+          // harness converts to NDC to aim a REAL mouse at).
+          get tanHandleWorld() {{
+            if (!_tanGroup || !_tanOutBox || !_tanInBox) return null;
+            return {{
+              out: [_tanOutBox.position.x, _tanOutBox.position.y,
+                _tanOutBox.position.z],
+              in: [_tanInBox.position.x, _tanInBox.position.y,
+                _tanInBox.position.z],
+            }};
+          }},
+          // Convert the selected key to bezier + reveal handles
+          // (drives the SAME _tanEnableBezier the B key / button
+          // call). Returns whether it is now bezier.
+          tanEnableBezier() {{ return _tanEnableBezier(); }},
+          // Raycast-pick a handle square at NDC -> 'in'|'out'|null
+          // (drives the REAL _tanPickBox off the live geometry).
+          tanPickAtNdc(ndcx, ndcy) {{
+            const rect = renderer.domElement.getBoundingClientRect();
+            const cx = rect.left + (ndcx + 1) * 0.5 * rect.width;
+            const cy = rect.top + (1 - ndcy) * 0.5 * rect.height;
+            return _tanPickBox(cx, cy);
+          }},
+          // Would a real pointerdown at these CLIENT px yield to the
+          // handle TC (pointer over a handle axis => the capture
+          // handler must NOT consume it so TC's own bubble-phase
+          // pointerDown drives the drag)? Drives the EXACT
+          // _tanPointerOnGizmo the real _gzOnCanvasDown calls.
+          tanPointerOnGizmoAt(clientX, clientY) {{
+            const on = _tanPointerOnGizmo(clientX, clientY);
+            return {{ onGizmo: !!on,
+              axis: _tanCtl ? (_tanCtl.axis || null) : null,
+              dragging: _tanCtl ? !!_tanCtl.dragging : false }};
+          }},
+          // The live handle-TC drag state (the canonical "a real
+          // drag is in progress" signal) so the harness can assert a
+          // REAL mouse-drag actually entered the handle TC.
+          get tanCtlDragging() {{
+            return _tanCtl ? !!_tanCtl.dragging : false;
+          }},
+          get tanCtlAxis() {{
+            return _tanCtl ? (_tanCtl.axis || null) : null;
+          }},
+          get tanActiveSide() {{ return _tanActiveSide; }},
+          // Attach the handle-TC to a side (drives the SAME
+          // _tanAttachSide the pointer pick calls) -> resolves once
+          // the lazily-imported TC has attached.
+          tanAttach(side) {{
+            _tanAttachSide(side);
+            return _tanEnsureCtl().then(() => ({{
+              attached: !!(_tanCtl && _tanCtl.object ===
+                (side === 'out' ? _tanOutProxy : _tanInProxy)),
+              side: _tanActiveSide,
+            }}));
+          }},
+          // Simulate a handle drag by a WORLD delta + run the SAME
+          // _tanWriteFromProxy the gizmo's 'objectChange' fires (we
+          // cannot synthesise a pointer drag on the addon's internal
+          // plane deterministically; the REAL trusted-mouse drag is
+          // verified separately by Playwright -- this drives the
+          // EXACT same write-back path for a deterministic check).
+          tanDrag(side, dx, dy, dz) {{
+            const proxy = side === 'out' ? _tanOutProxy : _tanInProxy;
+            if (!proxy || !_tanIsBezierSel()) return null;
+            _tanActiveSide = side;
+            if (proxy.parent !== scene) scene.add(proxy);
+            proxy.position.x += (+dx || 0);
+            proxy.position.y += (+dy || 0);
+            proxy.position.z += (+dz || 0);
+            proxy.updateMatrixWorld(true);
+            _tanWriteFromProxy(side);
+            const kf = _gzSelKfObj();
+            return kf ? {{
+              in_tan: (kf.in_tan || []).slice(),
+              out_tan: (kf.out_tan || []).slice(),
+              interp: kf.interp || null,
+            }} : null;
+          }},
+          // The effective (explicit OR derived-default) tangent
+          // vectors for the selected key -- so the harness can
+          // assert the derived default == the `automatic` formula
+          // (handles appear ON the curve, no jump).
+          tanEffectiveVecs() {{ return _tanVecs(); }},
+          tanHide() {{
+            _tanHide();
+            return !(_tanGroup && _tanGroup.parent === scene &&
+              _tanGroup.visible);
           }},
         }};
         // Preserve getters AS getters (Object.assign would freeze

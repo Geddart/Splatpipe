@@ -275,6 +275,54 @@ _CASES: list[tuple[str, dict]] = [
     # 5. The minimal envelope a "save with no edits yet" would emit:
     #    just v+scope (decode_spcp's gate). Must round-trip.
     ("empty", {"v": 1, "scope": "camera_paths"}),
+    # 6. GRAB-ABLE BEZIER TANGENTS (the "Nice Tangents" feature): a
+    #    keyframe authored via the in-viewer tangent handles carries
+    #    explicit ``interp:"bezier"`` + ``in_tan``/``out_tan`` world
+    #    value-delta vectors. These are plain 3-number arrays inside a
+    #    keyframe, so the SPCP payload (camera_paths is whole-replaced
+    #    by merge_camera_scope) MUST round-trip them byte-identically
+    #    JS<->Python. Non-vacuous: the tangent components deliberately
+    #    span the hard number-format branches the handle drag + the
+    #    ``Math.round(x*1e5)/1e5`` quantiser actually produce -- a
+    #    genuinely-fractional value (3.14159), a sub-1e-4 magnitude
+    #    (1.5e-05 -> Python zero-padded sci ``1.5e-05``, JS would emit
+    #    ``0.000015`` WITHOUT the port), the 1e-4 boundary (Python
+    #    keeps it fixed), a negative delta, and an integer-valued
+    #    component (must emit an integer literal). A wrong codec for
+    #    arrays-of-floats nested in a keyframe fails this immediately
+    #    (it is the SAME serialiser, but this pins the tangent shape
+    #    so a future regression to the in_tan/out_tan round-trip is
+    #    caught by the spec's core correctness gate, not just by the
+    #    Playwright leg).
+    (
+        "tangents",
+        {
+            "v": 1,
+            "scope": "camera_paths",
+            "camera_paths": [
+                {
+                    "id": "bz",
+                    "name": "Bezier tangents",
+                    "loop": False,
+                    "smoothness": 1.0,
+                    "play_speed": 1.0,
+                    "keyframes": [
+                        {"t": 0.0, "pos": [0.0, 0.0, 0.0],
+                         "quat": [0, 0, 0, 1], "fov": 60,
+                         "interp": "bezier",
+                         "in_tan": [0.0, 0.0, 0.0],
+                         "out_tan": [3.14159, -1.5e-05, 2.0]},
+                        {"t": 2.5, "pos": [3.0, 0.0, -40.0],
+                         "quat": [0, 0, 0, 1], "fov": 50,
+                         "interp": "bezier",
+                         "in_tan": [-2.71828, 1e-04, 5e-06],
+                         "out_tan": [0.30000000000000004, 0.0, -7.5]},
+                    ],
+                }
+            ],
+            "default_path_id": "bz",
+        },
+    ),
 ]
 
 
