@@ -1655,6 +1655,116 @@ def test_motion_ticks_are_tiny_white_and_line_has_gradient():
 
 
 # --------------------------------------------------------------------------
+# my18 follow-up: a REAL mouse-drag of a gizmo handle must move the kf
+# --------------------------------------------------------------------------
+# The user-reported defect: in ?author=1 "I cannot move the keyframes --
+# when I click on the handles, it does not move." Two compounding bugs,
+# BOTH strictly inside the byte-lock T16-TRAJ region (the byte-lock test
+# above proves the eleven-region remainder is UNCHANGED -- wholly
+# region-interior, recipe 2c):
+#
+#   (1) ``_gzOnCanvasDown`` ran in CAPTURE phase and, on ANY frustum
+#       raycast hit, called ``ev.stopPropagation()`` -- WITHOUT first
+#       asking whether the pointer was over a TransformControls gizmo
+#       HANDLE. TC's own pointerdown listener is bubble-phase on the
+#       SAME canvas, so a capture-phase stopPropagation() starved TC's
+#       ``pointerDown()`` (which only starts a drag when ``this.axis
+#       !== null``). A real mouse-drag could therefore NEVER move a
+#       keyframe -- only the programmatic ``gzDragTranslate`` test API
+#       (which bypasses pointer events) ever did, masking the bug. The
+#       fix adds ``_gzPointerOnGizmo`` (refreshing ``_gzCtl.axis`` via
+#       the SAME ``_gzCtl.pointerHover`` raycast TC uses) and yields
+#       the event to TC untouched when a handle is under the pointer.
+#   (2) The author-mode auto-tour auto-played (the intro controller's
+#       _cinematic gate is usermode-ONLY) and parked the camera in the
+#       dense end-of-path keyframe cluster, so no keyframe was even
+#       clickable. The fix makes ``_introStartTour()`` a guaranteed
+#       no-op in author mode (``_introTourStarted = true`` -- the SAME
+#       idempotency guard the fade/fallback paths use) so the camera
+#       rests at the saved start_view authoring vantage.
+#
+# Asserted at the ``html_for`` level (the Playwright harness asserts the
+# RUNTIME real-mouse-drag on the live scene). NEGATIVE-CONTROLLED
+# against the committed ``2fee33b`` (pre-fix HEAD) -- the SAME wiring
+# markers are ABSENT there and the pre-fix ``_gzOnCanvasDown`` goes
+# straight from the ``_gzDragging`` guard into ``_gzPickFrustum``
+# (no gizmo-yield), so this assertion provably FAILS against the
+# pre-fix code (a genuine discriminator, not a tautology).
+_GZ_REALDRAG_MARKERS = (
+    "function _gzPointerOnGizmo(clientX, clientY) {",   # the yield gate
+    "_gzCtl.pointerHover(_GZ_NDC);",                     # TC's own raycast
+    "if (_gzPointerOnGizmo(ev.clientX, ev.clientY)) return;",  # yield in down
+    "try { _introTourStarted = true; } catch (e) {}",   # author tour suppress
+    "gzPointerOnGizmoAt(clientX, clientY) {",            # TEST-ONLY probe
+    "get gzCtlDragging() {",                             # real-drag probe
+)
+
+
+def test_real_gizmo_handle_drag_wiring_present_and_author_tour_suppressed():
+    """A REAL mouse-drag of a TransformControls handle must reach TC
+    (the capture handler yields the pointerdown to TC when a gizmo
+    axis is under it -- it must NOT stopPropagation() and starve TC)
+    AND the author-mode auto-tour must be suppressed so the camera
+    rests at start_view. NEGATIVE-CONTROLLED against the committed
+    pre-fix 2fee33b -- proving this is a real discriminator, not a
+    tautology."""
+    html = html_for("HarnessScene")
+
+    # (positive) every real-drag/tour-suppress marker the fix adds is
+    # present in the rendered HTML (``{{``->``{`` collapse applied).
+    for mk in _GZ_REALDRAG_MARKERS:
+        assert mk in html, f"real-drag/tour marker missing: {mk!r}"
+    # (positive) the fix yields to the gizmo BEFORE picking a frustum:
+    # the ``_gzPointerOnGizmo`` early-return must textually precede the
+    # ``_gzPickFrustum`` call inside ``_gzOnCanvasDown``.
+    down_i = html.index("function _gzOnCanvasDown(ev) {")
+    yield_i = html.index(
+        "if (_gzPointerOnGizmo(ev.clientX, ev.clientY)) return;", down_i)
+    pick_i = html.index(
+        "const idx = _gzPickFrustum(ev.clientX, ev.clientY);", down_i)
+    assert yield_i < pick_i, (
+        "gizmo-yield must run BEFORE the frustum pick in "
+        "_gzOnCanvasDown (else TC is still starved)"
+    )
+    # (positive) the still-present scene-relative frustum + tick/line
+    # fixes MUST survive untouched (no regression from this pass).
+    for mk in (
+        "function _trajPathScale", "const _TRAJ_TICK_PX",
+        "new THREE.LineBasicMaterial({ vertexColors: true })",
+        "get frustumIsWireframe",
+    ):
+        assert mk in html, f"prior my16/my17 marker REGRESSED: {mk!r}"
+
+    # (NEGATIVE CONTROL) the committed pre-fix 2fee33b template: the
+    # SAME real-drag/tour-suppress markers are ABSENT -> this test
+    # provably FAILS against the pre-fix code (a genuine
+    # discriminator). The pre-fix ``_gzOnCanvasDown`` goes straight
+    # from the ``_gzDragging`` guard to ``_gzPickFrustum`` with NO
+    # gizmo-yield (its comment even CLAIMS TC is handled "do nothing
+    # here" but no such check was ever implemented -- the exact bug).
+    pre = _git_blob_module(
+        "2fee33b:src/splatpipe/viewers/spark/template.py")
+    pre_html = pre.html_for("HarnessScene")
+    for mk in _GZ_REALDRAG_MARKERS:
+        assert mk not in pre_html, (
+            f"negative control FAILED: real-drag/tour marker {mk!r} "
+            "unexpectedly already in the pre-fix 2fee33b template "
+            "(the test would not discriminate the fix)"
+        )
+    # The pre-fix handler IS the starving one: the frustum pick runs
+    # with NO preceding gizmo-yield (the regression this fix removes).
+    pre_down_i = pre_html.index("function _gzOnCanvasDown(ev) {")
+    assert (
+        "const idx = _gzPickFrustum(ev.clientX, ev.clientY);"
+        in pre_html[pre_down_i:]
+    ), "pre-fix baseline is not the expected starving _gzOnCanvasDown"
+    assert "_gzPointerOnGizmo" not in pre_html, (
+        "negative control FAILED: pre-fix 2fee33b unexpectedly already "
+        "has the gizmo-yield gate"
+    )
+
+
+# --------------------------------------------------------------------------
 # (b) explicit kwargs are baked through verbatim
 # --------------------------------------------------------------------------
 

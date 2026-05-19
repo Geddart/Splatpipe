@@ -5360,6 +5360,52 @@ _VIEWER_TEMPLATE = """\
   (function _gzInit() {{
     if (!_EDITOR_AUTHOR) return;
 
+    // ---- Suppress the auto-tour in ?author=1 (the SECOND half of the
+    //      "cannot move the keyframes" bug). The intro controller's
+    //      cinematic gate is usermode-ONLY, so in author mode it falls
+    //      into the immediate `_introStartTour()` path and the default
+    //      cinematic plays on load -- ending with the camera PARKED
+    //      inside the dense end-of-path keyframe cluster. From there
+    //      every keyframe frustum projects centimetres from the camera
+    //      (gizmo + frusta thousands of px off-screen) so NO keyframe
+    //      is clickable / draggable. An author opens the editor to
+    //      EDIT, not to watch the tour: keep the camera at the saved
+    //      start_view (a sane authoring vantage where all keyframes
+    //      are visible) by making `_introStartTour()` a guaranteed
+    //      no-op -- it bails on `if (_introTourStarted) return;`, the
+    //      SAME idempotency guard the fade/fallback paths already rely
+    //      on. This is an author-mode-only behavior gate (NOT a
+    //      _cinematic change) and is fully inert for the 6 live
+    //      usermode scenes (this whole block is _EDITOR_AUTHOR-gated).
+    //      `_introTourStarted` is a top-level `let` declared well
+    //      above; this IIFE runs BEFORE the intro-controller IIFE so
+    //      the flag is set in time. Belt-and-braces: if a tour is
+    //      somehow already live (race / future reorder) stop it and
+    //      restore the start_view so the authoring camera is stable.
+    try {{ _introTourStarted = true; }} catch (e) {{}}
+    if (_player) {{
+      try {{ stopPath(); }} catch (e) {{}}
+      try {{
+        const _sv = cfg && cfg.start_view;
+        if (_sv && Array.isArray(_sv.pos)) {{
+          camera.position.set(_sv.pos[0], _sv.pos[1], _sv.pos[2]);
+          if (Array.isArray(_sv.quat)) {{
+            camera.quaternion.set(_sv.quat[0], _sv.quat[1],
+              _sv.quat[2], _sv.quat[3]);
+          }}
+          if (typeof _sv.fov === 'number') {{
+            camera.fov = _sv.fov; camera.updateProjectionMatrix();
+          }}
+          if (Array.isArray(_sv.target) && controls &&
+              controls.target) {{
+            controls.target.set(_sv.target[0], _sv.target[1],
+              _sv.target[2]);
+          }}
+          camera.updateMatrixWorld(true);
+        }}
+      }} catch (e) {{}}
+    }}
+
     // ---- Slug for the SPCP1 token (mirror the SPV1 relay block):
     //      the page <title> h1 text, sanitised to the kebab/word set
     //      encode_spcp accepts (it rejects a ':' in the slug -- our
@@ -5704,6 +5750,14 @@ _VIEWER_TEMPLATE = """\
           ctl.addEventListener('dragging-changed', (ev) => {{
             _gzDragging = !!ev.value;
             if (_gzDragging) {{
+              // A real handle grab is an authoring gesture: stop any
+              // auto-tour FIRST so the render loop's `if (_player)`
+              // block does not re-sample the OLD spline every frame
+              // and stomp the live edit invisibly. _gzStopTour() is
+              // idempotent (no-op when _player is null -- the normal
+              // author-mode case now that the tour is suppressed);
+              // this is the safety net for any race / future reorder.
+              _gzStopTour();
               InteractionManager.requestPointer('tool');
               controls.enabled = false;
             }} else {{
@@ -5806,12 +5860,45 @@ _VIEWER_TEMPLATE = """\
       }}
       return best;
     }}
+    // Is the pointerdown (clientX/Y) over a TransformControls gizmo
+    // HANDLE? We run in CAPTURE phase, BEFORE TransformControls' own
+    // bubble-phase pointerdown listener; if we stopPropagation() a
+    // pointerdown that landed on a gizmo axis, TC's pointerDown()
+    // never fires and the gizmo can NEVER be dragged with a real
+    // mouse (it only starts a drag when this.axis !== null, and axis
+    // is set by its pointerHover raycast). So: refresh the control's
+    // hover axis from THIS pointer (the SAME NDC->raycast TC's own
+    // pointerHover does) and report whether a handle is under it.
+    // When true the caller MUST yield the event to TC untouched.
+    const _GZ_NDC = new THREE.Vector2();
+    function _gzPointerOnGizmo(clientX, clientY) {{
+      if (!_gzCtl || _gzCtl.object !== _gzProxy || _gzSelKf < 0) {{
+        return false;
+      }}
+      if (_gzCtl.dragging) return true;   // already grabbed
+      const rect = renderer.domElement.getBoundingClientRect();
+      _GZ_NDC.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+      _GZ_NDC.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+      try {{
+        // Updates _gzCtl.axis (null = not over a handle). Identical
+        // to the raycast TC.pointerHover runs on its own pointermove
+        // -- we just trigger it deterministically for THIS down.
+        _gzCtl.pointerHover(_GZ_NDC);
+      }} catch (e) {{ return false; }}
+      return _gzCtl.axis !== null && _gzCtl.axis !== undefined;
+    }}
     function _gzOnCanvasDown(ev) {{
       if (!ModeManager.is('author')) return;
       if (ev.button !== undefined && ev.button !== 0) return;
       if (_gzDragging) return;          // gizmo owns the pointer
       // If the gizmo's own axes were hit, TransformControls handles
-      // it (it has its own pointer listeners) -- do nothing here.
+      // it (it has its own bubble-phase pointer listeners). We MUST
+      // NOT pick a frustum NOR stopPropagation() here -- doing so
+      // starves TC's pointerDown() and the gizmo becomes undraggable
+      // by a real mouse (the long-standing reason a real handle drag
+      // "did not move the keyframe" -- only the programmatic test
+      // API ever moved it). Yield the event to TC untouched.
+      if (_gzPointerOnGizmo(ev.clientX, ev.clientY)) return;
       const idx = _gzPickFrustum(ev.clientX, ev.clientY);
       if (idx >= 0) {{
         _gzAttach(idx);
@@ -5824,6 +5911,9 @@ _VIEWER_TEMPLATE = """\
     // Capture phase so we see the pointerdown before OrbitControls'
     // own canvas listener (it is attached without capture); only
     // when we actually consume a frustum hit do we stopPropagation.
+    // A pointerdown on a gizmo handle is yielded untouched (above)
+    // so TransformControls' own bubble-phase listener drives the
+    // drag -- capture-phase stopPropagation would otherwise kill it.
     renderer.domElement.addEventListener(
       'pointerdown', _gzOnCanvasDown, true);
 
@@ -6244,6 +6334,31 @@ _VIEWER_TEMPLATE = """\
             const cx = rect.left + (ndcx + 1) * 0.5 * rect.width;
             const cy = rect.top + (1 - ndcy) * 0.5 * rect.height;
             return _gzPickFrustum(cx, cy);
+          }},
+          // TEST-ONLY: would a real pointerdown at these CLIENT px
+          // yield the event to TransformControls (pointer over a
+          // gizmo handle => the capture handler must NOT pick a
+          // frustum / stopPropagation, so TC's own bubble-phase
+          // pointerDown drives the drag)? Drives the EXACT
+          // _gzPointerOnGizmo the real `_gzOnCanvasDown` calls -- so
+          // the harness can assert the starvation bug is fixed
+          // WITHOUT performing the drag through the API. Also
+          // returns the resolved TC axis for diagnostics.
+          gzPointerOnGizmoAt(clientX, clientY) {{
+            const on = _gzPointerOnGizmo(clientX, clientY);
+            return {{ onGizmo: !!on,
+              axis: _gzCtl ? (_gzCtl.axis || null) : null,
+              dragging: _gzCtl ? !!_gzCtl.dragging : false }};
+          }},
+          // TEST-ONLY: the live TransformControls drag state (the
+          // canonical "is a real drag in progress" signal) so the
+          // harness can assert a REAL mouse-drag actually entered
+          // TC's drag (proves the event reached TC, not the API).
+          get gzCtlDragging() {{
+            return _gzCtl ? !!_gzCtl.dragging : false;
+          }},
+          get gzCtlAxis() {{
+            return _gzCtl ? (_gzCtl.axis || null) : null;
           }},
           gzDetach() {{ _gzDetach(); return _gzSelKf; }},
           // Simulate a gizmo TRANSLATE drag: move the proxy by a
