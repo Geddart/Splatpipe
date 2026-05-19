@@ -264,7 +264,12 @@ _VIEWER_TEMPLATE = """\
     }}
 
     #controls-hint {{
-      position: absolute; bottom: 60px; left: 20px; z-index: 10;
+      /* A2: lifted clear of (and z-ordered ABOVE) the author bottom
+         timeline (#editor-timeline is bottom:0, ~70px tall, z-index
+         48) so the keyboard hint is no longer occluded in author
+         mode. In usermode there is no timeline so the slightly
+         higher bottom is harmless. Still pointer-events:none. */
+      position: absolute; bottom: 84px; left: 20px; z-index: 60;
       color: rgba(255,255,255,0.4); font-size: 11px; pointer-events: none;
     }}
 
@@ -291,24 +296,43 @@ _VIEWER_TEMPLATE = """\
     .ann-tooltip p {{ margin: 0; opacity: 0.8; white-space: normal; }}
     .ann-marker:hover .ann-tooltip {{ display: block; }}
 
-    #path-hud {{
-      position: absolute; bottom: 60px; left: 50%; transform: translateX(-50%);
-      z-index: 12; display: none; align-items: center; gap: 10px;
-      background: rgba(0,0,0,0.75); border-radius: 8px; padding: 8px 14px;
-      color: #ccc; font-size: 12px; pointer-events: auto;
+    /* A1: the old mid-screen transport pill is GONE for end users.
+       #path-hud is now a VISUALLY-HIDDEN HOST -- the elements
+       (#path-select / #path-scrub / #path-time / #path-play /
+       #path-stop) STAY in the DOM with their ids intact (~30
+       editor/cinematic/bench call sites resolve them) but are never
+       shown. `display:none !important` even when JS adds `.active`.
+       The visible end-user affordance is the tiny #path-mini cluster
+       below (one subtle text-less play<->stop icon flanked by
+       prev/next-keyframe skip icons). */
+    #path-hud, #path-hud.active {{ display: none !important; }}
+    /* A1/A5: the minimal end-user transport -- prev-key, a tiny
+       subtle text-less play<->stop toggle, next-key. No pill, no
+       label, low opacity; sits where #path-hud used to (bottom-
+       centre). Shown only when a camera path exists (JS adds
+       .shown); the embed strip hides it like all chrome. */
+    #path-mini {{
+      position: absolute; bottom: 56px; left: 50%;
+      transform: translateX(-50%);
+      z-index: 12; display: none; align-items: center; gap: 14px;
+      pointer-events: none;
     }}
-    #path-hud.active {{ display: flex; }}
-    #path-hud select {{
-      background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.2);
-      color: #ccc; border-radius: 4px; padding: 4px 6px; font-size: 12px;
+    #path-mini.shown {{ display: flex; }}
+    #path-mini button {{
+      pointer-events: auto; background: rgba(0,0,0,0.32);
+      border: 0; border-radius: 50%; padding: 0; margin: 0;
+      width: 30px; height: 30px; cursor: pointer;
+      color: rgba(255,255,255,0.62);
+      display: flex; align-items: center; justify-content: center;
+      opacity: 0.5; transition: opacity 0.16s, color 0.16s;
+      -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
     }}
-    #path-hud button {{
-      background: rgba(255,100,50,0.3); border: 1px solid rgba(255,100,50,0.5);
-      color: #fff; border-radius: 4px; padding: 4px 10px; font-size: 12px; cursor: pointer;
+    #path-mini button:hover {{
+      opacity: 0.95; color: rgba(255,255,255,0.95);
     }}
-    #path-hud button:hover {{ background: rgba(255,100,50,0.5); }}
-    #path-hud .scrub {{ width: 200px; }}
-    #path-hud .time {{ font-family: monospace; min-width: 60px; text-align: center; }}
+    #path-mini button svg {{ width: 15px; height: 15px; display: block; }}
+    #path-mini .mini-pp {{ width: 36px; height: 36px; }}
+    #path-mini .mini-pp svg {{ width: 17px; height: 17px; }}
 
     /* Safari-on-Mac streaming hint (#78). Only ever shown on a Mac running a
        non-Safari (ANGLE→Metal) browser — see the detector JS for why. */
@@ -341,6 +365,7 @@ _VIEWER_TEMPLATE = """\
     body.embed #controls-hint,
     body.embed #safari-hint,
     body.embed #path-hud,
+    body.embed #path-mini,
     body.embed #sp-hud,
     body.embed #author-root,
     body.embed #user-transport {{ display: none !important; }}
@@ -473,6 +498,33 @@ _VIEWER_TEMPLATE = """\
     <button id="path-stop">⏹</button>
     <input type="range" class="scrub" id="path-scrub" min="0" max="1000" value="0">
     <span class="time" id="path-time">0.00s</span>
+  </div>
+
+  <!-- A1/A5: the minimal END-USER transport (replaces the old
+       #path-hud pill). prev-key | tiny text-less play<->stop |
+       next-key. #path-hud above is the now-hidden host that still
+       carries #path-select/#path-scrub/#path-time/#path-play/
+       #path-stop for the ~30 call sites. SVG icons are ASCII-only;
+       the centre button's glyph is swapped by JS (_pathIconSync).
+       This block lands strictly INSIDE the Task-12 #path-time ->
+       importmap region so it is byte-lock recipe-2c (absorbed; the
+       pin is unaffected by it -- only A1's #path-hud CSS + DOM-
+       markup-free hide and the new #path-mini CSS need the
+       deliberate re-pin). Shown only when a path exists (JS adds
+       .shown); embed strips it. -->
+  <div id="path-mini">
+    <button id="path-mini-prev" type="button" title="Previous keyframe"
+      aria-label="Previous keyframe">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 5h2v14H7zM19 5l-9 7 9 7z"/></svg>
+    </button>
+    <button id="path-mini-pp" class="mini-pp" type="button"
+      title="Play/Stop" aria-label="Play or stop the camera path">
+      <span id="path-mini-pp-icon"></span>
+    </button>
+    <button id="path-mini-next" type="button" title="Next keyframe"
+      aria-label="Next keyframe">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M15 5h2v14h-2zM5 5l9 7-9 7z"/></svg>
+    </button>
   </div>
 
   <!-- Task 12 dual-UI roots. ALWAYS present, CSS-gated by the body mode
@@ -2073,16 +2125,142 @@ _VIEWER_TEMPLATE = """\
   const stopBtn = document.getElementById('path-stop');
   const scrubEl = document.getElementById('path-scrub');
   const timeEl = document.getElementById('path-time');
+  // A1/A5: the minimal end-user transport (replaces the #path-hud
+  // pill -- which is now a hidden host that still carries the ids
+  // above for the ~30 editor/cinematic/bench call sites). prev-key |
+  // tiny text-less play<->stop | next-key.
+  const _miniEl = document.getElementById('path-mini');
+  const _miniPrev = document.getElementById('path-mini-prev');
+  const _miniPP = document.getElementById('path-mini-pp');
+  const _miniPPIcon = document.getElementById('path-mini-pp-icon');
+  const _miniNext = document.getElementById('path-mini-next');
+  // Inline SVGs (ASCII-only). Play = triangle; Stop = square.
+  const _MINI_SVG_PLAY =
+    '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' +
+    '<path d="M8 5v14l11-7z"/></svg>';
+  const _MINI_SVG_STOP =
+    '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' +
+    '<rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>';
+  // Glyph reflects _player truthiness: a non-null _player IS playing
+  // (the render loop advances it) -> show STOP; else show PLAY.
+  // EVENT-DRIVEN (called from startPath/stopPath/the scrub handler
+  // below + the seek helper) so there is NO new rAF and the render
+  // loop / OverlayScene tick are NOT touched (they are outside this
+  // region + shared with the 6 live scenes/bench).
+  function _pathIconSync() {{
+    if (!_miniPPIcon) return;
+    const playing = !!_player;
+    _miniPPIcon.innerHTML = playing ? _MINI_SVG_STOP : _MINI_SVG_PLAY;
+    if (_miniPP) _miniPP.title = playing ? 'Stop' : 'Play';
+  }}
+  // Sorted keyframe times of a path (mirrors the author timeline's
+  // _tlSortedKfs ordering -- a naive index +/-1 is WRONG when the
+  // keyframes array is unordered). hold_s is NOT folded in here: the
+  // step targets a KEYFRAME's spline time, the SAME `t` the live
+  // player samples (sampleAt is driven by player.times, not the
+  // hold-accumulated wall clock), so stepping lands the camera on
+  // the keyframe pose deterministically.
+  function _pathSortedTimes(p) {{
+    if (!p || !p.keyframes) return [];
+    return p.keyframes
+      .map(k => (k && typeof k.t === 'number') ? k.t : 0)
+      .slice().sort((a, b) => a - b);
+  }}
+  function _pathCurPlayer() {{
+    const p = cameraPaths.find(x => x.id === selEl.value) ||
+      cameraPaths[0];
+    return p ? {{ p: p, pl: buildPlayer(p) }} : null;
+  }}
+  // Current spline time (seconds) the user is parked at: the live
+  // player clock while playing, else the #path-scrub slider mapped
+  // through the player duration (the SAME convention the Task-16
+  // overlay's _trajPlayhead uses -- single source of truth).
+  function _pathCurTime(pl) {{
+    if (!pl || !(pl.duration > 0)) return 0;
+    if (_player) {{
+      const sp = _player.playSpeed || 1.0;
+      let tn = ((performance.now() - _t0) / 1000) * sp;
+      if (_player.loop && tn > _player.duration)
+        tn = tn % _player.duration;
+      return Math.max(0, Math.min(tn, pl.duration));
+    }}
+    const f = (parseFloat(scrubEl.value) || 0) / 1000;
+    return Math.max(0, Math.min(1, f)) * pl.duration;
+  }}
+  // Seek to spline time T and HOLD there (a paused preview -- the
+  // SAME principle as A6: a seek must not auto-play). Reuses
+  // buildPlayer/sampleAt (no reimplemented spline math), writes the
+  // camera directly, leaves _player === null so the render loop's
+  // `if (_player)` is false and the pose holds, and keeps the scrub
+  // slider + time label consistent so a subsequent Play resumes
+  // from the right place.
+  function _pathSeekHold(T) {{
+    const cp = _pathCurPlayer();
+    if (!cp || !cp.pl || !(cp.pl.duration > 0)) return;
+    const dur = cp.pl.duration;
+    const t = Math.max(0, Math.min(dur, T));
+    const s = sampleAt(cp.pl, t);
+    if (!s) return;
+    // Stop any active playback first (frees the camera back to the
+    // held preview; also tidies bench/InteractionManager state).
+    if (_player) {{ try {{ stopPath(); }} catch (e) {{}} }}
+    camera.position.set(s.pos[0], s.pos[1], s.pos[2]);
+    camera.quaternion.set(s.quat[0], s.quat[1], s.quat[2], s.quat[3]);
+    camera.fov = s.fov;
+    camera.updateProjectionMatrix();
+    const pct = Math.min(1000, Math.max(0, (t / dur) * 1000));
+    if (scrubEl) scrubEl.value = String(pct);
+    if (timeEl) timeEl.textContent = t.toFixed(2) + 's';
+    _pathIconSync();
+  }}
+  function _pathStep(dir) {{
+    const cp = _pathCurPlayer();
+    if (!cp || !cp.pl || !(cp.pl.duration > 0)) return;
+    const ts = _pathSortedTimes(cp.p);
+    if (ts.length === 0) return;
+    const cur = _pathCurTime(cp.pl);
+    const EPS = 1e-3;
+    let target;
+    if (dir < 0) {{
+      target = ts[0];
+      for (let i = 0; i < ts.length; i++) {{
+        if (ts[i] < cur - EPS) target = ts[i]; else break;
+      }}
+    }} else {{
+      target = ts[ts.length - 1];
+      for (let i = ts.length - 1; i >= 0; i--) {{
+        if (ts[i] > cur + EPS) target = ts[i]; else break;
+      }}
+    }}
+    _pathSeekHold(target);
+  }}
 
   const cameraPaths = cfg.camera_paths || [];
   if (cameraPaths.length > 0) {{
     hud.classList.add('active');
+    // A1/A5: reveal the minimal end-user transport under the SAME
+    // condition the old pill used (a camera path exists). #path-mini
+    // is CSS-gated off in embed like all chrome.
+    if (_miniEl) _miniEl.classList.add('shown');
     for (const p of cameraPaths) {{
       const opt = document.createElement('option');
       opt.value = p.id; opt.textContent = p.name || p.id;
       selEl.appendChild(opt);
     }}
   }}
+  // Wire the minimal transport. The play/stop toggle calls the
+  // EXISTING startPath/stopPath (no new play/stop mechanism); prev/
+  // next seek to the adjacent SORTED keyframe time and hold.
+  if (_miniPP) {{
+    _miniPP.addEventListener('click', () => {{
+      if (_player) {{ stopPath(); }}
+      else {{ startPath(selEl.value || (cameraPaths[0] && cameraPaths[0].id)); }}
+      _pathIconSync();
+    }});
+  }}
+  if (_miniPrev) _miniPrev.addEventListener('click', () => _pathStep(-1));
+  if (_miniNext) _miniNext.addEventListener('click', () => _pathStep(1));
+  _pathIconSync();
 
   function startPath(pathId) {{
     const p = cameraPaths.find(x => x.id === pathId);
@@ -2097,6 +2275,7 @@ _VIEWER_TEMPLATE = """\
     // `if (_player) return` is byte-identical; this just mirrors the
     // same ownership into the single queryable broker.
     InteractionManager.requestPointer('player');
+    _pathIconSync();   // A1: glyph -> STOP (now playing)
   }}
   function stopPath() {{
     _player = null; _activePathId = null; _lastTriggeredAnnotation = null;
@@ -2105,6 +2284,7 @@ _VIEWER_TEMPLATE = """\
     markerObjs.forEach(m => m.el.querySelector('.ann-dot').classList.remove('path-active'));
     // If a path-driven bench was tied to this path, end its recording too.
     if (_benchActive && (_benchAutoMode === 'path' || _benchAutoMode === 'cold' || _benchAutoMode === 'probe' || _benchAutoMode === 'rotate')) _benchStop();
+    _pathIconSync();   // A1: glyph -> PLAY (stopped; covers natural end)
   }}
   playBtn.addEventListener('click', () => startPath(selEl.value));
   stopBtn.addEventListener('click', stopPath);
@@ -2118,6 +2298,7 @@ _VIEWER_TEMPLATE = """\
     }}
     const t = (parseFloat(scrubEl.value) / 1000) * _player.duration;
     _t0 = performance.now() - (t / (_player.playSpeed || 1.0)) * 1000;
+    _pathIconSync();   // A1: scrub sets _player directly -> keep glyph in sync
   }});
   // Pause (don't teleport) the path player when the tab is backgrounded.
   // The per-frame advance is `(performance.now() - _t0)/1000 * speed`;

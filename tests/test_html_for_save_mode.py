@@ -95,27 +95,65 @@ from splatpipe.viewers.spark.template import html_for
 # compared -- never relaxed); the Task-18 gizmo/SPCP surface is
 # asserted present-in-full-html then gone-after-the-T16-TRAJ-excision
 # (hard proof it is wholly inside that region, not leaking).
-_PRE_TASK18_REMAINDER_LEN = 155585
-_PRE_TASK18_REMAINDER_SHA = (
-    "f4cb11b385dedc2d018fc4342766285c0805f147c080b44d9de1fcd250370226"
+# --- Moving baseline (Task 19 -- v2-A) -----------------------------------
+# v2-A (the user's feedback round on the camera-keyframe editor) is the
+# FIRST task since Task 8/10/11 to DELIBERATELY change NON-excised,
+# END-USER-rendered HTML, so the remainder pin DELIBERATELY ADVANCES
+# here (a documented re-pin -- NOT a leak). The byte-lock's charter
+# (top of this file) is to catch UNINTENDED drift; it explicitly must
+# NOT freeze an intentional end-user change. WHAT changed and WHY:
+#   * A1 (user ask): replace the mid-screen #path-hud transport pill
+#     with ONE tiny subtle text-less play<->stop icon flanked by
+#     prev/next-keyframe skip icons (#path-mini). #path-hud is kept in
+#     the DOM byte-IDENTICALLY as a now-CSS-hidden host (its 5 ids
+#     stay live for ~30 editor/cinematic/bench call sites). This
+#     touches END-USER-rendered CSS (#path-hud / #path-mini) + JS (the
+#     #path-* wiring) + adds END-USER DOM (#path-mini).
+#   * A2 hint z-fix (user ask): #controls-hint lifted clear of / z-
+#     ordered above the author bottom timeline (END-USER-rendered CSS).
+# The deliberate delta is bounded by TWO new regions: T19-CSS (the
+# #controls-hint..#safari-hint CSS span -- both A1's #path-hud/
+# #path-mini CSS AND the A2 hint z-fix) and T19-JS (the #path-*
+# wiring: the new #path-mini code PLUS the recipe-2b in-place
+# _pathIconSync() calls added to the EXISTING startPath/stopPath/
+# scrub-input handlers). The A1 DOM addition is NOT a third region:
+# the new #path-mini cluster lands STRICTLY INSIDE the EXISTING
+# Task-12 _T12_DOM region and the new ``body.embed #path-mini,``
+# selector STRICTLY INSIDE the EXISTING Task-12 _T12_CSS region (both
+# recipe-2c-absorbed). The pin is RE-DERIVED below byte-faithfully
+# from the COMMITTED ``HEAD`` template AFTER excising the SAME prior
+# ELEVEN regions PLUS these TWO new ones (THIRTEEN total). EVERYTHING
+# ELSE in v2-A (A3 timeline-transport band, A4 merged Rec/interp/
+# tangents/Save row, A6 scrub-release-no-autoplay, A7 anti-aliased
+# fat-line trajectory + clean active-ring marker, AND the A2 "Show
+# trajectory" toggle reposition) is PURE recipe-2c: its entire delta
+# lands STRICTLY INSIDE the EXISTING Task-16 T16-TRAJ region (between
+# the UNCHANGED ``  applySplatBudget(_initialBudget);`` START and the
+# UNCHANGED ``  // ---- Frame loop ----`` END), so T16-TRAJ's excision
+# simply removes a LARGER span and contributes ZERO to the remainder
+# delta -- only A1 + the A2 hint z-fix move the pin. Every prior
+# task's region is STILL excised with its original anchors (contract
+# preserved -- the excision only ever NARROWS what is compared, never
+# relaxed); each new region is asserted present-in-full-html then
+# gone-after-its-excision (hard proof the A1/A2-hint delta is wholly
+# inside the two new regions and leaks NOTHING outside them); Task 8's
+# SAVE_* and BOTH Task-10 blocks (the ``let _hidAt = 0;`` decl ABOVE
+# T19-JS's START + the visibilitychange handler BELOW its END) stay
+# asserted-surviving (NOT relaxed).
+_PRE_TASK19_REMAINDER_LEN = 150811
+_PRE_TASK19_REMAINDER_SHA = (
+    "f3359fe1bc892400db22489cf04dd2090a7bb8d6750a3fec32241915b7f97a6e"
 )
-# Full ``83fc5c8`` baseline fingerprint (documentation / cross-check;
-# the remainder pin above is what the assertion uses). The REMAINDER
-# pin is byte-IDENTICAL to ``_PRE_TASK17_REMAINDER_*`` (the recipe-2c
-# invariant: Task 18's delta -- AND the my16-M1 follow-up that scales
-# the camera-path overlay frusta/dots/picking to the ACTIVE path's
-# OWN keyframe-bbox diagonal instead of the scene-independent
-# _initDist constant -- is wholly inside the Task-16 T16-TRAJ region,
-# so the eleven-region remainder is unchanged; only the FULL
-# fingerprint advances (the new committed baseline has the Task-17
-# timeline + Task-18 gizmo + the my16-M1 scene-relative-overlay edit
-# inside T16-TRAJ). Re-derived byte-faithfully from
-# ``git cat-file blob 83fc5c8:src/splatpipe/viewers/spark/template.py``
-# (the prior 407932a/286845 value was a stale pre-Task-18 leftover --
-# unused by any assertion, corrected here for provenance).
-_PRE_TASK18_FULL_LEN = 337901
-_PRE_TASK18_FULL_SHA = (
-    "611241fc3e2f22d1bdef26863247b84bde01a606836fb796152c1c30459b1eb4"
+# Full ``HEAD`` (committed v2-A) baseline fingerprint (documentation /
+# cross-check; the remainder pin above is what the assertion uses).
+# Re-derived byte-faithfully from ``git cat-file blob
+# HEAD:src/splatpipe/viewers/spark/template.py`` via a Python
+# subprocess (NEVER a PowerShell ``>`` / pipe -- per the Windows CRLF
+# foot-gun above; the committed template is LF-only and this lock is
+# CRLF-sensitive by design).
+_PRE_TASK19_FULL_LEN = 410971
+_PRE_TASK19_FULL_SHA = (
+    "f55c990d31bca4c553c5a1e25e0a8db947b5d648a9ad4fb22bca04f029ecc91a"
 )
 
 # --- Prior moving-baseline note (Task 17, kept for provenance) -----------
@@ -463,6 +501,62 @@ _SPLINE_REGION_END_TOK = (
     "duration, loop: !!p.loop, playSpeed };"
 )
 _SPLINE_REGION_CLOSE_AFTER = "  }"
+
+# ── Task-19 (v2-A) deliberately-touched regions (the A1 transport-
+# chrome replacement + the A2 keyboard-hint z-fix -- intentional
+# END-USER-rendered HTML changes per the user's v2 feedback; recipe
+# 2b). The byte-lock's charter (top of this file) is to catch
+# UNINTENDED drift, NOT to freeze a DELIBERATE end-user change -- so
+# A1/A2-hint get a documented re-pin (the only non-2c part of v2-A;
+# everything else -- A3/A4/A6/A7 + the A2 toggle reposition -- is
+# region-interior inside the EXISTING Task-16 T16-TRAJ region and is
+# absorbed by it with the pin UNCHANGED, per recipe 2c). TWO new
+# regions; the A1 DOM addition is NOT a third region -- the new
+# #path-mini cluster lands STRICTLY INSIDE the EXISTING Task-12
+# _T12_DOM region (after #path-hud's </div>, before the importmap),
+# and the new ``body.embed #path-mini,`` selector STRICTLY INSIDE the
+# EXISTING Task-12 _T12_CSS region (after its ``body.embed #path-hud,``
+# START anchor) -- both recipe-2c-absorbed (the #path-hud DOM markup
+# itself is byte-IDENTICAL: A1 hides it purely via CSS, so there is
+# no css2d-root/path-time anchor collision and no third region).
+#
+# (T19-CSS) CSS: the (unchanged) ``    #controls-hint {`` selector
+#     line through the (unchanged) ``    #safari-hint {`` selector
+#     line. Bounds BOTH the A2 #controls-hint z-fix (z-index/bottom
+#     lifted clear of the author bottom timeline) AND the A1
+#     #path-hud -> hidden-host restyle + the new #path-mini cluster
+#     CSS. The in-between .ann-* / #css2d-root rules are UNCHANGED so
+#     they cancel in the byte compare (excised from BOTH baseline and
+#     current). Both ends pre-exist UNCHANGED and EXACTLY ONCE in
+#     BOTH ``7e6c2bd`` and the current HTML (verified) -- ``_excise``
+#     asserts the START unique + the (non-close_after) END
+#     unique-after-start, failing LOUD on a duplicate/missing anchor.
+_T19_CSS_START = "    #controls-hint {\n"
+_T19_CSS_END = "    #safari-hint {\n"
+# (T19-JS) JS: the (unchanged) ``  const hud =
+#     document.getElementById('path-hud');`` line -- the FIRST line
+#     of the #path-* wiring -- through the (unchanged) ``  // Pause
+#     (don't teleport) the path player when the tab is backgrounded.``
+#     comment that opens the Task-10 visibilitychange BLOCK B. Bounds
+#     the A1/A5 minimal-transport wiring (the #path-mini element
+#     refs, _pathIconSync / _pathSortedTimes / _pathSeekHold /
+#     _pathStep, the .shown reveal, the prev/play-stop/next listeners)
+#     PLUS the EXISTING startPath/stopPath/scrub-input handlers (each
+#     given a region-interior _pathIconSync() call -- recipe-2b
+#     modify-in-place: excising the SAME [START..END] from BOTH
+#     removes the OLD handlers from the baseline and the augmented
+#     ones from current -> equal remainders). CRUCIAL: the Task-10
+#     ``let _hidAt = 0;`` declaration (BLOCK A) sits ABOVE this START
+#     and the Task-10 visibilitychange handler (BLOCK B) sits BELOW
+#     this END comment, so BOTH Task-10 blocks are OUTSIDE this region
+#     and stay asserted-surviving in the remainder -- the Task-10
+#     contract is fully preserved (NOT relaxed). Both ends pre-exist
+#     UNCHANGED and EXACTLY ONCE in BOTH ``7e6c2bd`` and current.
+_T19_JS_START = "  const hud = document.getElementById('path-hud');\n"
+_T19_JS_END = (
+    "  // Pause (don't teleport) the path player when the tab is "
+    "backgrounded.\n"
+)
 
 # ── Task-12 deliberately-touched regions (all OUTSIDE the spline) ───────
 # Each is bounded by a START anchor + END token that pre-exist UNCHANGED
@@ -1060,6 +1154,25 @@ def test_defaults_are_regression_safe_existing_scenes_byte_identical():
     assert "gzEncodeSpcp" in html                               # Task 18 surface
     assert "gzSaveCliToken" in html                             # Task 18 surface
     assert "editor-gizmo-bar" in html                           # Task 18 HUD
+    # Task 19 (v2-A) deliberate END-USER additions ARE present in the
+    # FULL html (then asserted GONE after their TWO new regions are
+    # excised below -- the present-then-gone pair proving the A1/A2-
+    # hint delta is wholly inside T19-CSS / T19-JS and leaks NOTHING
+    # outside them). ``id="path-mini"`` is the new minimal end-user
+    # transport DOM (2c-absorbed into _T12_DOM); ``#path-mini`` the
+    # CSS rule + ``#path-mini.shown`` the reveal gate (T19-CSS);
+    # ``function _pathStep`` / ``function _pathSeekHold`` /
+    # ``function _pathIconSync`` the A1/A5 wiring (T19-JS);
+    # ``body.embed #path-mini,`` the embed-hide selector (2c-absorbed
+    # into _T12_CSS). A2 hint z-fix marker: the ``z-index: 60`` on
+    # #controls-hint (T19-CSS) -- asserted via the unique
+    # #controls-hint rule text.
+    assert 'id="path-mini"' in html                             # Task 19 DOM
+    assert "#path-mini.shown" in html                           # Task 19 CSS
+    assert "body.embed #path-mini," in html                     # Task 19 embed CSS
+    assert "function _pathSeekHold" in html                     # Task 19 JS
+    assert "function _pathStep" in html                         # Task 19 JS
+    assert "function _pathIconSync" in html                     # Task 19 JS
     # Task-18 is PURE recipe-2c: it adds NO new region (the
     # TransformControls import is a DYNAMIC import via the
     # ALREADY-EXISTING ``three/addons/`` importmap mapping -- NOT a new
@@ -1122,6 +1235,22 @@ def test_defaults_are_regression_safe_existing_scenes_byte_identical():
     stripped = _excise(stripped, _T14_AF_START, _T14_AF_END)
     stripped = _excise(stripped, _T15_OB_START, _T15_OB_END)
     stripped = _excise(stripped, _T16_TRAJ_START, _T16_TRAJ_END)
+    # Task 19 (v2-A) -- the TWO new deliberate end-user regions. Both
+    # are disjoint from (and use anchors NOT consumed by) every prior
+    # region: T19-CSS (#controls-hint..#safari-hint, lines well ABOVE
+    # the Task-12 ``body.embed #path-hud,``/``</style>`` CSS region)
+    # and T19-JS (``const hud =``..``// Pause (don't teleport)..``,
+    # lines strictly BETWEEN the spline region's end and the Task-13
+    # ``if (cfg.default_path_id) {`` autostart START, and ABOVE/BELOW
+    # the two Task-10 blocks) -- so excising them last never disturbs
+    # any prior anchor. ``_excise`` asserts each START unique + each
+    # (non-close_after) END unique-after-start (fail-loud on a
+    # duplicate/missing anchor). The A1 #path-mini DOM + the
+    # ``body.embed #path-mini,`` selector are NOT excised here -- they
+    # are recipe-2c-absorbed into the EXISTING _T12_DOM / _T12_CSS
+    # regions already excised above (so they are gone too; asserted).
+    stripped = _excise(stripped, _T19_CSS_START, _T19_CSS_END)
+    stripped = _excise(stripped, _T19_JS_START, _T19_JS_END)
 
     # The ENTIRE spline region must be gone → that excision spanned exactly
     # the deliberately-touched code (a leftover means it under-cut and the
@@ -1271,6 +1400,35 @@ def test_defaults_are_regression_safe_existing_scenes_byte_identical():
     assert "gzEncodeSpcp" not in stripped                  # T18 surface gone
     assert "gzSaveCliToken" not in stripped                # T18 surface gone
     assert "editor-gizmo-bar" not in stripped              # T18 HUD gone
+    # Task 19 (v2-A): the A1/A2-hint delta MUST be fully gone after
+    # the TWO new regions are excised -- this present-then-gone pair
+    # is the hard proof it is WHOLLY inside T19-CSS / T19-JS (and the
+    # #path-mini DOM + ``body.embed #path-mini,`` wholly inside the
+    # 2c-absorbing _T12_DOM / _T12_CSS) and leaks NOTHING into the
+    # compared remainder. ``function _pathSeekHold`` / ``_pathStep``
+    # / ``_pathIconSync`` are UNIQUE to T19-JS; ``#path-mini.shown``
+    # to T19-CSS; ``id="path-mini"`` to the _T12_DOM-absorbed DOM;
+    # ``body.embed #path-mini,`` to the _T12_CSS-absorbed selector.
+    # If ANY had leaked outside its region it would still be in
+    # ``stripped`` here AND the LEN/SHA pin below would mismatch.
+    assert "function _pathSeekHold" not in stripped        # T19-JS gone
+    assert "function _pathStep" not in stripped            # T19-JS gone
+    assert "function _pathIconSync" not in stripped        # T19-JS gone
+    assert "#path-mini.shown" not in stripped              # T19-CSS gone
+    assert 'id="path-mini"' not in stripped                # _T12_DOM-absorbed gone
+    assert "body.embed #path-mini," not in stripped        # _T12_CSS-absorbed gone
+    # The #path-hud DOM markup is byte-IDENTICAL (A1 hides it purely
+    # via CSS); its 5 ids therefore SURVIVE every excision EXCEPT
+    # where the EXISTING _T12_DOM region already excised the
+    # #path-time span line (recipe unchanged). #path-select /
+    # #path-play / #path-stop / #path-scrub sit BETWEEN _T13_LB's END
+    # and _T12_DOM's START -- a gap that is in the compared remainder
+    # -- so they MUST survive (proof A1 did NOT delete the host
+    # elements the ~30 call sites need; the CSS-only hide keeps the
+    # DOM contract intact).
+    assert 'id="path-select"' in stripped                  # A1 host kept
+    assert 'id="path-play"' in stripped                    # A1 host kept
+    assert 'id="path-scrub"' in stripped                   # A1 host kept
     # The shared ``three/addons/`` importmap MAPPING (NOT the Task-18
     # dynamic import specifier, which is region-interior and gone
     # above) is OUTSIDE all eleven regions and MUST survive the
@@ -1319,48 +1477,55 @@ def test_defaults_are_regression_safe_existing_scenes_byte_identical():
     # the SAME ELEVEN regions excised -> NO unintended drift anywhere
     # outside the deliberate Task-8/10/11/12/13/14/15/16/17/18 changes
     # (FAILS loudly if e.g. a stray uncommitted block elsewhere in the
-    # template leaked in -- this is exactly how the 4 unstaged strays
-    # are kept out of the Task-18 commit; the pagedExtSplats stray,
-    # OUTSIDE all eleven regions, makes this FAIL in the dirty tree BY
-    # DESIGN -> the guard still bites). Task 18 (the author select-key
-    # gizmo + interp popover + Record + Save/Emit SPCP1) is a
-    # PURE recipe-2c change: its ENTIRE deliberate delta lands STRICTLY
-    # INSIDE the EXISTING Task-16 T16-TRAJ region (so that region's
-    # excision now removes a LARGER span -- the Task-16 author overlay
-    # PLUS the Task-17 timeline PLUS the Task-18 gizmo/interp-popover/
-    # Record/Save-emit block -- and the ELEVEN-region REMAINDER is
-    # byte-IDENTICAL to the Task-17 one; ``_PRE_TASK18_REMAINDER_*`` ==
-    # ``_PRE_TASK17_REMAINDER_*`` BY the 2c invariant, NOT by accident
-    # -- a changed remainder here would mean the gizmo/SPCP block
-    # LEAKED outside T16-TRAJ, e.g. a top-level TransformControls
-    # static import instead of the region-interior DYNAMIC import, or
-    # a new importmap entry). It is a DELIBERATE, byte-lock-excised
-    # change -- NOT a regression for the 6 live single-camera scenes:
-    # they are NOT author mode, so the SAME ``_EDITOR_AUTHOR`` /
-    # ``ModeManager.is('author')`` gate the Task-16/17 code uses +
-    # every gizmo DOM/listener/THREE object only ever created in
-    # author mode make the whole block byte-runtime-inert for them
-    # (and the byte-lock proves their generated HTML is byte-identical
-    # OUTSIDE T16-TRAJ). Task-18 CONSUMES the Task-8 SAVE_MODE /
-    # SAVE_ENDPOINT contract (cli emits SPCP1, http POSTs the
-    # camera-scope patch) -- it does NOT re-add them; both consts are
-    # asserted-surviving the excision (re-pinned just above). The
-    # shared ``three/addons/`` importmap mapping is OUTSIDE all
-    # regions and asserted-surviving too (Task-18 added NO importmap
-    # entry -- it reuses the existing mapping via a region-interior
-    # dynamic import).
-    assert len(stripped) == _PRE_TASK18_REMAINDER_LEN, (
-        f"length drift: {len(stripped)} != {_PRE_TASK18_REMAINDER_LEN} "
-        "(an UNINTENDED change leaked OUTSIDE the eleven deliberate "
-        "regions -- e.g. a Task-18 gizmo/SPCP line escaped the Task-16 "
-        "T16-TRAJ region the 2c recipe requires it to stay inside, or "
-        "a NEW importmap entry was added for TransformControls instead "
-        "of reusing the existing three/addons/ mapping via a dynamic "
-        "import)"
+    # template leaked in -- this is exactly how the unstaged strays
+    # are kept out of each commit; the pagedExtSplats stray, OUTSIDE
+    # all THIRTEEN regions, makes this FAIL in the dirty tree BY
+    # DESIGN -> the guard still bites). Task 19 (v2-A) is the FIRST
+    # task since Task 8/10/11 to DELIBERATELY change NON-excised,
+    # END-USER-rendered HTML, so the remainder pin DELIBERATELY
+    # ADVANCES here (``_PRE_TASK19_REMAINDER_*`` != the Task-18 pin) --
+    # a DOCUMENTED re-pin, the byte-lock's charter being to catch
+    # UNINTENDED drift, NOT to freeze an intentional end-user change.
+    # The deliberate delta is the A1 transport-chrome replacement
+    # (#path-hud -> a hidden host + the new #path-mini cluster) + the
+    # A2 keyboard-hint z-fix, wholly bounded by the TWO NEW regions
+    # T19-CSS + T19-JS (plus the #path-mini DOM / ``body.embed
+    # #path-mini,`` recipe-2c-absorbed into the EXISTING _T12_DOM /
+    # _T12_CSS). EVERYTHING ELSE in v2-A -- A3 timeline-transport
+    # band, A4 merged Rec/interp/tangents/Save row, A6 scrub-release-
+    # no-autoplay, A7 anti-aliased fat-line trajectory + clean active
+    # ring, AND the A2 "Show trajectory" toggle reposition -- is PURE
+    # recipe-2c: its ENTIRE delta lands STRICTLY INSIDE the EXISTING
+    # Task-16 T16-TRAJ region, so that region's excision merely spans
+    # a LARGER block and contributes ZERO to the remainder delta. A
+    # changed remainder BEYOND the A1/A2-hint re-pin would mean
+    # something LEAKED (e.g. an A7 fat-line line escaped T16-TRAJ via
+    # a top-level static import / a new importmap entry, or an A1 line
+    # escaped T19-CSS/T19-JS). NOT a regression for the 6 live single-
+    # camera scenes: A1's #path-mini is shown only when a camera path
+    # exists and is embed-stripped; #path-hud stays byte-identically
+    # in the DOM (CSS-hidden host) so the ~30 call sites are intact;
+    # the A2 hint z-fix is a pure z-index/offset bump. The Task-8
+    # SAVE_* contract + BOTH Task-10 blocks (``let _hidAt = 0;`` ABOVE
+    # T19-JS's START, the visibilitychange handler BELOW its END) live
+    # OUTSIDE all THIRTEEN regions, survive the excision and are
+    # asserted-present (re-pinned just above -- never relaxed); the
+    # shared ``three/addons/`` importmap mapping likewise survives
+    # (v2-A added NO importmap entry -- A7's fat-lines reuse the
+    # existing mapping via a region-interior dynamic import, exactly
+    # like Task-18's TransformControls).
+    assert len(stripped) == _PRE_TASK19_REMAINDER_LEN, (
+        f"length drift: {len(stripped)} != {_PRE_TASK19_REMAINDER_LEN} "
+        "(an UNINTENDED change leaked OUTSIDE the THIRTEEN deliberate "
+        "regions -- e.g. an A7 fat-line / A3/A4/A6 line escaped the "
+        "Task-16 T16-TRAJ region the 2c recipe requires it to stay "
+        "inside, an A1/A2-hint line escaped T19-CSS/T19-JS, or a NEW "
+        "importmap entry was added instead of reusing the existing "
+        "three/addons/ mapping via a dynamic import)"
     )
     assert (
         hashlib.sha256(stripped.encode()).hexdigest()
-        == _PRE_TASK18_REMAINDER_SHA
+        == _PRE_TASK19_REMAINDER_SHA
     )
 
 
