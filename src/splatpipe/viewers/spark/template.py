@@ -1439,7 +1439,15 @@ _VIEWER_TEMPLATE = """\
   }}
   function _autoFocusTick(now) {{
     // Path playback / bench own the camera+LoD → release focus.
-    if (_player || BENCH_AUTO) {{ _afClear(); return; }}
+    // A clip tour also owns the LoD origin for the WHOLE tour including
+    // the single inter-clip cut-transition frame: stopPath() nulls
+    // _player ONE frame before _clipLayer.update() starts the next clip,
+    // so without this disjunct _autoFocusTick would raycast the stale
+    // pose and write spark.lodPosOverride for ~1 frame, contending with
+    // the clip layer's LoD ownership. The 6 live single-camera scenes
+    // have no cameras/clips so _clipMode is false there (this disjunct
+    // is always false) -> byte-runtime-identical to before for them.
+    if (_player || BENCH_AUTO || (_clipMode && _clipState.active)) {{ _afClear(); return; }}
     // User toggled focus off (F) → balanced LoD.
     if (!_afOn) {{ _afClear(); return; }}
     // Before the raycast can work (early load, !_afReady) we KEEP whatever

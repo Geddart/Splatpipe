@@ -83,11 +83,11 @@ _VIEWER_INTRONONE_DIR = _MANUAL_DIR / "_viewer_intronone"
 # algorithm (fade-then-start, fail-safe clear) is independent of this value.
 _T13_INTRO_MS = 250
 
-# ── Task-14 variants: multi-camera Camera-Cuts tour + next-cut prewarm ───
+# --- Task-14 variants: multi-camera Camera-Cuts tour + next-cut prewarm -
 # Two more "same generated viewer, only the scene config differs" dirs:
-#   • _viewer_clips  — TWO cameras (each its own 2-keyframe straight path,
+#   * _viewer_clips  -- TWO cameras (each its own 2-keyframe straight path,
 #       at clearly-separated world positions) + TWO clips. The shared
-#       harness drives the REAL generated ClipPlayer (virtual clock →
+#       harness drives the REAL generated ClipPlayer (virtual clock ->
 #       reads `_spDebug.camera.position` + `window.__clip`) and asserts:
 #       clip A plays its camera's path, HARD-CUTS to camera B's path at
 #       the clip boundary (instant pose discontinuity, no tween), the tour
@@ -98,7 +98,7 @@ _T13_INTRO_MS = 250
 #       TEST ISOLATION as the Task-10/11 fixtures (the Task-13 fade-out is
 #       separately tested; the clip-sequence check measures ClipPlayer
 #       mechanics, not the intro gate).
-#   • _viewer_noclips — `default_path_id` set, NO cameras/clips: proves
+#   * _viewer_noclips -- `default_path_id` set, NO cameras/clips: proves
 #       the generalised _introStartTour falls back to the EXACT pre-Task-14
 #       single-tour behaviour (the hard-required no-clips regression).
 # `?tier=phone` is appended to the _viewer_clips iframe URL in the harness
@@ -110,7 +110,7 @@ _VIEWER_NOCLIPS_DIR = _MANUAL_DIR / "_viewer_noclips"
 
 # Two cameras, two clips. Camera A path = a long straight line near the
 # origin; camera B path = a long straight line far away on +X so the
-# A→B hard-cut is an unmistakable position discontinuity (no spline
+# A->B hard-cut is an unmistakable position discontinuity (no spline
 # could tween between them within the harness sampling). Clip A plays
 # camera A's path from in=0 for CLIP_A_DUR s; clip B (clip_start after
 # A) plays camera B's path. Both underlying paths are long (600 s) so a
@@ -166,7 +166,7 @@ def _t14_clips_config() -> dict:
 
 
 def _t14_noclips_config() -> dict:
-    """`default_path_id` only, NO cameras/clips → must behave EXACTLY
+    """`default_path_id` only, NO cameras/clips -> must behave EXACTLY
     like the pre-Task-14 single-tour autostart (no-clips regression)."""
     return {
         "annotations": [],
@@ -312,7 +312,7 @@ def generate() -> Path:
       * ``_viewer_intro/`` / ``_viewer_intronone/`` — auto-starting path
         with an ``intro`` of ``{type:"fade"}`` / ``{type:"none"}``; Task-13
         cinematic loading-blur + intro-fade check.
-      * ``_viewer_clips/`` / ``_viewer_noclips/`` — a 2-camera/2-clip
+      * ``_viewer_clips/`` / ``_viewer_noclips/`` -- a 2-camera/2-clip
         Camera-Cuts sequence / a `default_path_id`-only no-clips scene;
         Task-14 multi-camera tour + next-cut prewarm + the no-clips
         single-tour regression.
