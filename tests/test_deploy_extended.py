@@ -255,7 +255,8 @@ class TestEdgeRuleSlugRootCoverage:
 
     def test_desired_edge_rules_carry_slug_root_and_keep_description(self):
         """Exactly the two cache-override rules, both carrying the
-        slug-root patterns, with the stable addOrUpdate Description key."""
+        slug-root patterns (across however many triggers they are split
+        into), with the stable addOrUpdate Description key."""
         rules = _desired_edge_rules([])
         assert len(rules) == 2
         assert sorted(r["ActionType"] for r in rules) == [3, 15]
@@ -263,9 +264,37 @@ class TestEdgeRuleSlugRootCoverage:
             assert r["Enabled"] is True
             assert str(r["Description"]).startswith(_EDGE_DESC)
             assert r["ActionParameter1"] == "0"
-            patterns = r["Triggers"][0]["PatternMatches"]
+            # Union across ALL triggers (patterns are split <=5/trigger).
+            patterns = [
+                p for t in r["Triggers"] for p in t["PatternMatches"]
+            ]
             assert "https://splatpipe-cdn.b-cdn.net/*/" in patterns
             assert "https://splatpipe-cdn.b-cdn.net/*/?*" in patterns
+
+    def test_no_trigger_exceeds_bunny_pattern_limit(self):
+        """Regression lock: Bunny rejects (HTTP 400 edgerule.invalid) any
+        Edge Rule trigger carrying more than 5 PatternMatches. A single
+        trigger with all 6 URL patterns shipped in an earlier commit and
+        was rejected by the live API, so the slug-root hardening never
+        applied. Every trigger of every rule must hold <= 5 patterns, and
+        the union across a rule's triggers must exactly equal the full
+        pattern set (split, not dropped or duplicated)."""
+        rules = _desired_edge_rules([])
+        assert rules, "expected the two cache-override rules"
+        for r in rules:
+            triggers = r["Triggers"]
+            assert triggers, "a rule must carry at least one trigger"
+            union = []
+            for t in triggers:
+                pm = t["PatternMatches"]
+                assert len(pm) <= 5, (
+                    f"trigger has {len(pm)} PatternMatches; Bunny's hard "
+                    f"limit is 5 -> addOrUpdate would 400 and the rule "
+                    f"would never apply"
+                )
+                union.extend(pm)
+            # No pattern lost or duplicated by the chunking.
+            assert union == list(_EDGE_URL_PATTERNS)
 
     def test_existing_rule_guids_reused_so_addorupdate_updates_in_place(self):
         """When prior rules exist (matched by Description), their Guids are

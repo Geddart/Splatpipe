@@ -271,6 +271,15 @@ def list_bunny_subfolders(
 # ---------------------------------------------------------------------------
 _EDGE_PULLZONE_HOST = "splatpipe-cdn"
 _EDGE_DESC = "splatpipe: no-edge-cache for permanent-slug index/config (redeploy-safe)"
+# Bunny rejects an Edge Rule trigger that carries more than 5 PatternMatches
+# (verified against the live API: HTTP 400
+# {"ErrorKey":"edgerule.invalid","Message":"Maximum 5 ... per condition."}).
+# We have >5 URL patterns, so they are split across multiple triggers of
+# <= _MAX_PATTERNS_PER_TRIGGER each. With TriggerMatchingType=0 (MatchAny
+# across triggers) + PatternMatchingType=0 (MatchAny within a trigger) this
+# is semantically identical to one combined trigger. Splitting (not dropping
+# patterns) preserves every pattern's coverage.
+_MAX_PATTERNS_PER_TRIGGER = 5
 _EDGE_URL_PATTERNS = [
     # The bare slug-root directory URL the user actually opens.
     "https://splatpipe-cdn.b-cdn.net/*/",
@@ -306,10 +315,18 @@ def _find_edge_pullzone(api_key: str) -> dict:
 
 def _desired_edge_rules(existing: list[dict]) -> list[dict]:
     """Two rules (edge cache 0, browser cache 0). Reuse Guids by Description
-    so addOrUpdate edits in place instead of duplicating."""
+    so addOrUpdate edits in place instead of duplicating. The URL patterns
+    are split across triggers of <= _MAX_PATTERNS_PER_TRIGGER PatternMatches
+    because Bunny rejects a trigger with more than 5; TriggerMatchingType=0
+    (MatchAny across triggers) keeps the semantics identical to one combined
+    trigger and preserves every pattern's coverage."""
     by_desc = {r.get("Description"): r for r in existing}
-    trigger = {"Type": 0, "PatternMatchingType": 0,
-               "PatternMatches": _EDGE_URL_PATTERNS, "Parameter1": ""}
+    triggers = [
+        {"Type": 0, "PatternMatchingType": 0,
+         "PatternMatches": _EDGE_URL_PATTERNS[i:i + _MAX_PATTERNS_PER_TRIGGER],
+         "Parameter1": ""}
+        for i in range(0, len(_EDGE_URL_PATTERNS), _MAX_PATTERNS_PER_TRIGGER)
+    ]
     out = []
     for action, tag in ((3, "edge"), (15, "browser")):
         d = f"{_EDGE_DESC} [{tag}]"
@@ -322,7 +339,7 @@ def _desired_edge_rules(existing: list[dict]) -> list[dict]:
             "Enabled": True,
             "Description": d,
             "TriggerMatchingType": 0,     # MatchAny across triggers
-            "Triggers": [dict(trigger)],
+            "Triggers": [dict(t) for t in triggers],
         })
     return out
 
