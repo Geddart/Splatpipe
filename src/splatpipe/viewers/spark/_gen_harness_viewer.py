@@ -330,51 +330,51 @@ def generate() -> Path:
     _VIEWER_NOCLIPS_DIR.mkdir(parents=True, exist_ok=True)
     # Same generated viewer for ALL variants — only the config differs.
     html = html_for("HarnessScene")
-    (_VIEWER_DIR / "index.html").write_text(html, encoding="utf-8")
-    (_VIEWER_PATH_DIR / "index.html").write_text(html, encoding="utf-8")
-    (_VIEWER_LIN_DIR / "index.html").write_text(html, encoding="utf-8")
-    (_VIEWER_NOLIN_DIR / "index.html").write_text(html, encoding="utf-8")
-    (_VIEWER_STEP_DIR / "index.html").write_text(html, encoding="utf-8")
-    (_VIEWER_INTRO_DIR / "index.html").write_text(html, encoding="utf-8")
-    (_VIEWER_INTRONONE_DIR / "index.html").write_text(html, encoding="utf-8")
-    (_VIEWER_CLIPS_DIR / "index.html").write_text(html, encoding="utf-8")
-    (_VIEWER_NOCLIPS_DIR / "index.html").write_text(html, encoding="utf-8")
+    (_VIEWER_DIR / "index.html").write_text(html, encoding="utf-8", newline="")
+    (_VIEWER_PATH_DIR / "index.html").write_text(html, encoding="utf-8", newline="")
+    (_VIEWER_LIN_DIR / "index.html").write_text(html, encoding="utf-8", newline="")
+    (_VIEWER_NOLIN_DIR / "index.html").write_text(html, encoding="utf-8", newline="")
+    (_VIEWER_STEP_DIR / "index.html").write_text(html, encoding="utf-8", newline="")
+    (_VIEWER_INTRO_DIR / "index.html").write_text(html, encoding="utf-8", newline="")
+    (_VIEWER_INTRONONE_DIR / "index.html").write_text(html, encoding="utf-8", newline="")
+    (_VIEWER_CLIPS_DIR / "index.html").write_text(html, encoding="utf-8", newline="")
+    (_VIEWER_NOCLIPS_DIR / "index.html").write_text(html, encoding="utf-8", newline="")
     # A stub config so the no-store fetch succeeds and the viewer takes its
     # normal (non-error) path; no scene.rad is referenced/needed for the
     # framework-init assertions.
     (_VIEWER_DIR / "viewer-config.json").write_text(
-        json.dumps({"annotations": [], "camera_paths": []}), encoding="utf-8"
+        json.dumps({"annotations": [], "camera_paths": []}), encoding="utf-8", newline=""
     )
     (_VIEWER_PATH_DIR / "viewer-config.json").write_text(
-        json.dumps(_HARNESS_PATH_CONFIG), encoding="utf-8"
+        json.dumps(_HARNESS_PATH_CONFIG), encoding="utf-8", newline=""
     )
     # Task-11: linear / absent(no-interp) / stepped middle-keyframe variants.
     (_VIEWER_LIN_DIR / "viewer-config.json").write_text(
-        json.dumps(_t11_config("linear")), encoding="utf-8"
+        json.dumps(_t11_config("linear")), encoding="utf-8", newline=""
     )
     (_VIEWER_NOLIN_DIR / "viewer-config.json").write_text(
-        json.dumps(_t11_config(None)), encoding="utf-8"
+        json.dumps(_t11_config(None)), encoding="utf-8", newline=""
     )
     (_VIEWER_STEP_DIR / "viewer-config.json").write_text(
-        json.dumps(_t11_config("stepped")), encoding="utf-8"
+        json.dumps(_t11_config("stepped")), encoding="utf-8", newline=""
     )
     # Task-13: fade (short ms) / none intro variants, each with an
     # auto-start path so the harness can assert tour-after-fade vs
     # tour-immediately.
     (_VIEWER_INTRO_DIR / "viewer-config.json").write_text(
         json.dumps(_t13_config({"type": "fade", "ms": _T13_INTRO_MS})),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     (_VIEWER_INTRONONE_DIR / "viewer-config.json").write_text(
-        json.dumps(_t13_config({"type": "none"})), encoding="utf-8"
+        json.dumps(_t13_config({"type": "none"})), encoding="utf-8", newline=""
     )
     # Task-14: a 2-camera/2-clip Camera-Cuts sequence, and the
     # `default_path_id`-only no-clips regression scene.
     (_VIEWER_CLIPS_DIR / "viewer-config.json").write_text(
-        json.dumps(_t14_clips_config()), encoding="utf-8"
+        json.dumps(_t14_clips_config()), encoding="utf-8", newline=""
     )
     (_VIEWER_NOCLIPS_DIR / "viewer-config.json").write_text(
-        json.dumps(_t14_noclips_config()), encoding="utf-8"
+        json.dumps(_t14_noclips_config()), encoding="utf-8", newline=""
     )
     return _VIEWER_DIR
 

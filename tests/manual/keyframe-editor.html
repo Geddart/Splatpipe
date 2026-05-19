@@ -93,14 +93,13 @@
         The player tick itself NEVER sets the override (it is only ever
         the prewarm pass or _autoFocusTick). ?tier=phone exercises the
         mandatory mobile mitigations (shorter lead, phoneShallow pin
-        cap) without a real device. REVIEW FOLLOW-UP (Task 14(d)):
-        with THREE.Raycaster.intersectObject monkeypatched to FORCE a
-        synthetic centre hit (so a scene-less raycast-miss is NOT what
-        suppresses the write -- the guard is), _autoFocusTick writes
-        NO lodPosOverride at ANY active-tour frame INCLUDING the single
-        inter-clip cut-transition frame (the clip layer owns the LoD
-        origin for the whole tour; the broadened
-        `_clipMode && _clipState.active` guard early-returns there).
+        cap) without a real device. The Minor-1 broadened
+        _autoFocusTick clip-mode guard (that the clip layer, not auto-
+        focus, owns the LoD origin for the whole tour incl. the inter-
+        clip cut frame) is NOT asserted here -- it is structurally
+        unobservable in a scene-less harness; that runtime
+        demonstration is DEFERRED to the real-scene visual pass, see
+        the NOTE below.
       * _viewer_noclips (`default_path_id`, NO cameras/clips):
         window.__clip.mode === false and the camera plays the single
         default path EXACTLY as the pre-Task-14 single-tour autostart
@@ -119,6 +118,29 @@
     bounded short-lead prewarm or falls back to skip-on-phone
     (?clipPrewarm=0). The scheduling/guard-lifecycle STATE is fully
     asserted here; only the real-pixel residency claims are deferred.
+    NOTE (honest deferral): a scene-less harness ALSO CANNOT exercise
+    the Minor-1 broadened _autoFocusTick clip-mode guard. The harness
+    never completes preload (the 26x scene.rad 404 means _afReady
+    never becomes true), so _autoFocusTick returns at its !_afReady
+    gate BEFORE the LoD-override write in BOTH the broadened and the
+    un-broadened build; the gate variables
+    (_afReady/_afOn/_afLast/_afKey/_afSet) are closure-locals with no
+    window.__* test surface, so the broadened-guard effect is
+    structurally unobservable here (a harness check would be vacuous --
+    hence the former Task-14(d) check was REMOVED, not shipped
+    vacuous). That runtime demonstration is DEFERRED to the
+    controller's consolidated real-scene visual pass, which must
+    verify: on a real scene with >=2 clips, during the auto-played
+    clip tour AND specifically at the inter-clip hard-cut transition
+    frame, the clip layer owns spark.lodPosOverride (it stays null or
+    the next-cut prewarm pose) and _autoFocusTick does NOT write an
+    auto-focus LoD origin / fight the clip layer at the cut (no
+    transient LoD-origin churn at cuts). The Minor-1 *code* itself is
+    review-certified correct: the `(_clipMode && _clipState.active)`
+    disjunct is the De Morgan dual of the clip-update gate and is
+    runtime-identical for the 6 live single-camera scenes (where
+    _clipMode is false) -- the deferral is of the runtime
+    demonstration, NOT of unreviewed code.
   -->
   <style>
     html, body { height: 100%; margin: 0; padding: 0;
@@ -1229,7 +1251,15 @@
           sLead: cc.sLead, ovLead: cc.ovLead,
           ovOutsideLead: cc.ovOutsideLead }) +
           ' | REAL-CHUNK residency + phone-thrash DEFERRED to the ' +
-          'real-scene visual pass (scene-less harness -- see header NOTE)');
+          'real-scene visual pass (scene-less harness -- see header NOTE)' +
+          ' | Minor-1 broadened _autoFocusTick clip-mode guard ' +
+          '(no auto-focus LoD-origin churn at the inter-clip cut) ' +
+          'ALSO DEFERRED to the real-scene visual pass: scene-less ' +
+          'never completes preload so _afReady stays false and ' +
+          '_autoFocusTick returns before the override write in BOTH ' +
+          'builds (a check here would be vacuous -- former Task-14(d) ' +
+          'REMOVED); the Minor-1 code is review-certified correct ' +
+          '(De Morgan dual of the clip-update gate). See header NOTE.');
 
       // (c) no-clips regression: `default_path_id`, NO cameras/clips ->
       //     window.__clip.mode === false and the camera plays the single
@@ -1286,166 +1316,6 @@
         'fallback -- the hard-required no-clips regression)',
         !!(nc.mode === false && nc.moved === true),
         JSON.stringify(nc));
-
-      // (d) Task-14 REVIEW FOLLOW-UP (Minor-1): during an ACTIVE clip
-      //     tour the clip layer owns the LoD origin for the WHOLE tour
-      //     INCLUDING the single inter-clip cut-transition frame (where
-      //     stopPath() has nulled _player but _clipLayer.update() has not
-      //     yet started the next clip, so _clipState.active is still
-      //     true). The broadened _autoFocusTick guard
-      //     (`_player || BENCH_AUTO || (_clipMode && _clipState.active)`)
-      //     must early-return there so auto-focus NEVER writes
-      //     spark.lodPosOverride during the tour -- otherwise it churns
-      //     the override for ~1 frame at every hard cut. To make this
-      //     OBSERVABLE in a scene-less harness (where _autoFocusTick's
-      //     centre raycast would otherwise always MISS, never reaching
-      //     the override write regardless of the guard -> a vacuous
-      //     test), we monkeypatch THREE.Raycaster.prototype
-      //     .intersectObject (the SAME `three` module the viewer's
-      //     `_raycaster` uses, exposed via __sp.THREE) to return a
-      //     synthetic hit at a DISTINCTIVE point far from camera B's
-      //     start pose [500,0,0] and the origin. With that forced hit,
-      //     IF auto-focus ran during the tour it WOULD write an override
-      //     along (camera -> AF_HIT) -- a value whose y goes strongly
-      //     negative, impossible from the prewarm (camB-start) or the
-      //     clip layer. We single-step the virtual clock across the
-      //     cut-transition frame and assert lodPosOverride is ONLY ever
-      //     null or the prewarm camB-start pose -- NEVER the auto-focus
-      //     synthetic value -- at every active-tour frame incl. the cut.
-      async function autoFocusNoChurnCheck() {
-        const win = frameWin('f-clips');
-        if (!win) return { ok: false, reason: 'no f-clips window' };
-        let TR;
-        try { TR = win.__sp.THREE.Raycaster; } catch (e) { TR = null; }
-        if (!TR || !TR.prototype)
-          return { ok: false, reason: 'no THREE.Raycaster surface' };
-        // The forced synthetic intersection point (distinctive: large
-        // NEGATIVE y -- the prewarm/clip-layer never produce y<0 here).
-        const AF_HIT = [777, -333, 222];
-        const origIntersect = TR.prototype.intersectObject;
-        const origIntersects = TR.prototype.intersectObjects;
-        let patched = false;
-        try {
-          const v = new (win.__sp.THREE.Vector3)(
-            AF_HIT[0], AF_HIT[1], AF_HIT[2]);
-          TR.prototype.intersectObject = function () {
-            return [{ distance: 1, point: v.clone(), object: null }];
-          };
-          TR.prototype.intersectObjects = function () {
-            return [{ distance: 1, point: v.clone(), object: null }];
-          };
-          patched = true;
-        } catch (e) { patched = false; }
-        try {
-          const tickRAF = () => new Promise((res) => {
-            win.requestAnimationFrame(() =>
-              win.requestAnimationFrame(() => res()));
-          });
-          const lodOv = () => {
-            try {
-              const o = win.__sp.spark.lodPosOverride;
-              return o ? [o.x, o.y, o.z] : null;
-            } catch (e) { return null; }
-          };
-          const cst = () => {
-            try {
-              const c = win.__clip;
-              return {
-                mode: !!(c && c.mode),
-                active: !!(c && c.state && c.state.active),
-                idx: (c && c.state) ? c.state.idx : -1,
-              };
-            } catch (e) { return { mode: false, active: false, idx: -1 }; }
-          };
-          // Re-freeze clock + restart the tour from clip 0 so the
-          // observation window deterministically straddles the cut.
-          win.eval('(function(){var p=window.performance;' +
-            'window.__vt=p.now();p.now=function(){return window.__vt;};})()');
-          let restarted = false;
-          try { restarted = !!win.__clip.restart(); } catch (e) {}
-          await tickRAF();
-          // The AF synthetic value would have y strongly negative; the
-          // prewarm parks camB-start [500,0,0]. "Looks like an auto-focus
-          // write" = override present with clearly negative y (the clip
-          // path quats are identity and all poses have y>=~0).
-          const looksAF = (o) => !!o && o[1] < -50;
-          const CAM_B_START = [500, 0, 0];
-          const isPrewarm = (o) => !o ||
-            _approxEq3(o, CAM_B_START, 1.5);
-          // Single-step across the active tour: idx 0 (incl. its lead
-          // window where the prewarm DOES legitimately set the override)
-          // -> the cut-transition frame -> idx 1, sampling every step.
-          const samples = [];
-          let sawActive0 = false, sawCut = false, prevOv = lodOv();
-          let afWriteFrame = -1, cutOv = null, preCutOv = null;
-          for (let i = 0; i < 240; i++) {
-            const s = cst();
-            const o = lodOv();
-            samples.push({ i: i, idx: s.idx, active: s.active, ov: o });
-            if (s.active && s.idx === 0) sawActive0 = true;
-            // The single cut-transition frame: idx advanced to >=1 while
-            // still active (the frame AFTER stopPath nulled _player; the
-            // clip layer will have just _clipStart-ed the next clip).
-            if (s.active && s.idx >= 1 && !sawCut) {
-              sawCut = true;
-              cutOv = o;
-              preCutOv = prevOv;
-            }
-            // Auto-focus contention signature: an override that looks
-            // like the forced AF hit (negative y) at ANY active-tour
-            // frame. With Minor-1's guard this must NEVER happen.
-            if (s.active && looksAF(o) && afWriteFrame < 0)
-              afWriteFrame = i;
-            prevOv = o;
-            // Stop once the tour finished (a few frames past the cut).
-            if (!s.active && sawCut && i > 4) break;
-            win.eval('window.__vt += 150');
-            await tickRAF();
-          }
-          // The override at EVERY active-tour frame must be null or the
-          // prewarm camB-start -- never the auto-focus synthetic value.
-          const everyActiveClipOwned = samples
-            .filter(s => s.active)
-            .every(s => isPrewarm(s.ov) && !looksAF(s.ov));
-          // Across the exact cut-transition frame the override is
-          // clip-owned and "unchanged through the cut": it equals the
-          // immediately-preceding frame's value (the prewarm pin / null
-          // persists across the cut -- it is NOT replaced by an
-          // auto-focus write that frame). Both sides must be clip-owned.
-          const cutUnchanged = sawCut &&
-            isPrewarm(cutOv) && isPrewarm(preCutOv) &&
-            !looksAF(cutOv) && !looksAF(preCutOv);
-          return {
-            ok: !!(patched && sawActive0 && sawCut &&
-              afWriteFrame < 0 && everyActiveClipOwned && cutUnchanged),
-            restarted: restarted, patched: patched,
-            sawActive0: sawActive0, sawCut: sawCut,
-            afWriteFrame: afWriteFrame,
-            everyActiveClipOwned: everyActiveClipOwned,
-            cutUnchanged: cutUnchanged,
-            cutOv: cutOv, preCutOv: preCutOv,
-            activeFrames: samples.filter(s => s.active).length,
-            totalFrames: samples.length,
-          };
-        } finally {
-          // ALWAYS restore the real raycast (other checks/iframes share
-          // the THREE prototype within this window).
-          try {
-            if (patched) {
-              TR.prototype.intersectObject = origIntersect;
-              TR.prototype.intersectObjects = origIntersects;
-            }
-          } catch (e) {}
-        }
-      }
-      const af = await autoFocusNoChurnCheck();
-      T('Task 14(d): _autoFocusTick writes NO lodPosOverride during an ' +
-        'ACTIVE clip tour incl. the inter-clip cut-transition frame ' +
-        '(clip layer owns the LoD origin -- no hard-cut override churn; ' +
-        'raycast FORCED to hit so the guard, not a scene-less miss, is ' +
-        'what suppresses the write)',
-        !!(af.ok),
-        JSON.stringify(af));
 
       // ── Report ───────────────────────────────────────────────────────
       const passCount = results.filter(r => r.pass).length;
