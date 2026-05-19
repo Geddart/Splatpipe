@@ -4229,9 +4229,13 @@ _VIEWER_TEMPLATE = """\
           ? _trajDots.material.color.getHex() : 0;
       }},
       get tickColorIsWhite() {{
+        // Read the sRGB hex (color-space-robust: THREE may store the
+        // working colour LINEAR, so c.r/g/b would under-read a true
+        // near-white; the hex bytes are the authored sRGB value).
         if (!_trajDots || !_trajDots.material) return false;
-        const c = _trajDots.material.color;
-        return c.r >= 0.85 && c.g >= 0.85 && c.b >= 0.85;
+        const h = _trajDots.material.color.getHex();
+        const r = (h >> 16) & 255, g = (h >> 8) & 255, b = h & 255;
+        return r >= 0xCC && g >= 0xCC && b >= 0xCC;
       }},
       get tickOpacity() {{
         return (_trajDots && _trajDots.material)
