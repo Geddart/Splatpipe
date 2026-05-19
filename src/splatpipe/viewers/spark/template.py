@@ -2381,24 +2381,33 @@ _VIEWER_TEMPLATE = """\
     while (used.has('Camera ' + n)) n += 1;
     return 'Camera ' + n;
   }}
-  // The animated/scene cameras the dropdown lists. Prefer the
-  // virtual-camera list (cfg.cameras: {{id,name,path_id}}); else
-  // fall back to the raw camera_paths (value=path id, label=path
-  // name or "Camera N"). Each entry is {{ value:<pathId>, label }}.
+  // The animated/scene cameras the dropdown lists. UNION semantics:
+  // cfg.cameras' virtual-camera list ({{id,name,path_id}}) FIRST, then
+  // synthesise an entry from EACH cameraPaths[i] whose id is NOT already
+  // covered by some cfg.cameras[j].path_id (preserves original scene
+  // cameras when cfg.cameras gains a newly-Added entry but the SAME
+  // pre-existing camera_paths still ship -- WITHOUT this union the
+  // dropdown would switch off the cameraPaths fallback the moment
+  // cfg.cameras becomes non-empty and the original cameras would
+  // DISAPPEAR from the listing). Pure: NEITHER input array is mutated;
+  // the union is recomputed per call -- consistent with the existing
+  // pure-function shape _camSelBuildOptions / _camSelInit rely on.
+  // Each entry is {{ value:<pathId>, label }} (the dropdown value is the
+  // path id -- the same value _camSelApply / selEl rebind read).
   function _camSelCameras() {{
     const out = [];
+    const covered = new Set();
     const cams = Array.isArray(cfg.cameras) ? cfg.cameras : [];
-    if (cams.length > 0) {{
-      for (const c of cams) {{
-        if (!c || !c.path_id) continue;
-        out.push({{ value: c.path_id, label: c.name || c.path_id }});
-      }}
-      if (out.length > 0) return out;
+    for (const c of cams) {{
+      if (!c || !c.path_id) continue;
+      out.push({{ value: c.path_id, label: c.name || c.path_id }});
+      covered.add(c.path_id);
     }}
     let n = 0;
     for (const p of cameraPaths) {{
       if (!p || !p.id) continue;
       n += 1;
+      if (covered.has(p.id)) continue;
       out.push({{ value: p.id, label: p.name || ('Camera ' + n) }});
     }}
     return out;
