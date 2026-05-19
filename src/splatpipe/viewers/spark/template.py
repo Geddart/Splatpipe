@@ -6092,6 +6092,7 @@ _VIEWER_TEMPLATE = """\
     let _gzAltOrbiting = false;   // B1: an Alt+Left orbit gesture is live
     let _gzAltPrevGz = null;      // _gzCtl.enabled saved across the gesture
     let _gzAltPrevTan = null;     // _tanCtl.enabled saved across the gesture
+    let _gzAltPid = -1;           // pointerId that started the Alt-orbit
     // B2 stacked-keyframe click-cycle state. _gzPkLastX/Y = the screen
     // px of the previous pick; _gzPkCands = the sorted candidate kf
     // indices of that pick; _gzPkIdx = how deep we are in that stack;
@@ -7052,13 +7053,14 @@ _VIEWER_TEMPLATE = """\
     //   auto-tour is already suppressed in author mode and the left-
     //   orbit path has no _player block) -> Alt+Left = clean orbit.
     //   Registered in CAPTURE phase on window so it runs before TC's
-    //   document-level bubble pointerdown.
+    //   domElement-level bubble pointerdown.
     function _gzAltDown(ev) {{
       if (!ModeManager.is('author')) return;
       if (ev.button !== undefined && ev.button !== 0) return;
       if (!ev.altKey) return;
       if (_gzAltOrbiting) return;        // already neutralised
       _gzAltOrbiting = true;
+      _gzAltPid = (ev.pointerId != null) ? ev.pointerId : -1;
       if (_gzCtl) {{
         _gzAltPrevGz = _gzCtl.enabled;
         _gzCtl.enabled = false;
@@ -7068,9 +7070,17 @@ _VIEWER_TEMPLATE = """\
         _tanCtl.enabled = false;
       }}
     }}
-    function _gzAltRestore() {{
+    function _gzAltRestore(ev) {{
       if (!_gzAltOrbiting) return;
+      // Only IGNORE a pointerup whose pointerId is present AND differs
+      // from the initiating pointer's (a foreign second touch/pen must
+      // not re-enable TC mid Alt-orbit). A pointercancel, or any event
+      // with no usable pointerId, ALWAYS tears down -- wedge-safety:
+      // it must be impossible to end stuck-orbiting / TC-disabled.
+      if (ev && ev.type !== 'pointercancel' &&
+          ev.pointerId != null && ev.pointerId !== _gzAltPid) return;
       _gzAltOrbiting = false;
+      _gzAltPid = -1;
       if (_gzCtl && _gzAltPrevGz !== null) {{
         _gzCtl.enabled = _gzAltPrevGz;
       }}
