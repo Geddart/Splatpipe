@@ -108,6 +108,81 @@ _T13_INTRO_MS = 250
 _VIEWER_CLIPS_DIR = _MANUAL_DIR / "_viewer_clips"
 _VIEWER_NOCLIPS_DIR = _MANUAL_DIR / "_viewer_noclips"
 
+# --- Task-15 variant: end-user transport (interrupt/resume/idle-orbit) --
+# A 2-camera/2-clip Camera-Cuts scene like _viewer_clips, but each camera
+# carries a DISTINCT, clearly non-origin `orbit_pivot` so the per-shot
+# idle auto-orbit's pivot anchoring is observable (the orbit must circle
+# the AUTHORED pivot, NOT the world origin -- a derived-number trap the
+# spec explicitly calls out). The harness drives the REAL generated
+# transport under the SAME controllable virtual clock the Task-10/11/14
+# checks proved out + the TEST-ONLY `window.__transport` surface:
+#   * synthesise an interrupt mid-tour -> the tour stops,
+#     controls.enabled === true, #user-play becomes visible;
+#   * click #user-play (via __transport.resume()) -> the tour resumes
+#     from the NEAREST CUT <= the playhead captured at interrupt (assert
+#     the resumed clip idx);
+#   * force the per-shot idle clock past a SHORT IDLE_MS (?idleMs=300 +
+#     __transport.idleNow()) -> the slow orbit starts and the camera
+#     circles camera A's authored orbit_pivot (distance to the pivot ~=
+#     const while distance to origin VARIES -- proves it is the pivot,
+#     not origin); any input cancels it.
+# `intro:{type:"none"}` is the SAME deliberate TEST ISOLATION as the
+# Task-10/11/14 fixtures. Separate dir so all prior fixture dirs stay
+# byte-identical.
+_VIEWER_TRANSPORT_DIR = _MANUAL_DIR / "_viewer_transport"
+
+# Camera A's authored orbit pivot -- deliberately FAR from both the world
+# origin AND camera B's path (x=500) so "orbits the authored pivot, not
+# origin" is unambiguous in the scene-less harness.
+_T15_CAM_A_PIVOT = [100.0, 0.0, 0.0]
+_T15_CAM_B_PIVOT = [500.0, 30.0, 0.0]
+
+
+def _t15_transport_config() -> dict:
+    """2 cameras (each with a distinct authored ``orbit_pivot``) + 2
+    clips -- the Task-15 interrupt/resume/idle-orbit fixture. Same shape
+    as ``_t14_clips_config`` plus the per-camera ``orbit_pivot`` the idle
+    auto-orbit anchors to."""
+    return {
+        "annotations": [],
+        "intro": {"type": "none"},
+        "cameras": [
+            {"id": "camA", "name": "Camera A", "path_id": "pathA",
+             "orbit_pivot": list(_T15_CAM_A_PIVOT)},
+            {"id": "camB", "name": "Camera B", "path_id": "pathB",
+             "orbit_pivot": list(_T15_CAM_B_PIVOT)},
+        ],
+        "clips": [
+            {"id": "clipA", "camera_id": "camA",
+             "clip_start": 0.0, "duration": _T14_CLIP_A_DUR, "in": 0.0},
+            {"id": "clipB", "camera_id": "camB",
+             "clip_start": _T14_CLIP_A_DUR,
+             "duration": _T14_CLIP_B_DUR, "in": 0.0},
+        ],
+        "camera_paths": [
+            {
+                "id": "pathA", "name": "Path A", "loop": False,
+                "smoothness": 1.0, "play_speed": 1.0,
+                "keyframes": [
+                    {"t": 0.0, "pos": list(_T14_CAM_A_P0),
+                     "quat": [0.0, 0.0, 0.0, 1.0], "fov": 60.0},
+                    {"t": 600.0, "pos": list(_T14_CAM_A_P1),
+                     "quat": [0.0, 0.0, 0.0, 1.0], "fov": 60.0},
+                ],
+            },
+            {
+                "id": "pathB", "name": "Path B", "loop": False,
+                "smoothness": 1.0, "play_speed": 1.0,
+                "keyframes": [
+                    {"t": 0.0, "pos": list(_T14_CAM_B_P0),
+                     "quat": [0.0, 0.0, 0.0, 1.0], "fov": 60.0},
+                    {"t": 600.0, "pos": list(_T14_CAM_B_P1),
+                     "quat": [0.0, 0.0, 0.0, 1.0], "fov": 60.0},
+                ],
+            },
+        ],
+    }
+
 # Two cameras, two clips. Camera A path = a long straight line near the
 # origin; camera B path = a long straight line far away on +X so the
 # A->B hard-cut is an unmistakable position discontinuity (no spline
@@ -316,6 +391,9 @@ def generate() -> Path:
         Camera-Cuts sequence / a `default_path_id`-only no-clips scene;
         Task-14 multi-camera tour + next-cut prewarm + the no-clips
         single-tour regression.
+      * ``_viewer_transport/`` -- a 2-camera/2-clip scene whose cameras
+        carry distinct authored ``orbit_pivot``s; Task-15 end-user
+        interrupt + resume-from-nearest-cut + per-shot idle auto-orbit.
     Returns the Task-0 ``_viewer/`` dir (the harness page resolves the rest
     relatively).
     """
@@ -328,6 +406,7 @@ def generate() -> Path:
     _VIEWER_INTRONONE_DIR.mkdir(parents=True, exist_ok=True)
     _VIEWER_CLIPS_DIR.mkdir(parents=True, exist_ok=True)
     _VIEWER_NOCLIPS_DIR.mkdir(parents=True, exist_ok=True)
+    _VIEWER_TRANSPORT_DIR.mkdir(parents=True, exist_ok=True)
     # Same generated viewer for ALL variants — only the config differs.
     html = html_for("HarnessScene")
     (_VIEWER_DIR / "index.html").write_text(html, encoding="utf-8", newline="")
@@ -339,6 +418,7 @@ def generate() -> Path:
     (_VIEWER_INTRONONE_DIR / "index.html").write_text(html, encoding="utf-8", newline="")
     (_VIEWER_CLIPS_DIR / "index.html").write_text(html, encoding="utf-8", newline="")
     (_VIEWER_NOCLIPS_DIR / "index.html").write_text(html, encoding="utf-8", newline="")
+    (_VIEWER_TRANSPORT_DIR / "index.html").write_text(html, encoding="utf-8", newline="")
     # A stub config so the no-store fetch succeeds and the viewer takes its
     # normal (non-error) path; no scene.rad is referenced/needed for the
     # framework-init assertions.
@@ -375,6 +455,11 @@ def generate() -> Path:
     )
     (_VIEWER_NOCLIPS_DIR / "viewer-config.json").write_text(
         json.dumps(_t14_noclips_config()), encoding="utf-8", newline=""
+    )
+    # Task-15: a 2-camera/2-clip scene whose cameras carry distinct
+    # authored orbit_pivots (the interrupt/resume/idle-orbit fixture).
+    (_VIEWER_TRANSPORT_DIR / "viewer-config.json").write_text(
+        json.dumps(_t15_transport_config()), encoding="utf-8", newline=""
     )
     return _VIEWER_DIR
 
@@ -419,7 +504,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"generated {d / 'index.html'} ({(d / 'index.html').stat().st_size} bytes)")
     for _vd in (_VIEWER_PATH_DIR, _VIEWER_LIN_DIR, _VIEWER_NOLIN_DIR,
                 _VIEWER_STEP_DIR, _VIEWER_INTRO_DIR, _VIEWER_INTRONONE_DIR,
-                _VIEWER_CLIPS_DIR, _VIEWER_NOCLIPS_DIR):
+                _VIEWER_CLIPS_DIR, _VIEWER_NOCLIPS_DIR,
+                _VIEWER_TRANSPORT_DIR):
         print(f"generated {_vd / 'index.html'} "
               f"({(_vd / 'index.html').stat().st_size} bytes)")
     if args.serve is not None:

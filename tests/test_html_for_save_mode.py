@@ -28,18 +28,103 @@ from splatpipe.core.events import ProgressEvent, StepResult
 from splatpipe.steps.publish import publish_scene
 from splatpipe.viewers.spark.template import html_for
 
-# --- Moving baseline (Task 14) -------------------------------------------
+# --- Moving baseline (Task 15) -------------------------------------------
 # The byte-identity guard pins the PREVIOUS task's COMMITTED generated
 # output and asserts the only delta is THIS task's deliberate change. The
 # baseline therefore moves forward one commit each task (see the regen
-# recipe below). For Task 14 the pinned baseline is the committed template
-# at HEAD ``842b50f`` (the commit BEFORE Task 14's edit -- i.e. Task 13
-# committed) -- which ALREADY contains Task 8's inert SAVE_* block, Task
-# 10's two visibilitychange blocks, Task 11's in-place spline change,
-# Task 12's three dual-UI regions AND Task 13's three regions (loading-
-# blur DOM, deferred autostart, intro IIFE). ``html_for("HarnessScene")``
-# there is 183025 bytes.
+# recipe below). For Task 15 the pinned baseline is the committed template
+# at HEAD ``7acdd39`` (the commit BEFORE Task 15's edit -- i.e. Task 14
+# committed + its test follow-up) -- which ALREADY contains Task 8's inert
+# SAVE_* block, Task 10's two visibilitychange blocks, Task 11's in-place
+# spline change, Task 12's three dual-UI regions, Task 13's three regions
+# (loading-blur DOM, deferred autostart, intro IIFE) AND Task 14's grown
+# T13-AS ClipPlayer + the T14-PW prewarm guard-twin + the T14-AF broadened
+# auto-focus guard. ``html_for("HarnessScene")`` there is 207431 bytes.
 #
+# Task 15 (end-user transport -- click-interrupt + bottom resume +
+# per-shot idle auto-orbit) is the cinematic end-user shell's interaction
+# layer. It touches TWO regions:
+#   (T13-AS, MODIFIED IN PLACE AGAIN, recipe 2b): the SAME unchanged
+#     ``  if (cfg.default_path_id) {`` START / ``// ---- Bench launchers
+#     ...`` END that has bounded Task 13's deferred autostart and Task
+#     14's whole ClipPlayer now ALSO contains the end-user transport
+#     block: ``IDLE_MS``, the SHARED ``_orbitPathAround`` orbit-math
+#     helper (the bench's ``_buildOrbitPath`` is refactored to delegate to
+#     it -- see T15-OB), ``_stopTour``/``_resumeTour``/``_startIdleOrbit``/
+#     ``_cancelIdleOrbit``, the ``#user-play`` button (injected into the
+#     Task-12 ``#user-transport`` root, inline-styled like ``#sp-hud`` so
+#     there is NO new CSS region), the interrupt pointerdown + input-note
+#     listeners, the ``_transportLayer`` (fanned out from the ONE
+#     OverlayScene tick), and the ``window.__transport`` test surface. The
+#     START anchor is STILL the first line of the region (unmoved) so it
+#     pre-exists UNCHANGED in BOTH ``7acdd39`` and current; ALL Task-15
+#     additions sit strictly between it and the UNCHANGED END comment. The
+#     Task-10 visibilitychange handler sits ABOVE this START and is NOT
+#     swallowed (its survival is asserted below).
+#   (T15-OB, NEW modify-in-place region, recipe 2b): ``_buildOrbitPath``
+#     is refactored from an inline Y-spin loop into a pure delegation to
+#     the shared ``_orbitPathAround`` helper (declared in the grown T13-AS
+#     region, hoisted -- same forward-reference-via-hoisting pattern the
+#     existing ``_clipStart``/``_clipPrewarmRelease`` pair already uses).
+#     It passes the SAME center (``_origTarget``), SAME base pose
+#     (``_origCamPos``/``_origCamQuat``/``_origCamFov``), SAME ``n:36`` /
+#     ``secs:30`` / ``loop:false`` the bench has always produced, so the
+#     generated orbit is byte-BEHAVIOURALLY identical for the 6 live
+#     scenes' ``Bench: Orbit`` -- a pure refactor, NOT a behaviour change.
+#     Bounded by the UNCHANGED ``  function _buildOrbitPath() {``
+#     declaration line (START) and the UNCHANGED ``  async function
+#     _runOrbitBench() {`` declaration line (END) -- both pre-exist
+#     EXACTLY ONCE in BOTH ``7acdd39`` and current, and the WHOLE
+#     [START..END] span is the entire ``_buildOrbitPath`` definition
+#     (deliberately-touched) APART from nothing else, so excising the SAME
+#     [START..END] from BOTH removes the (larger) inline-loop baseline
+#     definition and the (smaller) delegating current one -> equal
+#     remainders (the 2b invariant). ``_excise`` asserts the START unique +
+#     the (non-close_after) END unique-after-start, so a future template
+#     edit that duplicates/moves either fails LOUD rather than mis-
+#     excising.
+# Excising BOTH Task-15 regions (PLUS the still-excised Task-11 spline +
+# three Task-12 + three Task-13/14 + T14-PW + T14-AF regions, every one
+# with its ORIGINAL anchors so its contract stays asserted-surviving)
+# from the current generated HTML reproduces the ``7acdd39`` committed
+# template's SAME nine-region excision byte-for-byte -- hard proof every
+# byte OUTSIDE those nine regions (the six live scenes' post-load
+# RENDERING, Task 8's SAVE_*, Task 10's two blocks, Task 11's spline,
+# Task 12's dual-UI, Task 13's cinematic shell, Task 14's ClipPlayer +
+# prewarm + auto-focus guard) is untouched. The end-user transport is a
+# DELIBERATE, byte-lock-excised change (the multi-camera end-user UX,
+# plan SS-A3 / D-Task-11) -- NOT a regression for the six live single-
+# camera scenes: every Task-15 entry point bails immediately when
+# ``ModeManager.is('user')`` is false OR (for the idle orbit) when
+# ``_clipMode`` is false, so author/embed AND the 6 live scenes are
+# byte-runtime-unchanged. Task 8's SAVE_* + Task 10's blocks live OUTSIDE
+# all nine regions, so they are in the compared remainder and thus
+# asserted-surviving (explicit ``in stripped`` checks below pin that
+# contract too -- never relaxed).
+#
+# ``_PRE_TASK15_REMAINDER_*`` = LEN/SHA-256 of the ``7acdd39`` baseline
+# AFTER excising the SAME nine regions with the SAME anchors (computed
+# from ``git cat-file blob 7acdd39:.../template.py`` byte-faithfully --
+# NOT the dirty tree).
+_PRE_TASK15_REMAINDER_LEN = 155648
+_PRE_TASK15_REMAINDER_SHA = (
+    "82b384a80f406580dafd331d98112a40f6c044b466c202cf743836e440c634f0"
+)
+# Full ``7acdd39`` baseline fingerprint (documentation / cross-check; the
+# remainder pin above is what the assertion uses).
+_PRE_TASK15_FULL_LEN = 207431
+_PRE_TASK15_FULL_SHA = (
+    "4ed26f8e321ef3b5b85a1b2d1a7cf41a0de8337b00f3ae55acfc5e25eb11a3d5"
+)
+# T15-OB region anchors (NEW 2b modify-in-place: the whole
+# ``_buildOrbitPath`` definition, refactored to delegate to the shared
+# ``_orbitPathAround``). START + END both pre-exist UNCHANGED and exactly
+# once in BOTH ``7acdd39`` and the current HTML; the span is exactly the
+# function definition (deliberately-touched, nothing else).
+_T15_OB_START = "  function _buildOrbitPath() {\n"
+_T15_OB_END = "  async function _runOrbitBench() {\n"
+
+# --- Prior moving-baseline note (Task 14, kept for provenance) -----------
 # Task 14 (multi-camera Camera-Cuts tour + next-cut LOD pre-warm, plus
 # its review follow-up) generalises the single deferred default-path
 # autostart into an ordered ``ClipPlayer`` sequence, adds a next-cut LOD
@@ -504,44 +589,48 @@ def _excise(text: str, start_anchor: str, end_token: str,
 #   remain enforced, and prior tasks' anchored blocks must stay
 #   asserted-surviving.
 def test_defaults_are_regression_safe_existing_scenes_byte_identical():
-    """Task 14 (multi-camera Camera-Cuts tour + next-cut LOD pre-warm,
-    plus its review follow-up) generalises the single deferred default-
-    path autostart into an ordered ``ClipPlayer`` sequence, adds a next-
-    cut LOD prewarm guard-twin, and broadens ``_autoFocusTick``'s guard
-    so the clip layer owns the LoD origin for the whole tour. It touches
-    THREE regions: (T13-AS, MODIFIED-IN-PLACE again, recipe 2b) the
-    deferred-autostart region -- the SAME unchanged
-    ``if (cfg.default_path_id) {`` START / ``// ---- Bench launchers ...``
-    END that bounded Task 13's deferred autostart now also bounds the
-    whole ClipPlayer + the generalised ``_introStartTour`` + the Stop-
-    button clip guard; (T14-PW, NEW additive region, recipe 2a) the next-
-    cut LOD prewarm retention guard-twin, inserted strictly between the
-    UNCHANGED root-chunk-guard ``console.info('... root-chunk eviction
-    guard active ...')`` line and the UNCHANGED ``// ---- Front-load
-    phase (pillar V) ----`` line; and (T14-AF, NEW modify-in-place
-    region, recipe 2b -- the review follow-up) the broadened
-    ``_autoFocusTick`` early-return guard, bounded by the UNCHANGED
-    ``  function _autoFocusTick(now) {`` declaration line and the
-    UNCHANGED ``    if (!_afReady) return;`` line. Excising every
-    deliberately-touched region (the Task-11 spline + the three Task-12
-    regions + the three Task-13 regions + the two new Task-14 regions,
-    each bounded by anchors that pre-exist UNCHANGED and appear exactly
-    once in BOTH the ``842b50f`` baseline and the current HTML) from the
-    current generated HTML must reproduce the ``842b50f`` committed
-    template's SAME nine-region excision byte-for-byte (same length, same
-    SHA-256) -- hard proof every byte OUTSIDE those nine regions (the six
-    live scenes' post-load RENDERING, Task 8's SAVE_* block, Task 10's
-    two blocks, Task 11's spline, Task 12's dual-UI, Task 13's cinematic
-    shell) is untouched. The six live single-camera scenes have NO
-    cfg.clips/cfg.cameras so the generalised ``_introStartTour`` takes
-    the byte-behaviourally-identical ``startPath(cfg.default_path_id)``
-    fallback AND ``_clipMode`` is false there so the broadened
-    ``_autoFocusTick`` disjunct is always false -- the multi-camera tour
-    (and its auto-focus guard follow-up) is a DELIBERATE, byte-lock-
-    excised change (plan SS-C), NOT a regression for them. Task 8's
-    SAVE_* + Task 10's blocks live OUTSIDE all nine regions, so they
-    survive the excision and are explicitly asserted-present here (their
-    contracts stay pinned -- never relaxed).
+    """Task 15 (end-user transport -- click-interrupt + bottom resume +
+    per-shot idle auto-orbit) is the cinematic end-user shell's
+    interaction layer. It touches TWO regions: (T13-AS, MODIFIED-IN-PLACE
+    AGAIN, recipe 2b) the SAME unchanged ``if (cfg.default_path_id) {``
+    START / ``// ---- Bench launchers ...`` END that bounded Task 13's
+    deferred autostart and Task 14's whole ClipPlayer now ALSO bounds the
+    end-user transport block (``IDLE_MS`` + the shared
+    ``_orbitPathAround`` orbit-math helper + ``_stopTour``/
+    ``_resumeTour``/``_startIdleOrbit``/``_cancelIdleOrbit`` + the
+    ``#user-play`` button injected into the Task-12 ``#user-transport``
+    root + the interrupt/input listeners + the ``_transportLayer`` fanned
+    out from the ONE OverlayScene tick + the ``window.__transport`` test
+    surface); (T15-OB, NEW modify-in-place region, recipe 2b)
+    ``_buildOrbitPath`` refactored from an inline Y-spin loop into a pure
+    delegation to the shared ``_orbitPathAround`` helper (declared in the
+    grown T13-AS region, hoisted), passing the SAME center
+    (``_origTarget``) / base pose / ``n:36`` / ``secs:30`` /
+    ``loop:false`` the bench has always produced so the generated orbit
+    is byte-BEHAVIOURALLY identical for the 6 live scenes' Bench: Orbit
+    -- a pure refactor; bounded by the UNCHANGED
+    ``  function _buildOrbitPath() {`` declaration line (START) and the
+    UNCHANGED ``  async function _runOrbitBench() {`` declaration line
+    (END). Excising every deliberately-touched region (the Task-11 spline
+    + the three Task-12 regions + the three Task-13 regions + the two
+    Task-14 regions + the new Task-15 T15-OB region, each bounded by
+    anchors that pre-exist UNCHANGED and appear exactly once in BOTH the
+    ``7acdd39`` baseline and the current HTML) from the current generated
+    HTML must reproduce the ``7acdd39`` committed template's SAME
+    nine-region excision byte-for-byte (same length, same SHA-256) --
+    hard proof every byte OUTSIDE those nine regions (the six live
+    scenes' post-load RENDERING, Task 8's SAVE_* block, Task 10's two
+    blocks, Task 11's spline, Task 12's dual-UI, Task 13's cinematic
+    shell, Task 14's ClipPlayer + prewarm + auto-focus guard) is
+    untouched. Every Task-15 entry point bails immediately when
+    ``ModeManager.is('user')`` is false OR (for the idle orbit) when
+    ``_clipMode`` is false, so author/embed AND the six live single-
+    camera scenes are byte-runtime-unchanged -- the end-user transport is
+    a DELIBERATE, byte-lock-excised change (plan SS-A3 / D-Task-11), NOT
+    a regression for them. Task 8's SAVE_* + Task 10's blocks live
+    OUTSIDE all nine regions, so they survive the excision and are
+    explicitly asserted-present here (their contracts stay pinned --
+    never relaxed).
     """
     import hashlib
 
@@ -577,30 +666,55 @@ def test_defaults_are_regression_safe_existing_scenes_byte_identical():
     assert "__spClipPrewarmGuard" in html                   # Task 14 prewarm
     assert "next-cut prewarm retention guard active" in html  # Task 14 T14-PW
     # T14-AF region boundary: ``_autoFocusTick``'s declaration line
-    # pre-exists in BOTH ``842b50f`` and current (Task 14 did NOT add the
+    # pre-exists in BOTH ``7acdd39`` and current (Task 14 did NOT add the
     # function -- the review follow-up only BROADENS its existing guard,
     # recipe 2b). Asserted present here (so the region excised below has
     # something to remove) then asserted gone after the excision. The
     # broadened-guard line CONTENT itself is Minor-1 RUNTIME behaviour and
-    # is verified by the Playwright keyframe-editor harness (Task 14(d)),
-    # NOT pinned here -- pinning it would wrongly fail the byte-lock when
-    # template.py is reverted/stashed (the 2b region is what makes the
-    # byte compare invariant to that change, by design).
+    # is verified by the Playwright keyframe-editor harness, NOT pinned
+    # here -- pinning it would wrongly fail the byte-lock when template.py
+    # is reverted/stashed (the 2b region is what makes the byte compare
+    # invariant to that change, by design).
     assert "function _autoFocusTick" in html               # Task 14 T14-AF
+    # Task 15's deliberate additions ARE present (the end-user transport
+    # block lives in the grown T13-AS region; ``_buildOrbitPath`` is
+    # refactored to delegate in the T15-OB region -- all excised below,
+    # so they must be present here first). ``window.__transport`` is the
+    # Task-15 test surface (mirrors ``window.__clip``); ``#user-play`` is
+    # the bottom resume control; ``_orbitPathAround`` is the shared
+    # orbit-math helper BOTH the bench and the idle auto-orbit reuse.
+    assert "End-user transport (Task 15" in html           # Task 15 T13-AS
+    assert "function _orbitPathAround" in html              # Task 15 shared math
+    assert "function _stopTour" in html                     # Task 15 interrupt
+    assert "function _resumeTour" in html                   # Task 15 resume
+    assert "function _startIdleOrbit" in html               # Task 15 idle orbit
+    assert "window.__transport" in html                     # Task 15 surface
+    assert 'id="user-play"' not in html  # button id is set via JS .id (not literal markup)
+    assert "_userPlayBtn.id = 'user-play'" in html          # Task 15 #user-play
+    # ``_buildOrbitPath`` now DELEGATES to the shared helper (T15-OB). The
+    # delegation CALL is the deliberately-touched content; asserted
+    # present here, asserted gone after the T15-OB excision below.
+    assert "return _orbitPathAround(" in html               # Task 15 T15-OB
 
     # Excise the NINE deliberately-touched regions. The Task-11 spline
     # first (its ORIGINAL anchors, unchanged by Tasks 12/13/14 -- keeps
     # Task-11's contract asserted-surviving against the moved ``842b50f``
     # baseline), then each Task-12 region, then each Task-13 region
     # (T13-AS now GROWN by Task 14, same anchors), then the NEW Task-14
-    # prewarm guard-twin region (T14-PW), then the NEW Task-14 review-
+    # prewarm guard-twin region (T14-PW), then the Task-14 review-
     # follow-up auto-focus guard region (T14-AF, recipe 2b modify-in-
-    # place). Every START/END anchor pre-exists UNCHANGED and exactly once
-    # in both the ``842b50f`` baseline and current, so the same
-    # [START..END] removes the corresponding (smaller) baseline slice and
-    # the grown/added/modified current slice; ``_excise`` asserts each
-    # START unique + each non-close_after END unique-after-start (fail-
-    # loud on a duplicate/missing anchor).
+    # place), then the NEW Task-15 ``_buildOrbitPath`` delegation region
+    # (T15-OB, recipe 2b modify-in-place). Every START/END anchor
+    # pre-exists UNCHANGED and exactly once in both the ``7acdd39``
+    # baseline and current, so the same [START..END] removes the
+    # corresponding baseline slice and the grown/added/modified current
+    # slice; ``_excise`` asserts each START unique + each non-close_after
+    # END unique-after-start (fail-loud on a duplicate/missing anchor).
+    # The Task-15 transport block sits in the grown T13-AS region (same
+    # anchors as Task 13/14, unmoved START); T15-OB is disjoint from and
+    # textually AFTER T13-AS (its START ``  function _buildOrbitPath() {``
+    # is the first line after the T13-AS END comment) so excising T13-AS
+    # first never disturbs T15-OB's anchors.
     stripped = _excise(
         html, _SPLINE_REGION_START, _SPLINE_REGION_END_TOK,
         close_after=_SPLINE_REGION_CLOSE_AFTER,
@@ -613,6 +727,7 @@ def test_defaults_are_regression_safe_existing_scenes_byte_identical():
     stripped = _excise(stripped, _T13_IC_START, _T13_IC_END)
     stripped = _excise(stripped, _T14_PW_START, _T14_PW_END)
     stripped = _excise(stripped, _T14_AF_START, _T14_AF_END)
+    stripped = _excise(stripped, _T15_OB_START, _T15_OB_END)
 
     # The ENTIRE spline region must be gone → that excision spanned exactly
     # the deliberately-touched code (a leftover means it under-cut and the
@@ -663,6 +778,29 @@ def test_defaults_are_regression_safe_existing_scenes_byte_identical():
     # cleanly. (The ``_autoFocusTick(...)`` CALL site in the render loop
     # is OUTSIDE T14-AF and correctly survives -- not asserted gone.)
     assert "function _autoFocusTick" not in stripped       # T14-AF gone
+    # The Task-15 end-user transport (inside the grown T13-AS region) +
+    # the T15-OB ``_buildOrbitPath`` delegation must ALSO be fully gone --
+    # their excisions spanned exactly the deliberately-touched code, not a
+    # byte more/less (a leftover would weaken/void the byte compare
+    # below). ``function _orbitPathAround`` (declared in T13-AS),
+    # ``window.__transport`` (the T13-AS test surface), the ``#user-play``
+    # id assignment, and ``function _buildOrbitPath`` (the T15-OB
+    # definition) + its ``return _orbitPathAround(`` delegation are each
+    # unique to their region; their absence proves both excised cleanly.
+    assert "End-user transport (Task 15" not in stripped   # T13-AS grown gone
+    assert "function _orbitPathAround" not in stripped     # T13-AS shared math gone
+    assert "function _stopTour" not in stripped            # T13-AS interrupt gone
+    assert "function _resumeTour" not in stripped          # T13-AS resume gone
+    assert "function _startIdleOrbit" not in stripped      # T13-AS idle gone
+    assert "window.__transport" not in stripped             # T13-AS surface gone
+    assert "_userPlayBtn.id = 'user-play'" not in stripped  # T13-AS #user-play gone
+    assert "function _buildOrbitPath" not in stripped      # T15-OB defn gone
+    assert "return _orbitPathAround(" not in stripped      # T15-OB delegation gone
+    # The ``_buildOrbitPath()`` CALL sites (in _runOrbitBench / the
+    # preload IIFE) are OUTSIDE T15-OB and correctly SURVIVE -- only the
+    # definition was the deliberately-touched code (proves T15-OB did not
+    # over-cut into the unrelated bench/preload call sites).
+    assert "const orbitPath = _buildOrbitPath();" in stripped  # call site kept
     # Regression-critical: the root-chunk eviction guard itself is the
     # T14-PW START anchor LINE, so it is excised WITH the region -- but its
     # SIBLING machinery just ABOVE the START (the PINNED_ROOT_CHUNK_COUNT
@@ -683,20 +821,21 @@ def test_defaults_are_regression_safe_existing_scenes_byte_identical():
     assert "_hidAt" in stripped                           # Task 10 survives
     assert "visibilitychange" in stripped                 # Task 10 survives
 
-    # Byte-for-byte identical to the ``842b50f`` committed template with
+    # Byte-for-byte identical to the ``7acdd39`` committed template with
     # the SAME nine regions excised -> NO unintended drift anywhere outside
-    # the deliberate Task-8/10/11/12/13/14 changes (FAILS loudly if e.g. a
-    # stray uncommitted block elsewhere in the template leaked in -- this
-    # is exactly how the 4 unstaged strays are kept out of the Task-14
-    # commit; the pagedExtSplats stray, OUTSIDE all nine regions, makes
-    # this FAIL in the dirty tree BY DESIGN -> the guard still bites).
-    assert len(stripped) == _PRE_TASK14_REMAINDER_LEN, (
-        f"length drift: {len(stripped)} != {_PRE_TASK14_REMAINDER_LEN} "
+    # the deliberate Task-8/10/11/12/13/14/15 changes (FAILS loudly if
+    # e.g. a stray uncommitted block elsewhere in the template leaked in
+    # -- this is exactly how the 4 unstaged strays are kept out of the
+    # Task-15 commit; the pagedExtSplats stray, OUTSIDE all nine regions,
+    # makes this FAIL in the dirty tree BY DESIGN -> the guard still
+    # bites).
+    assert len(stripped) == _PRE_TASK15_REMAINDER_LEN, (
+        f"length drift: {len(stripped)} != {_PRE_TASK15_REMAINDER_LEN} "
         "(an UNINTENDED change leaked OUTSIDE the nine deliberate regions)"
     )
     assert (
         hashlib.sha256(stripped.encode()).hexdigest()
-        == _PRE_TASK14_REMAINDER_SHA
+        == _PRE_TASK15_REMAINDER_SHA
     )
 
 

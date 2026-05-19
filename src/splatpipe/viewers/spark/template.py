@@ -2570,6 +2570,413 @@ _VIEWER_TEMPLATE = """\
     }});
   }}
 
+  // ============================================================
+  //  End-user transport (Task 15 -- click-interrupt + bottom
+  //  resume + per-shot idle auto-orbit; plan SS-A3 / D-Task-11)
+  // ------------------------------------------------------------
+  //  The cinematic end-user shell's interaction layer. END-USER
+  //  MODE ONLY (ModeManager.is('user')): author (?author=1) +
+  //  embed are byte-runtime-unchanged -- every entry point below
+  //  bails immediately when not usermode, so the editor/iframe
+  //  paths and the 6 live single-camera scenes (if they ever
+  //  carry a default_path_id tour) are never perturbed by this.
+  //  Reuses existing primitives, never reinvents:
+  //    * stopTour()    = the existing stop path (stopPath() +
+  //      the _clipUserStopped/_clipFinish teardown the Stop
+  //      button already drives) -- NOT a new stop mechanism.
+  //    * the orbit MATH = the SAME _buildOrbitPath() Y-spin,
+  //      factored into _orbitPathAround(center,...) below and
+  //      called by BOTH _buildOrbitPath (refactored to delegate,
+  //      byte-behaviourally identical for the bench) and the
+  //      idle auto-orbit (anchored to the active cut's authored
+  //      orbit_pivot) -- ONE orbit implementation, not a copy.
+  //    * buildPlayer/sampleAt = the SuperSplat cubic-Hermite
+  //      spline, lockstep with the editor (no spline math here).
+  //    * Task-0 scaffold: the idle CHECK fans out from the ONE
+  //      OverlayScene.update() tick (no parallel rAF); pointer
+  //      ownership goes through InteractionManager; the bottom
+  //      play control lives in the Task-12 #user-transport root
+  //      (CSS-gated to usermode already), styled inline like the
+  //      existing #sp-hud (no new CSS region).
+  //  Behaviour (spec, precise):
+  //   1. INTERRUPT: a pointerdown/drag on the canvas while the
+  //      auto tour is playing -> stopTour() (controls.enabled=
+  //      true so the user free-looks) + reveal #user-play. Works
+  //      in clip-mode AND the degenerate single default_path_id
+  //      tour.
+  //   2. RESUME: clicking #user-play resumes the tour from the
+  //      NEAREST CUT <= the current playhead -- clip-mode: the
+  //      clip whose clip_start is the greatest <= the playhead
+  //      captured at interrupt; single-tour: that one implicit
+  //      clip's start (= restart the default path; its only cut
+  //      <= playhead is its start). #user-play re-hides while
+  //      playing.
+  //   3. PER-SHOT IDLE AUTO-ORBIT: an idle timer reset on ANY
+  //      user input AND on every cut change (= per shot). If no
+  //      input for IDLE_MS while parked on a shot, drive a slow
+  //      LOOPING orbit (the reused math) around the active cut's
+  //      camera's authored orbit_pivot. Any input cancels the
+  //      orbit (and re-reveals #user-play to resume the tour).
+  //      ONLY clip-mode (orbit_pivot is a per-camera field; a
+  //      single-tour / the 6 live scenes have no cameras -> no
+  //      pivot is ever invented, no idle orbit there).
+  //  ?idleMs=N overrides IDLE_MS (TEST-ONLY shortened idle for
+  //  the scene-less Playwright harness; same ?-override pattern
+  //  as ?focusAhead= / ?prefetchLead=). Clamped >= 200 ms.
+  // ============================================================
+  const IDLE_MS = (() => {{
+    const _im = parseFloat(
+      new URLSearchParams(location.search).get('idleMs'));
+    return Number.isFinite(_im) ? Math.max(_im, 200) : 12000;
+  }})();
+
+  // The SHARED programmatic-orbit builder. IDENTICAL math to the
+  // bench _buildOrbitPath (which now delegates here): spin a base
+  // camera pose around the world-vertical axis through `center`,
+  // preserving the pose's real radius/height/orientation, N+1
+  // keyframes over `secs` seconds. `loop` lets the idle orbit
+  // keep circling until input; the bench passes loop:false.
+  // Hoisted (function declaration) so the textually-later
+  // _buildOrbitPath in the Bench-launchers block can call it
+  // (same scope; same forward-reference-via-hoisting pattern the
+  // existing _clipStart/_clipPrewarmRelease pair already uses).
+  function _orbitPathAround(center, fromPos, fromQuat, fov,
+                            opts) {{
+    const o = opts || {{}};
+    const N = (typeof o.n === 'number' && o.n > 0) ? o.n : 36;
+    const secs = (typeof o.secs === 'number' && o.secs > 0)
+      ? o.secs : 30;
+    const loop = !!o.loop;
+    const off = fromPos.clone().sub(center);
+    // Only the truly-degenerate cam==center fallback (same 0.5 m
+    // floor + (0,1,-3) offset the bench has always used).
+    if (off.length() < 0.5) off.set(0, 1, -3);
+    const baseQ = fromQuat.clone();
+    const upY = new THREE.Vector3(0, 1, 0);
+    const keyframes = [];
+    for (let i = 0; i <= N; i++) {{
+      const theta = (i / N) * Math.PI * 2;
+      const rot = new THREE.Quaternion().setFromAxisAngle(upY, theta);
+      const p = off.clone().applyQuaternion(rot).add(center);
+      const q = rot.clone().multiply(baseQ);   // rotate the authored orientation by the same Y angle
+      keyframes.push({{
+        t: (i / N) * secs,
+        pos: [p.x, p.y, p.z],
+        quat: [q.x, q.y, q.z, q.w],
+        fov: fov,
+      }});
+    }}
+    return {{
+      id: 'orbit', name: 'Programmatic Orbit',
+      loop: loop, smoothness: 1.0, play_speed: 1.0,
+      keyframes,
+    }};
+  }}
+
+  // The shot the end-user is currently parked on (the clip/camera
+  // that was playing when the tour was interrupted, kept fresh on
+  // every cut while the tour plays). Drives WHICH camera's
+  // orbit_pivot the idle auto-orbit circles. Cleared on resume /
+  // when no tour context exists. clip-mode only.
+  let _activeShot = null;     // {{ clip, camera, pivot:Vector3|null, playhead }}
+  let _userInterrupted = false;   // true once the user broke the tour
+  let _idleOrbiting = false;      // true while the idle auto-orbit drives
+  let _lastInputMs = performance.now();
+
+  // Resolve a clip -> its camera record -> that camera's
+  // orbit_pivot (a world-space [x,y,z] or absent). Returns the
+  // camera + a THREE.Vector3 pivot (or null when unauthored).
+  function _shotFor(clip) {{
+    if (!clip) return null;
+    const cam = _clipCameras.find(c => c && c.id === clip.camera_id)
+      || null;
+    let pivot = null;
+    if (cam && Array.isArray(cam.orbit_pivot) &&
+        cam.orbit_pivot.length === 3) {{
+      pivot = new THREE.Vector3(
+        cam.orbit_pivot[0], cam.orbit_pivot[1], cam.orbit_pivot[2]);
+    }}
+    return {{ clip: clip, camera: cam, pivot: pivot }};
+  }}
+  // The global tour playhead RIGHT NOW (seconds). clip-mode: the
+  // active clip's clip_start + elapsed within the clip (each
+  // clip's _t0 is reset per clip, so (now-_t0) is clip-relative).
+  // Single-tour: the player's own elapsed. 0 when nothing plays.
+  function _tourPlayhead() {{
+    if (!_player) return 0;
+    const speed = _player.playSpeed || 1.0;
+    const tRel = ((performance.now() - _t0) / 1000) * speed;
+    if (_clipMode && _clipState.active && _clipState.clip) {{
+      const cs = (typeof _clipState.clip.clip_start === 'number')
+        ? _clipState.clip.clip_start : 0;
+      return cs + Math.max(0, tRel);
+    }}
+    return Math.max(0, tRel);
+  }}
+
+  // The bottom resume control. Lives in the Task-12
+  // #user-transport root (always in the DOM, CSS-gated to
+  // usermode + embed-stripped already) so there is no new CSS
+  // region; styled inline exactly like the existing #sp-hud.
+  // Hidden until the user interrupts; click -> resume.
+  const _userTransport = document.getElementById('user-transport');
+  let _userPlayBtn = null;
+  if (_userTransport) {{
+    _userPlayBtn = document.createElement('button');
+    _userPlayBtn.id = 'user-play';
+    _userPlayBtn.type = 'button';
+    _userPlayBtn.textContent = 'Resume tour';
+    _userPlayBtn.setAttribute('aria-label', 'Resume tour');
+    _userPlayBtn.style.cssText =
+      'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);'
+      + 'z-index:150;display:none;cursor:pointer;'
+      + 'background:rgba(0,0,0,.62);color:#fff;'
+      + 'font:600 14px/1 -apple-system,BlinkMacSystemFont,'
+      + "'Segoe UI',sans-serif;"
+      + 'padding:11px 22px;border:1px solid rgba(255,255,255,.28);'
+      + 'border-radius:999px;backdrop-filter:blur(6px);';
+    _userTransport.appendChild(_userPlayBtn);
+    _userPlayBtn.addEventListener('click', (e) => {{
+      e.preventDefault();
+      e.stopPropagation();
+      _resumeTour();
+    }});
+  }}
+  function _showUserPlay(show) {{
+    if (_userPlayBtn) _userPlayBtn.style.display = show ? '' : 'none';
+  }}
+
+  // Is the AUTO tour (not a bench, not the idle orbit) currently
+  // driving the camera? = a player is live, no bench owns it, and
+  // either a clip is active or the single default-path tour runs.
+  function _tourPlaying() {{
+    if (!_player || _benchActive) return false;
+    if (_idleOrbiting) return false;
+    if (_clipMode) return _clipState.active;
+    return _activePathId === cfg.default_path_id &&
+           !!cfg.default_path_id;
+  }}
+
+  // stopTour() -- the spec's named stop, built from the EXISTING
+  // teardown (NOT a new mechanism). clip-mode: set the same
+  // _clipUserStopped the Stop button sets (so the clip layer
+  // finalises instead of advancing) then _clipFinish() (which
+  // itself calls stopPath() -> controls.enabled=true, releases
+  // the InteractionManager 'player' owner, immediate camera
+  // halt). single-tour: stopPath() directly. Idempotent.
+  function _stopTour(opts) {{
+    const o = opts || {{}};
+    if (!_player && !_clipState.active) return;
+    // Snapshot the shot + playhead BEFORE teardown nulls them, so
+    // resume can pick the nearest cut <= where we were and the
+    // idle orbit knows which camera's pivot to circle.
+    if (_clipMode && _clipState.active && _clipState.clip) {{
+      _activeShot = _shotFor(_clipState.clip);
+      if (_activeShot) _activeShot.playhead = _tourPlayhead();
+    }}
+    if (_clipMode) {{
+      _clipUserStopped = true;
+      _clipFinish();              // -> stopPath() if a clip player is live
+    }} else if (_player) {{
+      stopPath();
+    }}
+    // Pointer ownership: the user is taking the canvas back from
+    // the 'player' owner. stopPath() already released it; mirror
+    // the user's free-look intent through the single broker.
+    InteractionManager.releasePointer('player');
+    if (o.byUser !== false) _userInterrupted = true;
+    _lastInputMs = performance.now();
+    if (o.reveal !== false) _showUserPlay(true);
+  }}
+
+  // resumeTour() -- restart the tour from the NEAREST CUT <= the
+  // playhead captured at interrupt. clip-mode: the clip whose
+  // clip_start is the greatest <= that playhead (_clipSeq is
+  // ascending by clip_start -- _orderedClips). single-tour: the
+  // one implicit clip's start == restart the default path (its
+  // only cut <= the playhead is its start). Re-hides #user-play.
+  function _resumeTour() {{
+    if (!ModeManager.is('user')) return;
+    _cancelIdleOrbit({{ silent: true }});
+    _userInterrupted = false;
+    _showUserPlay(false);
+    _lastInputMs = performance.now();
+    if (_clipMode) {{
+      const ph = (_activeShot && typeof _activeShot.playhead === 'number')
+        ? _activeShot.playhead : 0;
+      // greatest clip_start <= ph (nearest cut at-or-before the
+      // playhead); fall back to clip 0 if ph precedes the first.
+      let idx = 0;
+      for (let j = 0; j < _clipSeq.length; j++) {{
+        const cs = (_clipSeq[j] && typeof _clipSeq[j].clip_start === 'number')
+          ? _clipSeq[j].clip_start : 0;
+        if (cs <= ph) idx = j; else break;
+      }}
+      _clipUserStopped = false;
+      _clipPrewarmRelease();
+      _clipStart(idx);
+    }} else if (cfg.default_path_id) {{
+      _clipUserStopped = false;
+      selEl.value = cfg.default_path_id;
+      startPath(cfg.default_path_id);
+    }}
+  }}
+
+  // Start the per-shot idle auto-orbit: a slow LOOPING orbit
+  // (the SAME reused math) around the active shot camera's
+  // authored orbit_pivot, from wherever the camera now sits.
+  // clip-mode + an authored pivot only -- never invents a pivot.
+  function _startIdleOrbit() {{
+    if (_idleOrbiting || _player || _benchActive) return;
+    if (!_clipMode) return;                 // no cameras => no pivot
+    const shot = _activeShot ||
+      (_clipState.clip ? _shotFor(_clipState.clip) : null);
+    if (!shot || !shot.pivot) return;       // unauthored pivot => skip
+    const path = _orbitPathAround(
+      shot.pivot.clone(),
+      camera.position.clone(),
+      camera.quaternion.clone(),
+      camera.fov,
+      {{ secs: 30, loop: true }});          // gentle, keeps circling
+    const pl = buildPlayer(path);
+    if (!pl) return;
+    _idleOrbiting = true;
+    _player = pl;
+    _t0 = performance.now();
+    _activePathId = 'idle-orbit';
+    _lastTriggeredAnnotation = null;
+    controls.enabled = false;
+    InteractionManager.requestPointer('player');
+    // The orbit drives the camera but the user is NOT being
+    // shown the tour -- keep #user-play up so a click resumes
+    // the real cut tour, not the orbit.
+    _showUserPlay(true);
+  }}
+  // Cancel the idle orbit (any user input). Restores free-look;
+  // a non-silent cancel keeps #user-play visible so the user can
+  // resume the tour. Idempotent / no-op when not orbiting.
+  function _cancelIdleOrbit(opts) {{
+    if (!_idleOrbiting) return;
+    _idleOrbiting = false;
+    if (_activePathId === 'idle-orbit' && _player) stopPath();
+    _lastInputMs = performance.now();
+    if (!(opts && opts.silent)) _showUserPlay(true);
+  }}
+
+  // Any user input: stamp the idle clock + cancel a running idle
+  // orbit. Pure observation -- does NOT arbitrate the pointer
+  // (InteractionManager still owns that); just resets the
+  // per-shot idle timer the ONE overlay tick reads. usermode
+  // only (inert in author/embed -> the editor + 6 live scenes
+  // are unperturbed).
+  function _noteUserInput() {{
+    if (!ModeManager.is('user')) return;
+    _lastInputMs = performance.now();
+    if (_idleOrbiting) _cancelIdleOrbit();
+  }}
+  window.addEventListener('keydown', _noteUserInput, true);
+  window.addEventListener('wheel', _noteUserInput,
+    {{ capture: true, passive: true }});
+  canvas.addEventListener('pointermove', (e) => {{
+    // Only a held drag counts as "interacting" for the idle
+    // reset (a hovering mouse with no button down should not
+    // keep the scene awake forever).
+    if (e.buttons) _noteUserInput();
+  }}, true);
+
+  // INTERRUPT: a pointerdown on the canvas while the auto tour
+  // plays -> stop it, hand control back (controls.enabled=true
+  // via stopPath inside _stopTour), reveal #user-play. Also
+  // resets the idle clock. Registered IN ADDITION to the
+  // existing canvas pointerdown handlers (addEventListener
+  // stacks; capture phase so it runs before OrbitControls/look
+  // see the same down). usermode only. Works in clip-mode AND
+  // the single default-path tour (_tourPlaying covers both).
+  canvas.addEventListener('pointerdown', (e) => {{
+    if (!ModeManager.is('user')) return;
+    if (_idleOrbiting) {{ _cancelIdleOrbit(); return; }}
+    if (_tourPlaying()) {{
+      _stopTour({{ byUser: true }});
+      return;
+    }}
+    _noteUserInput();
+  }}, true);
+
+  // The per-shot idle watcher. Fans out from the ONE
+  // OverlayScene.update() tick (Task 0) -- NO parallel rAF / no
+  // separate timer. No `modes` (it owns transport logic, not
+  // chrome) so OverlayScene never touches visibility; node-less
+  // pure-logic layer (same shape as the Task-14 _clipLayer).
+  let _idleCutKey = '';   // changes on every cut -> per-shot reset
+  const _transportLayer = {{
+    id: 'user-transport',
+    update() {{
+      if (!ModeManager.is('user')) return;       // usermode only
+      // Keep _activeShot fresh while the tour plays AND reset the
+      // idle clock on every cut change (a new clip == a new shot;
+      // the spec's per-shot idle timer reset).
+      if (_clipMode && _clipState.active && _clipState.clip) {{
+        const ck = String(_clipState.idx) + ':' +
+          String(_clipState.clip.id || '');
+        if (ck !== _idleCutKey) {{
+          _idleCutKey = ck;
+          _activeShot = _shotFor(_clipState.clip);
+          _lastInputMs = performance.now();      // per-shot reset
+        }}
+      }}
+      // Idle only matters when nothing is driving the camera (the
+      // tour was interrupted / a clip naturally ended and the
+      // user is now free-looking on that shot). Never while the
+      // tour, a bench, or the idle orbit itself is running.
+      if (_player || _benchActive || _idleOrbiting) return;
+      if (!_userInterrupted) return;             // only after an interrupt
+      if (performance.now() - _lastInputMs < IDLE_MS) return;
+      _startIdleOrbit();
+    }},
+  }};
+  OverlayScene.register(_transportLayer);
+
+  // TEST/extension surface (mirrors window.__sp / __sceneview /
+  // __clip): lets the scene-less Playwright harness drive +
+  // assert the interrupt/resume/idle-orbit contract under a
+  // virtual clock. Harmless, always on. The `interrupt()` /
+  // `idleNow()` helpers are TEST-ONLY deterministic drivers
+  // (same convention as window.__clip.restart()).
+  try {{
+    window.__transport = {{
+      get interrupted() {{ return _userInterrupted; }},
+      get idleOrbiting() {{ return _idleOrbiting; }},
+      get activeShot() {{
+        return _activeShot ? {{
+          clipId: _activeShot.clip ? _activeShot.clip.id : null,
+          cameraId: _activeShot.camera ? _activeShot.camera.id : null,
+          pivot: _activeShot.pivot ? [
+            _activeShot.pivot.x, _activeShot.pivot.y,
+            _activeShot.pivot.z] : null,
+          playhead: (typeof _activeShot.playhead === 'number')
+            ? _activeShot.playhead : null,
+        }} : null;
+      }},
+      get userPlayVisible() {{
+        return !!(_userPlayBtn &&
+          _userPlayBtn.style.display !== 'none');
+      }},
+      get idleMs() {{ return IDLE_MS; }},
+      get playhead() {{ return _tourPlayhead(); }},
+      // TEST-ONLY: synthesise the interrupt (the harness drives
+      // the live tour under a frozen clock; a real synthetic
+      // pointerdown also works but this is the deterministic
+      // path the Task-14 __clip.restart() convention mirrors).
+      interrupt() {{ _stopTour({{ byUser: true }}); return true; }},
+      resume() {{ _resumeTour(); return true; }},
+      // TEST-ONLY: force the idle clock past IDLE_MS so the next
+      // overlay tick starts the idle orbit (the scene-less
+      // harness has a frozen virtual clock; this rebases the
+      // last-input stamp rather than waiting real time).
+      idleNow() {{ _lastInputMs = performance.now() - IDLE_MS - 1; }},
+    }};
+  }} catch (e) {{}}
+
   // ---- Bench launchers (used by both the URL auto-trigger and the button) ----
 
   // Build a programmatic 360° orbit around controls.target. Reads the camera
@@ -2585,30 +2992,21 @@ _VIEWER_TEMPLATE = """\
     // a user screenshot. Anchored to _orig* (the authored start_view, since
     // IBUG hasAuthoredView=true so it is never re-snapshotted) → identical
     // world-space orbit every run.
-    const center = _origTarget.clone();
-    const off = _origCamPos.clone().sub(center);
-    if (off.length() < 0.5) off.set(0, 1, -3);   // only the truly-degenerate cam≈target fallback
-    const baseQ = _origCamQuat.clone();
-    const upY = new THREE.Vector3(0, 1, 0);
-    const N = 36, ORBIT_S = 30;
-    const keyframes = [];
-    for (let i = 0; i <= N; i++) {{
-      const theta = (i / N) * Math.PI * 2;
-      const rot = new THREE.Quaternion().setFromAxisAngle(upY, theta);
-      const p = off.clone().applyQuaternion(rot).add(center);
-      const q = rot.clone().multiply(baseQ);   // rotate the authored orientation by the same Y angle
-      keyframes.push({{
-        t: (i / N) * ORBIT_S,
-        pos: [p.x, p.y, p.z],
-        quat: [q.x, q.y, q.z, q.w],
-        fov: _origCamFov,
-      }});
-    }}
-    return {{
-      id: 'orbit', name: 'Programmatic Orbit',
-      loop: false, smoothness: 1.0, play_speed: 1.0,
-      keyframes,
-    }};
+    //
+    // Task 15: the Y-spin math is now the shared _orbitPathAround()
+    // helper (declared above in the end-user transport block, hoisted)
+    // so the idle auto-orbit reuses the EXACT same orbit -- this is a
+    // pure delegation: the same center (_origTarget), same base pose
+    // (_origCamPos/_origCamQuat/_origCamFov), same N=36 / 30 s /
+    // smoothness 1.0 / loop:false the bench has always produced, so
+    // the generated orbit is byte-behaviourally identical for the 6
+    // live scenes' Bench: Orbit. NOT a behaviour change -- a refactor.
+    return _orbitPathAround(
+      _origTarget.clone(),
+      _origCamPos.clone(),
+      _origCamQuat.clone(),
+      _origCamFov,
+      {{ n: 36, secs: 30, loop: false }});
   }}
 
   async function _runOrbitBench() {{

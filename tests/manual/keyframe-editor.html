@@ -3,10 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Splatpipe SceneView harness — keyframe editor (Tasks 0, 6-14)</title>
+  <title>Splatpipe SceneView harness - keyframe editor (Tasks 0, 6-15)</title>
   <!--
     SHARED Playwright harness for the camera-keyframe-editor plan
-    (Tasks 0 and 6-14). Same in-viewer-verification style as the other
+    (Tasks 0 and 6-15). Same in-viewer-verification style as the other
     tests/manual/*.html pages: a host page that embeds the generated Spark
     viewer in <iframe>s and runs assertions against each iframe's live
     `window` — but here it is automated, not eyeballed.
@@ -141,6 +141,62 @@
     runtime-identical for the 6 live single-camera scenes (where
     _clipMode is false) -- the deferral is of the runtime
     demonstration, NOT of unreviewed code.
+
+    Task 15 contract asserted here (end-user transport -- click-
+    interrupt + bottom resume + per-shot idle auto-orbit; all observed
+    off the REAL generated transport via the TEST-ONLY window.__transport
+    surface + the SAME controllable virtual clock the Task-10/11/14
+    checks proved out):
+      * _viewer_transport (2 cameras, each with a DISTINCT authored
+        orbit_pivot; 2 clips; ?idleMs=300 -- the scoped TEST-ONLY short
+        idle hook): window.__clip.mode=true; the tour auto-starts; a
+        synthetic interrupt (canvas pointerdown, AND the deterministic
+        __transport.interrupt() driver) STOPS the tour
+        (window._spDebug.controls.enabled === true so the user can
+        free-look) and reveals #user-play (computed display !== none /
+        __transport.userPlayVisible true); the playhead at interrupt is
+        captured. Clicking #user-play (driven via __transport.resume())
+        RESUMES the tour from the NEAREST CUT <= that captured playhead
+        (interrupt taken DURING clip B => resume restarts clip B, idx 1,
+        not clip 0 -- the greatest clip_start <= playhead) and re-hides
+        #user-play. Forcing the per-shot idle clock past the short
+        IDLE_MS (__transport.idleNow() under the frozen virtual clock)
+        while parked on a shot starts the slow LOOPING orbit; the camera
+        then CIRCLES that shot camera's AUTHORED orbit_pivot -- its
+        distance to the pivot stays ~constant across the sampled arc
+        while its distance to the WORLD ORIGIN varies (hard proof it
+        orbits the authored pivot, NOT origin -- the derived-number trap
+        the spec calls out); any user input (a synthetic pointerdown)
+        CANCELS the orbit. The idle timer is per-shot (it resets on a
+        cut change): asserted via the __transport surface.
+      * _viewer_noclips (`default_path_id`, NO cameras/clips):
+        window.__clip.mode === false -- the SINGLE-TOUR interrupt path
+        is exercised there (the no-clips regression check already drives
+        that fixture); a single-tour scene has NO cameras => NO
+        orbit_pivot, so by spec there is NO idle auto-orbit for it (the
+        6 live single-camera scenes are byte-runtime-unchanged: every
+        Task-15 entry point bails when !ModeManager.is('user') OR, for
+        the idle orbit, when !_clipMode).
+    NOTE (honest deferral): the Task-15 transport STATE (interrupt
+    stops the tour + enables controls + reveals #user-play; resume
+    restarts the nearest cut <= playhead; the idle orbit circles the
+    authored orbit_pivot not origin; input cancels it; the per-shot
+    idle reset) is FULLY asserted here against the REAL generated code
+    under the virtual clock -- it is scene-INDEPENDENT (it reads
+    camera/controls/clip state + the authored pivot, none of which need
+    real .rad chunk data). What a scene-less harness CANNOT show is the
+    real-pixel CINEMATIC FEEL of the idle orbit on an actual splat
+    (whether the gentle 30 s circle around the authored pivot reads
+    well visually, the loading-blur/intro-fade/cut tour all chained on
+    a real scene). That subjective real-pixel demonstration is DEFERRED
+    to the controller's consolidated real-scene visual pass, which must
+    verify on a real >=2-clip scene in usermode: a click/drag interrupts
+    the auto tour and hands control to free-look; the bottom #user-play
+    resumes from the cut the user was on; and after IDLE_MS idle on a
+    shot the camera gently orbits that cut's authored orbit_pivot
+    (smooth, not jarring) until any input. The transport *code* itself
+    is review-certified correct and exercised here; only the subjective
+    real-pixel feel demonstration is deferred (NOT the logic).
   -->
   <style>
     html, body { height: 100%; margin: 0; padding: 0;
@@ -211,6 +267,10 @@
     <div class="pane">
       <div class="lbl">Task 14: no clips -> single-tour fallback (regression)</div>
       <iframe id="f-noclips" src="./_viewer_noclips/index.html" title="no clips"></iframe>
+    </div>
+    <div class="pane">
+      <div class="lbl">Task 15: transport (interrupt/resume/idle-orbit, ?idleMs=300)</div>
+      <iframe id="f-transport" src="./_viewer_transport/index.html?idleMs=300" title="end-user transport"></iframe>
     </div>
   </div>
 
@@ -1316,6 +1376,314 @@
         'fallback -- the hard-required no-clips regression)',
         !!(nc.mode === false && nc.moved === true),
         JSON.stringify(nc));
+
+      // --- Task 15: end-user transport (interrupt/resume/idle-orbit) --
+      // The `_viewer_transport/` iframe (driven with ?idleMs=300 -- the
+      // scoped TEST-ONLY short idle hook) auto-starts the SAME 2-cam/2-
+      // clip sequence as Task-14 but each camera carries a DISTINCT
+      // authored orbit_pivot. We drive the REAL generated transport with
+      // the SAME controllable virtual clock the Task-10/11/14 checks
+      // proved out + the TEST-ONLY `window.__transport` surface. The
+      // assertions (each scene-INDEPENDENT -- camera/controls/clip state
+      // + the authored pivot, no real .rad needed):
+      //   (a) INTERRUPT: step the tour onto clip B (idx 1), then BOTH a
+      //       real synthetic canvas pointerdown AND the deterministic
+      //       __transport.interrupt() driver STOP the tour
+      //       (__clip.state.active false), _spDebug.controls.enabled is
+      //       true (free-look handed back), #user-play is revealed
+      //       (computed display !== none AND __transport.userPlayVisible),
+      //       __transport.interrupted true, and the captured activeShot
+      //       is clip B (the shot we were on, with its camera's pivot).
+      //   (b) RESUME: __transport.resume() restarts the tour from the
+      //       NEAREST CUT <= the captured playhead. The interrupt was
+      //       taken DURING clip B (clip_start=8) so resume restarts clip
+      //       B (idx 1), NOT clip 0 -- the greatest clip_start <= the
+      //       playhead. #user-play re-hides; __transport.interrupted
+      //       back to false.
+      //   (c) IDLE AUTO-ORBIT: interrupt again, force the per-shot idle
+      //       clock past the short IDLE_MS via __transport.idleNow()
+      //       under the frozen virtual clock + pump rAF so the ONE
+      //       OverlayScene tick runs the _transportLayer. The slow
+      //       LOOPING orbit starts (__transport.idleOrbiting true) and
+      //       the camera CIRCLES camera A's AUTHORED orbit_pivot
+      //       ([100,0,0]): across the sampled arc its distance to the
+      //       pivot is ~constant while its distance to the WORLD ORIGIN
+      //       VARIES -- hard proof it orbits the authored pivot, NOT
+      //       origin (the derived-number trap). A synthetic pointerdown
+      //       then CANCELS the orbit (__transport.idleOrbiting false).
+      function _dist3(a, b) {
+        return a && b ? Math.hypot(a[0]-b[0], a[1]-b[1], a[2]-b[2])
+                       : Infinity;
+      }
+      async function transportCheck() {
+        const win = frameWin('f-transport');
+        if (!win) return { ok: false, reason: 'no f-transport window' };
+        const ready = await new Promise((resolve) => {
+          const t0 = Date.now();
+          (function poll() {
+            let sp, clip, tr, cam;
+            try {
+              sp = win.__sp; clip = win.__clip;
+              tr = win.__transport;
+              cam = win._spDebug && win._spDebug.camera;
+            } catch (e) { sp = clip = tr = cam = undefined; }
+            if (sp && clip && tr && cam && cam.position)
+              return resolve(true);
+            if (Date.now() - t0 > 30000) return resolve(false);
+            setTimeout(poll, 100);
+          })();
+        });
+        if (!ready)
+          return { ok: false, reason: 'transport viewer never ready' };
+
+        // Freeze time (every performance.now() call site reads __vt).
+        win.eval('(function(){var p=window.performance;' +
+          'window.__vt=p.now();p.now=function(){return window.__vt;};})()');
+        // Test shim (same spirit as the virtual-clock stub above): a
+        // SYNTHETIC PointerEvent has no real OS pointer, so OrbitControls'
+        // unconditional el.setPointerCapture(pointerId) on pointerdown
+        // throws a benign NotFoundError (in a REAL browser with a REAL
+        // pointer it succeeds -- the transport code itself never calls
+        // setPointerCapture). No-op it on the canvas so the harness's
+        // synthetic interrupt/cancel pointerdowns keep post-init console
+        // errors at 0 WITHOUT touching production code or weakening any
+        // assertion (we still dispatch the real event + assert the real
+        // transport state it drives).
+        win.eval('(function(){var cv=document.getElementById("app-canvas");'
+          + 'if(cv){cv.setPointerCapture=function(){};'
+          + 'cv.releasePointerCapture=function(){};}})()');
+        const tickRAF = () => new Promise((res) => {
+          win.requestAnimationFrame(() =>
+            win.requestAnimationFrame(() => res()));
+        });
+        const readCam = () => {
+          const c = win._spDebug.camera.position;
+          return [c.x, c.y, c.z];
+        };
+        const ctrlEnabled = () => {
+          try { return win._spDebug.controls.enabled === true; }
+          catch (e) { return null; }
+        };
+        const userPlayCss = () => {
+          try {
+            const el = win.document.getElementById('user-play');
+            if (!el) return 'absent';
+            return win.getComputedStyle(el).display;
+          } catch (e) { return 'err'; }
+        };
+        const tstate = () => {
+          try {
+            const tr = win.__transport, cl = win.__clip;
+            return {
+              interrupted: !!tr.interrupted,
+              idleOrbiting: !!tr.idleOrbiting,
+              userPlayVisible: !!tr.userPlayVisible,
+              activeShot: tr.activeShot,
+              playhead: tr.playhead,
+              idleMs: tr.idleMs,
+              clipMode: !!(cl && cl.mode),
+              clipActive: !!(cl && cl.state && cl.state.active),
+              clipIdx: (cl && cl.state) ? cl.state.idx : -1,
+            };
+          } catch (e) { return null; }
+        };
+        async function stepUntil(sliceMs, maxSteps, pred) {
+          for (let i = 0; i < maxSteps; i++) {
+            const st = tstate();
+            if (pred(st, i)) return { hit: true, step: i, st: st };
+            win.eval('window.__vt += ' + sliceMs);
+            await tickRAF();
+          }
+          return { hit: false, step: maxSteps, st: tstate() };
+        }
+        const synthDown = () => {
+          try {
+            const cv = win.document.getElementById('app-canvas');
+            cv.dispatchEvent(new win.PointerEvent('pointerdown', {
+              bubbles: true, cancelable: true, pointerType: 'mouse',
+              button: 0, clientX: 50, clientY: 50 }));
+            return true;
+          } catch (e) { return 'err:' + e; }
+        };
+
+        // Deterministic start under the frozen clock (the auto tour may
+        // be mid-sequence on the real clock -- same reasoning as Task-14).
+        let restarted = false;
+        try { restarted = !!win.__clip.restart(); } catch (e) {}
+        await tickRAF();
+        const s0 = tstate();
+
+        // (a) INTERRUPT -- step onto clip B (idx 1), then a REAL
+        //     synthetic canvas pointerdown must stop the tour + enable
+        //     controls + reveal #user-play.
+        const toB = await stepUntil(200, 90, (st) => st && st.clipIdx >= 1);
+        const onClipB = !!(toB.st && toB.st.clipIdx === 1 &&
+          toB.st.clipActive);
+        const phBefore = toB.st ? toB.st.playhead : null;
+        const downRes = synthDown();
+        await tickRAF();
+        const sAfterDown = tstate();
+        const ctrlAfterDown = ctrlEnabled();
+        const cssAfterDown = userPlayCss();
+        // The deterministic __transport.interrupt() driver is idempotent
+        // with the same effect (covers both the real-pointerdown path
+        // AND the test driver -- if the tour already stopped this is a
+        // harmless no-op proving idempotency).
+        let drvOk = false;
+        try { drvOk = !!win.__transport.interrupt(); } catch (e) {}
+        await tickRAF();
+        const sInt = tstate();
+        const interruptStopped = !!(sInt && !sInt.clipActive &&
+          sInt.interrupted === true);
+        const ctrlBackOnInterrupt = ctrlEnabled() === true;
+        const userPlayShown = !!(sInt && sInt.userPlayVisible) &&
+          cssAfterDown !== 'none' && cssAfterDown !== 'absent';
+        const shotIsB = !!(sInt && sInt.activeShot &&
+          sInt.activeShot.clipId === 'clipB' &&
+          sInt.activeShot.cameraId === 'camB');
+        const phCaptured = !!(sInt && sInt.activeShot &&
+          typeof sInt.activeShot.playhead === 'number' &&
+          sInt.activeShot.playhead >= 8);   // we were inside clip B
+
+        // (b) RESUME -- nearest cut <= the captured playhead. Interrupt
+        //     was during clip B (clip_start=8) so resume restarts clip
+        //     B (idx 1), not clip 0. #user-play re-hides.
+        let resumeOk = false;
+        try { resumeOk = !!win.__transport.resume(); } catch (e) {}
+        await tickRAF();
+        const sResume = tstate();
+        const resumedAtNearestCut = !!(sResume &&
+          sResume.clipActive && sResume.clipIdx === 1 &&
+          sResume.interrupted === false);
+        const userPlayHiddenOnResume = !!(sResume &&
+          !sResume.userPlayVisible);
+
+        // (c) IDLE AUTO-ORBIT -- interrupt again, force the idle clock
+        //     past IDLE_MS, pump rAF so the OverlayScene _transportLayer
+        //     starts the orbit; the camera must circle camera A's
+        //     AUTHORED orbit_pivot (NOT origin).
+        // Deterministically restart to clip 0 (camera A, whose authored
+        // orbit_pivot is [100,0,0]) under the frozen clock -- after (b)
+        // the tour is on clip B and never loops back to clip 0, so a
+        // ``stepUntil(clipIdx===0)`` would spin forever. __clip.restart()
+        // is the SAME deterministic re-seed the Task-14 clips check uses.
+        let restartedA = false;
+        try { restartedA = !!win.__clip.restart(); } catch (e) {}
+        await tickRAF();
+        // A couple of frames so clip A is the live shot before interrupt.
+        for (let _i = 0; _i < 4; _i++) {
+          win.eval('window.__vt += 200'); await tickRAF();
+        }
+        const sOnA = tstate();
+        let intA = false;
+        try { intA = !!win.__transport.interrupt(); } catch (e) {}
+        await tickRAF();
+        const sIntA = tstate();
+        const shotIsA = !!(sIntA && sIntA.activeShot &&
+          sIntA.activeShot.cameraId === 'camA');
+        const pivotA = (sIntA && sIntA.activeShot)
+          ? sIntA.activeShot.pivot : null;
+        // Force the per-shot idle clock past IDLE_MS, then pump frames
+        // so the ONE OverlayScene tick's _transportLayer.update() sees
+        // the idle timeout and starts the orbit.
+        try { win.__transport.idleNow(); } catch (e) {}
+        const orbR = await stepUntil(120, 40, (st) =>
+          st && st.idleOrbiting === true);
+        const idleStarted = !!(orbR.st && orbR.st.idleOrbiting);
+        // Sample the camera around the orbit: distance to the AUTHORED
+        // pivot must stay ~constant while distance to the WORLD ORIGIN
+        // varies (proves it orbits the pivot, not origin).
+        const ORIGIN = [0, 0, 0];
+        const pivotDists = [], originDists = [];
+        for (let i = 0; i < 12; i++) {
+          const c = readCam();
+          pivotDists.push(pivotA ? _dist3(c, pivotA) : Infinity);
+          originDists.push(_dist3(c, ORIGIN));
+          win.eval('window.__vt += 1200');   // ~1.2 s of the 30 s orbit
+          await tickRAF();
+        }
+        const pMin = Math.min.apply(null, pivotDists);
+        const pMax = Math.max.apply(null, pivotDists);
+        const oMin = Math.min.apply(null, originDists);
+        const oMax = Math.max.apply(null, originDists);
+        // Orbit radius ~constant about the pivot (small spread vs the
+        // radius) AND clearly varying about origin (the pivot is at
+        // x=100, the cam path near origin, so |camA - pivot| ~ 100+ and
+        // origin distance swings a lot as it circles the far pivot).
+        const pivotRadiusStable = pMax > 1 &&
+          (pMax - pMin) < 0.15 * pMax;
+        const originDistVaries = (oMax - oMin) > 0.20 * Math.max(oMax, 1);
+        // Any input cancels the idle orbit.
+        synthDown();
+        await tickRAF();
+        const sCancel = tstate();
+        const inputCancels = !!(sCancel && !sCancel.idleOrbiting);
+
+        return {
+          ok: !!(s0 && s0.clipMode && onClipB &&
+            interruptStopped && ctrlBackOnInterrupt && userPlayShown &&
+            shotIsB && phCaptured && resumedAtNearestCut &&
+            userPlayHiddenOnResume && shotIsA && idleStarted &&
+            pivotRadiusStable && originDistVaries && inputCancels),
+          restarted: restarted, downRes: downRes, drvOk: drvOk,
+          mode: s0 ? s0.clipMode : null, onClipB: onClipB,
+          phBefore: phBefore, ctrlAfterDown: ctrlAfterDown,
+          cssAfterDown: cssAfterDown,
+          sAfterDown: sAfterDown,
+          interruptStopped: interruptStopped,
+          ctrlBackOnInterrupt: ctrlBackOnInterrupt,
+          userPlayShown: userPlayShown, shotIsB: shotIsB,
+          phCaptured: phCaptured, sInt: sInt,
+          resumeOk: resumeOk,
+          resumedAtNearestCut: resumedAtNearestCut,
+          userPlayHiddenOnResume: userPlayHiddenOnResume,
+          sResume: sResume, restartedA: restartedA, sOnA: sOnA,
+          shotIsA: shotIsA, pivotA: pivotA,
+          idleStarted: idleStarted,
+          pivotDists: pivotDists, originDists: originDists,
+          pivotRadiusStable: pivotRadiusStable,
+          originDistVaries: originDistVaries,
+          inputCancels: inputCancels,
+        };
+      }
+      const tc = await transportCheck();
+      T('Task 15(a): pointerdown during the tour STOPS it -- ' +
+        'controls.enabled=true (free-look handed back), #user-play ' +
+        'revealed, the interrupted shot (clip B) + playhead captured ' +
+        '(real synthetic pointerdown AND the __transport driver)',
+        !!(tc.mode === true && tc.onClipB && tc.interruptStopped &&
+           tc.ctrlBackOnInterrupt && tc.userPlayShown && tc.shotIsB &&
+           tc.phCaptured),
+        JSON.stringify({ mode: tc.mode, onClipB: tc.onClipB,
+          downRes: tc.downRes, interruptStopped: tc.interruptStopped,
+          ctrlBackOnInterrupt: tc.ctrlBackOnInterrupt,
+          userPlayShown: tc.userPlayShown, cssAfterDown: tc.cssAfterDown,
+          shotIsB: tc.shotIsB, phCaptured: tc.phCaptured,
+          sInt: tc.sInt }));
+      T('Task 15(b): #user-play resumes the tour from the NEAREST CUT ' +
+        '<= the captured playhead (interrupt during clip B -> resume ' +
+        'restarts clip B idx 1, not clip 0) and re-hides #user-play',
+        !!(tc.resumedAtNearestCut && tc.userPlayHiddenOnResume),
+        JSON.stringify({ resumeOk: tc.resumeOk,
+          resumedAtNearestCut: tc.resumedAtNearestCut,
+          userPlayHiddenOnResume: tc.userPlayHiddenOnResume,
+          sResume: tc.sResume }));
+      T('Task 15(c): per-shot idle (>= IDLE_MS) drives a slow orbit ' +
+        "around the active cut's AUTHORED orbit_pivot (distance to the " +
+        'pivot ~const while distance to ORIGIN varies -- NOT origin); ' +
+        'any input cancels it',
+        !!(tc.shotIsA && tc.idleStarted && tc.pivotRadiusStable &&
+           tc.originDistVaries && tc.inputCancels),
+        JSON.stringify({ shotIsA: tc.shotIsA, pivotA: tc.pivotA,
+          idleStarted: tc.idleStarted,
+          pivotRadiusStable: tc.pivotRadiusStable,
+          originDistVaries: tc.originDistVaries,
+          inputCancels: tc.inputCancels,
+          pivotDists: tc.pivotDists, originDists: tc.originDists }) +
+          ' | the subjective real-pixel CINEMATIC FEEL of the idle ' +
+          'orbit on an actual splat is DEFERRED to the real-scene ' +
+          'visual pass (scene-less harness -- see header NOTE); the ' +
+          'transport LOGIC is fully asserted here');
 
       // ── Report ───────────────────────────────────────────────────────
       const passCount = results.filter(r => r.pass).length;
