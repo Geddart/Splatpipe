@@ -392,12 +392,14 @@ _VIEWER_TEMPLATE = """\
     body.usermode #author-root {{ display: none; }}
     body.authormode #user-transport {{ display: none; }}
     body.authormode #path-mini {{ display: none !important; }}
-    /* v2-C Phase 2 REFINE: AUTHOR-ONLY add/rename buttons. CSS-only
-       gate (mirrors the body.authormode #path-mini pattern above) so
-       the buttons are always in the DOM (no layout flash) and hidden
-       in every non-author mode (default end-user view, embed). */
+    /* v2-C Phase 2 REFINE: AUTHOR-ONLY +Add camera + kebab (#cam-menu-btn
+       opens #cam-menu-popup with Rename). CSS-only gate (mirrors the
+       body.authormode #path-mini pattern above) so the chips + popup are
+       always in the DOM (no layout flash) and hidden in every non-author
+       mode (default end-user view, embed). */
     body:not(.authormode) #add-camera-btn,
-    body:not(.authormode) #rename-camera-btn {{ display: none !important; }}
+    body:not(.authormode) #cam-menu-btn,
+    body:not(.authormode) #cam-menu-popup {{ display: none !important; }}
 
     /* Task 13 -- cinematic loading-blur + intro fade (the END-USER shell,
        plan SS-A3). Same CSS-gating mechanism as the Task-12 dual-UI roots
@@ -486,16 +488,35 @@ _VIEWER_TEMPLATE = """\
       <select id="camera-select" class="quality-btn" title="Camera. Perspective = free-fly (orbit / WASD). An animated camera binds the in-viewer editor to its path (author) or plays its tour (end-user).">
         <option value="__perspective__">Perspective</option>
       </select>
-      <!-- v2-C Phase 2 REFINE: AUTHOR-ONLY visible "Add" / "Rename"
-           buttons. Both are CSS-gated to authormode (the existing
-           T12-CSS dual-UI region adjacent to body.authormode #path-mini)
-           so an end-user never sees them. JS handlers (in the T19-JS
-           #camSel* block) call _camSelCreate / _camSelRename. Reuse
-           class="quality-btn" -- NO new CSS for styling. -->
+      <!-- v2-C Phase 2 REFINE: AUTHOR-ONLY visible "+ Add camera" +
+           kebab (#cam-menu-btn) actions menu. Both visible chips and
+           the floating popup (#cam-menu-popup) are CSS-gated to
+           authormode (the existing T12-CSS dual-UI region adjacent to
+           body.authormode #path-mini) so an end-user never sees them.
+           JS handlers (in the T19-JS #camSel* block) call _camSelCreate
+           directly and open the kebab menu whose Rename item invokes
+           the existing _camSelRename(). Reuse class="quality-btn" --
+           NO new CSS for styling. ASCII-only source: the kebab glyph
+           is encoded as the HTML entity &#x22ee; (Unicode VERTICAL
+           ELLIPSIS U+22EE), so this added line stays ASCII in the
+           .py source and the rendered HTML still shows the kebab. -->
       <button id="add-camera-btn" class="quality-btn"
               title="Author only: add a new empty camera. The new camera is selected and bound; press Record-K (R) to capture keyframes.">+ Add camera</button>
-      <button id="rename-camera-btn" class="quality-btn"
-              title="Author only: rename the currently-selected camera. Perspective cannot be renamed.">Rename</button>
+      <button id="cam-menu-btn" class="quality-btn"
+              title="Camera actions" aria-haspopup="true"
+              aria-expanded="false">&#x22ee;</button>
+      <div id="cam-menu-popup" role="menu" aria-hidden="true"
+           style="display:none; position:absolute; z-index:60;
+                  background:rgba(20,20,20,0.95);
+                  border:1px solid rgba(255,255,255,0.18);
+                  border-radius:6px; padding:4px;
+                  box-shadow:0 4px 16px rgba(0,0,0,0.5);
+                  min-width:120px;">
+        <button id="cam-menu-rename" class="quality-btn" role="menuitem"
+                style="display:block; width:100%; text-align:left;
+                       margin:0;"
+                title="Rename the currently-selected camera. Perspective cannot be renamed.">Rename</button>
+      </div>
       <button id="bench-btn" class="quality-btn"
               title="Run the selected benchmark (dropdown at left). Click again to stop early; downloads a JSON trace (+ contact sheet for probe/rotate).">Bench</button>
       <button id="setstart-btn" class="quality-btn"
@@ -2508,11 +2529,46 @@ _VIEWER_TEMPLATE = """\
           try {{ _showUserPlay(false); }} catch (e) {{}}
         }}
       }}
+    }} else {{
+      // AUTHOR: bind only -- the editor/timeline/gizmo rebind off
+      // selEl on the next OverlayScene tick (_trajActivePath reads
+      // selEl.value); the camera holds still until the user presses
+      // Play/transport. (Consistent with A6: a bind is not a play.)
+      //
+      // v2-C Phase 2 follow-on (R2): the next-tick lazy rebind leaves
+      // a visible window where the PREVIOUSLY-bound camera's
+      // trajectory overlay + gizmo + bottom-timeline diamonds keep
+      // rendering until the OverlayScene update() detects the path-id
+      // mismatch. For an EMPTY new camera (just-created via "+ Add
+      // camera") that window is especially confusing because no
+      // rebuilt geometry replaces it -- the user sees the prior
+      // camera's path still drawn under the new (correct)
+      // #camera-select label. Force an immediate synchronous rebuild:
+      //   * _trajForceRebuild() rebuilds the trajectory polyline /
+      //     frusta / speed-dots for the NEW active path. Its body
+      //     gracefully handles a <2-keyframes empty path (_trajClear
+      //     drops every old child; _trajRebuild returns early at
+      //     `if (!player) return;` so the overlay ends up genuinely
+      //     EMPTY rather than stale-or-throwing).
+      //   * window.__editor.gzDetach() drops any stale gizmo
+      //     selection -- the previous keyframe index has no meaning
+      //     on the new camera. Already exposed (Task-18 surface);
+      //     typeof-guarded so this is safe even during early init.
+      //   * window.__editor.tlRedraw() forces the bottom timeline
+      //     canvas to redraw against the new active path so its
+      //     diamonds reflect the new keyframes (the timeline IIFE
+      //     only redraws on internal edits; its per-frame update()
+      //     only syncs the playhead position).
+      try {{ _trajForceRebuild(); }} catch (e) {{}}
+      try {{
+        if (window.__editor && typeof window.__editor.gzDetach ===
+            'function') {{ window.__editor.gzDetach(); }}
+      }} catch (e) {{}}
+      try {{
+        if (window.__editor && typeof window.__editor.tlRedraw ===
+            'function') {{ window.__editor.tlRedraw(); }}
+      }} catch (e) {{}}
     }}
-    // AUTHOR: bind only -- the editor/timeline/gizmo rebind off
-    // selEl on the next OverlayScene tick (_trajActivePath reads
-    // selEl.value); the camera holds still until the user presses
-    // Play/transport. (Consistent with A6: a bind is not a play.)
   }}
   // v2-C Phase 2 -- (re)build the camera options. Single source of
   // truth for BOTH #camera-select (Perspective sentinel kept as
@@ -2689,20 +2745,95 @@ _VIEWER_TEMPLATE = """\
       if (_camSelSyncing) return;
       _camSelApply(_camSel.value);
     }});
-    // v2-C Phase 2 REFINE -- visible Add / Rename buttons. Both are
-    // CSS-gated to authormode (T12-CSS region) so an end-user never
-    // sees them; the handlers double-guard via _EDITOR_AUTHOR (a
-    // devtools click in usermode is a no-op). The button DOM lives
-    // in the EXISTING T20-CAMSEL-DOM markup region (between the
-    // camera-select </select> and the Bench button) so it is
-    // recipe-2c-absorbed and contributes ZERO to the byte-lock pin.
+    // v2-C Phase 2 REFINE -- visible "+ Add camera" + kebab menu (the
+    // kebab opens a small floating popup whose Rename item invokes
+    // _camSelRename). All three (button + kebab + popup) are CSS-gated
+    // to authormode (T12-CSS region) so an end-user never sees them;
+    // the handlers double-guard via _EDITOR_AUTHOR (a devtools click in
+    // usermode is a no-op). The button DOM lives in the EXISTING
+    // T20-CAMSEL-DOM markup region (between the camera-select </select>
+    // and the Bench button) so it is recipe-2c-absorbed and contributes
+    // ZERO to the byte-lock pin.
     const _addBtn = document.getElementById('add-camera-btn');
     if (_addBtn) {{
       _addBtn.addEventListener('click', () => {{ _camSelCreate(); }});
     }}
-    const _renBtn = document.getElementById('rename-camera-btn');
-    if (_renBtn) {{
-      _renBtn.addEventListener('click', () => {{ _camSelRename(); }});
+    // --- Kebab menu wiring -------------------------------------------
+    // Click on #cam-menu-btn toggles #cam-menu-popup; while open we
+    // install ONE document-level click listener (removed on close) that
+    // closes the menu on a click OUTSIDE both the kebab and the popup.
+    // Escape also closes. The menu item (Rename) closes the menu first,
+    // then calls _camSelRename() (existing, unchanged). The teardown is
+    // important so multiple opens never leak listeners.
+    const _camMenuBtn = document.getElementById('cam-menu-btn');
+    const _camMenuPop = document.getElementById('cam-menu-popup');
+    const _camMenuRen = document.getElementById('cam-menu-rename');
+    let _camMenuOutside = null;
+    let _camMenuEsc = null;
+    function _camMenuClose() {{
+      if (!_camMenuPop) return;
+      _camMenuPop.style.display = 'none';
+      if (_camMenuBtn) _camMenuBtn.setAttribute('aria-expanded', 'false');
+      _camMenuPop.setAttribute('aria-hidden', 'true');
+      if (_camMenuOutside) {{
+        document.removeEventListener('click', _camMenuOutside, true);
+        _camMenuOutside = null;
+      }}
+      if (_camMenuEsc) {{
+        document.removeEventListener('keydown', _camMenuEsc, true);
+        _camMenuEsc = null;
+      }}
+    }}
+    function _camMenuOpen() {{
+      if (!_camMenuBtn || !_camMenuPop) return;
+      // Position the popup directly beneath the kebab (right-aligned
+      // to its right edge so it never spills off the right side of
+      // the top bar).
+      const r = _camMenuBtn.getBoundingClientRect();
+      _camMenuPop.style.display = 'block';
+      _camMenuPop.setAttribute('aria-hidden', 'false');
+      _camMenuBtn.setAttribute('aria-expanded', 'true');
+      // Measure AFTER making visible so offsetWidth is real.
+      const pw = _camMenuPop.offsetWidth || 120;
+      // Anchor: top = below the kebab; left = align popup's right edge
+      // with the kebab's right edge (clamped to viewport left=4).
+      const top = Math.round(r.bottom + 4);
+      let left = Math.round(r.right - pw);
+      if (left < 4) left = 4;
+      _camMenuPop.style.top = top + 'px';
+      _camMenuPop.style.left = left + 'px';
+      _camMenuOutside = function (e) {{
+        if (!e || !e.target) return;
+        const t = e.target;
+        if (t.closest && (t.closest('#cam-menu-btn') ||
+            t.closest('#cam-menu-popup'))) return;
+        _camMenuClose();
+      }};
+      _camMenuEsc = function (e) {{
+        if (e && e.key === 'Escape') {{
+          _camMenuClose();
+        }}
+      }};
+      // useCapture=true so an outside-click is caught before any
+      // bubbling handler can swallow it.
+      document.addEventListener('click', _camMenuOutside, true);
+      document.addEventListener('keydown', _camMenuEsc, true);
+    }}
+    if (_camMenuBtn && _camMenuPop) {{
+      _camMenuBtn.addEventListener('click', (e) => {{
+        // Stop the click from re-firing the just-installed outside-
+        // click listener (it sees the kebab itself as a closer).
+        if (e && e.stopPropagation) e.stopPropagation();
+        const open = (_camMenuPop.style.display === 'block');
+        if (open) _camMenuClose();
+        else _camMenuOpen();
+      }});
+    }}
+    if (_camMenuRen) {{
+      _camMenuRen.addEventListener('click', () => {{
+        _camMenuClose();
+        _camSelRename();
+      }});
     }}
   }}
   _camSelInit();
@@ -6172,6 +6303,24 @@ _VIEWER_TEMPLATE = """\
               return (typeof _trajKfSig === 'function')
                 ? _trajKfSig(p) : '';
             }} catch (e) {{ return ''; }}
+          }},
+          // v2-C Phase 2 follow-on (R2): force a timeline redraw
+          // against the current _tlActivePath(). Used by _camSelApply
+          // when the author rebinds to a different camera so the
+          // bottom-timeline diamonds reflect the NEW path immediately
+          // (the timeline IIFE's per-frame update() only syncs the
+          // playhead position; it never redraws the diamond row off
+          // path-change alone). _tlDraw + _tlSyncPlayhead are the SAME
+          // pair every existing edit-hook (_tlAfterEdit / tlZoomAbout
+          // / tlSetFps) uses, so this reuses the canonical refresh.
+          // Safe for a freshly-created empty-keyframes path:
+          // _tlDraw's `if (!p || !p.keyframes || !p.keyframes.length)
+          // return;` short-circuits AFTER clearing the canvas, so the
+          // strip ends up genuinely EMPTY rather than showing stale
+          // diamonds from the prior camera.
+          tlRedraw() {{
+            _tlDraw();
+            _tlSyncPlayhead();
           }},
         }};
         // Copy onto the Task-16 window.__editor PRESERVING getters as
