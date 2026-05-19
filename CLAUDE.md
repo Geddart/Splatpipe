@@ -9,7 +9,7 @@ CLI-first Gaussian splatting pipeline. Takes COLMAP data through: auto-clean →
 ```bash
 cd H:\001_ProjectCache\1000_Coding\Splatpipe
 pip install -e ".[dev]"
-pytest tests/ -v                    # Run tests (464 tests, ~24s)
+pytest tests/ -v                    # Run tests (593 collected; 567 passed, 26 skipped clean, ~25s)
 splatpipe --help                    # CLI commands
 splatpipe web                       # Launch dashboard
 ```
@@ -49,20 +49,25 @@ splatpipe/                    # repo root
       path_cmd.py             # splatpipe path-import + path-import-colmap (v0.6+)
       build_lod_cmd.py        # splatpipe build-lod (Spark .rad cache prime, v0.6+)
       set_start_view_cmd.py   # splatpipe set-start-view (apply SPV1 token → viewer-config.json)
+      set_camera_path_cmd.py  # splatpipe set-camera-path (apply viewer-emitted SPCP1 token; decode+merge+deploy relay; v0.8+)
       publish_cmd.py          # splatpipe publish (build/stage → permanent Bunny slug, redeploy-safe; v0.7+)
     core/                     # Project, config, constants, events
       project.py              # Project class: folder scaffold, state.json CRUD, _migrate_state()
       config.py               # TOML config loader (defaults + per-project merge)
       constants.py            # Folder names, LOD defaults, step names
       events.py               # ProgressEvent, StepResult dataclasses
-      path_io.py              # Camera-path schema + glTF/COLMAP importers + mutate_paths helper (v0.6+)
+      path_io.py              # Camera-path schema + glTF/COLMAP importers + mutate_paths helper + per-keyframe interp/mode (v0.6+)
+      spcp_token.py           # SPCP1 camera-path token codec (CLI/viewer wire contract; JS port byte-identical; v0.8+)
+      config_merge.py         # Shared camera-scope merge core (single source of truth; primary_asset force-kept; v0.8+)
+      scene_cuts.py           # Multi-camera clip sequence validation + ordering helpers (cameras/cuts/intro/titles; v0.8+)
     viewers/                  # (v0.6+) Output viewer renderers
       base.py                 # ViewerRenderer Protocol + clear_output_dir helper
       playcanvas/             # Skeleton; current PC viewer still lives in steps/lod_assembly.py
       spark/
-        template.py           # Self-contained Spark 2 viewer (THREE + @sparkjsdev/spark)
+        template.py           # Self-contained Spark 2 viewer (THREE + @sparkjsdev/spark); hosts the in-viewer camera-keyframe editor + cinematic playback shell in _VIEWER_TEMPLATE (v0.8+)
         assembler.py          # SparkAssembler: build_lod -> scene.rad + viewer-config + index.html
         build_lod.py          # Wrapper around the Rust build-lod CLI
+        _gen_harness_viewer.py # Generate + serve the Spark viewer-under-test for the Playwright editor harness (v0.8+)
     colmap/                   # COLMAP utilities (ported verbatim from v1)
       ply_io.py               # Binary PLY reader (numpy structured arrays)
       parsers.py              # Streaming generators for cameras/images/points3D.txt + format detection
@@ -74,6 +79,17 @@ splatpipe/                    # repo root
       lichtfeld.py            # LichtfeldTrainer (--max-cap uses actual count)
       passthrough.py          # PassthroughTrainer (no train; .psht export or .ply copy)
       registry.py             # {"postshot": ..., "lichtfeld": ..., "passthrough": ...}
+    deploy_targets/           # (v0.8+) Pluggable scene-output backends (ABC + name registry)
+      base.py                 # Abstract DeployTarget interface
+      bunny.py                # Bunny CDN deploy target (faithful delegation, default; not a reimplementation)
+      folder.py               # Local-folder deploy target (copy staged output to a directory)
+      registry.py             # {"bunny": ..., "folder": ...}
+    save_backends/            # (v0.8+) Pluggable keyframe-editor save layer (ABC + name registry)
+      base.py                 # Abstract SaveBackend interface + SaveResult
+      cli.py                  # CliRelayBackend -- decision-A DEFAULT (fetch -> merge_camera_scope -> DeployTarget; no web-facing secret)
+      php.py                  # PhpEndpointBackend -- THIN config adapter (save runs browser->PHP)
+      cloudflare.py           # CloudflareWorkerBackend -- THIN config adapter (save runs browser->Worker)
+      registry.py             # {"cli": ..., "php": ..., "cloudflare": ...}
     steps/                    # Clean, assemble, deploy
       base.py                 # Abstract PipelineStep (debug JSON, env capture)
       colmap_clean.py         # COLMAP cleaning step (outliers + KD-tree + POINTS2D)
@@ -83,14 +99,15 @@ splatpipe/                    # repo root
     web/                      # FastAPI + HTMX dashboard
       app.py                  # FastAPI app
       runner.py               # Background pipeline runner (daemon thread + RunnerSnapshot)
-      routes/projects.py      # Project list, detail, inline edit, LOD management, path/keyframe CRUD, glTF/COLMAP importer endpoints, /update-renderer
+      routes/projects.py      # Project list, detail, inline edit, LOD management, path/keyframe CRUD (real flown pacing preserved), glTF/COLMAP importer endpoints, /update-renderer, save_mode wiring
       routes/steps.py         # Step execution: SSE progress streaming, cancel
       routes/actions.py       # OS actions: open folder/tool, file browser API
       routes/settings.py      # Config display + edit
       routes/queue.py         # Global pipeline queue: enqueue, reorder, pause, cancel
+      routes/dcc.py           # DCC bridge endpoints: feed splat to Max/Blender, ingest camera back (/dcc/manifest, /dcc/splat.ply, /dcc/import-camera)
       templates/              # Jinja2 templates (DaisyUI + HTMX via CDN)
       templates/partials/     # Reusable partials (lod_list, browse_modal, queue_panel)
-      templates/scene_editor.html  # Visual annotation editor + camera-path timeline (v0.6+)
+      templates/scene_editor.html  # Visual annotation editor + camera-path timeline; save_mode/save_endpoint relay UI (v0.6+, save plumbing v0.8+)
       templates/project_detail.html  # Includes the renderer toggle (PlayCanvas | Spark, v0.6+)
       static/browse.js        # File/folder browser dialog
       static/viewer.html      # PlayCanvas LOD streaming viewer
@@ -114,6 +131,18 @@ splatpipe/                    # repo root
     test_export.py            # Folder export tests
     test_deploy_extended.py   # CDN deploy + env loading tests
     test_path_io.py           # Camera-path schema, mutate_paths, COLMAP missing-source, JSON round-trip (v0.6+)
+    test_path_io_interp.py    # Per-keyframe interpolation + mode schema (v0.8+)
+    test_spcp_token.py        # SPCP1 token codec round-trip + version/scope gating (v0.8+)
+    test_spcp_js_port.py      # SPCP1 JS<->Python codec byte-identity round-trip (Node-driven; v0.8+)
+    test_config_merge.py      # Shared camera-scope merge core (allow-list + primary_asset force-keep; v0.8+)
+    test_scene_cuts.py        # Multi-camera clip sequence validation/ordering (v0.8+)
+    test_set_camera_path.py   # splatpipe set-camera-path CLI (decode+merge+deploy relay; v0.8+)
+    test_deploy_targets.py    # DeployTarget abstraction + bunny/folder targets (v0.8+)
+    test_save_backends.py     # SaveBackend abstraction + cli/php/cloudflare backends (v0.8+)
+    test_html_for_save_mode.py     # Generated viewer save_mode/save_endpoint plumbing (v0.8+)
+    test_php_save_oracle.py        # PHP save adapter cross-language merge oracle (v0.8+)
+    test_cloudflare_save_oracle.py # Cloudflare Worker save cross-language merge oracle (v0.8+)
+    manual/                   # Browser harnesses (not collected): keyframe-editor.html, pc-compare.html, etc.
 ```
 
 ## Camera path tours (v0.6+)
@@ -184,6 +213,18 @@ Before reading from or writing to any directory:
 2. **After modifying state-writing code, verify all state-reading code still works.** `state.json` fields are read by templates, routes, CLI — grep for the field name and check every consumer.
 3. **After modifying any step, trace downstream.** If you change what train writes to `04_review/`, check what assemble reads from it. If you change assemble output, check what export reads.
 
+### Viewer / Harness Verification (camera-keyframe-editor build)
+
+These were paid for in hours during the keyframe-editor build. Treat them as hard rules.
+
+1. **Spark preview must be same-origin -- verify REAL pixels, not derived numbers.** A localhost page fetching `.rad`/`.radc` chunks cross-origin from Bunny is silently blocked (0 splats rendered, 0 console errors -- looks fine, shows nothing). Real verification is a deployed same-origin slug (or chunks mirrored next to the page). Harness JS state and any "numSplats > 0"-style derived number are NOT proof; verify the rendered pixels at a real scene/pose.
+2. **A scene-less harness never completes preload -- checks past that point are VACUOUS.** With no scene, the closure-local gate vars (`_afReady` etc.) stay false and have no `window.__*` surface, so any harness assertion that depends on a post-preload code path passes without exercising anything. Such a check must (a) be implemented fully and assert observable DOM/state, and (b) HONEST-DEFER the real-pixel demonstration to a real-scene pass with a precise per-check spec -- never ship a vacuous PASS.
+3. **Negative-control every harness "proof".** A check that does not FAIL against the pre-implementation code is vacuous. Build PRE fixtures from `git show <pretask>:<path>` into a SEPARATE served dir (NEVER swap the live template under a running server) and confirm the check fails substantively (not just surface-absence) before trusting a PASS.
+4. **Govern a deliberate stray by CONTENT, not a convention-sensitive hash.** `git diff | git hash-object` of a diff legitimately changes when the committed base blob moves, so a frozen sha is a false alarm machine. Verify a deliberate stray by literally diffing its added lines against the verbatim canonical block; the sha is a secondary, derivation-specific fingerprint only.
+5. **The byte-lock protects file IDENTITY, not correctness inside excised regions.** It cannot protect code bodies inside excised regions, nor geometry / getter-liveness / codec-byte-identity. Independently review old-vs-new for: a refactor of a function whose body lives inside an excised region, a frozen getter, and any JS<->Python codec port.
+6. **A spec-mandated real test legitimately raises the test count.** Distinguish a genuine spec-required new test (e.g. a Node-driven codec byte-identity round-trip) from count-padding. Do not blanket-forbid count changes -- the pre-push doc-check exists to RECONCILE the count, not to freeze it.
+7. **Serialize Playwright/stash agents -- never run >1 concurrently.** Two agents driving the shared Playwright-MCP browser, or git-stashing the same file, contend; a transient stash window mimics "an external process reverted my file". The boring hypothesis is your own over-parallelized agents, not a phantom external process. Verify final state only AFTER all such agents finish.
+
 ## Versioning & Releases
 
 This project uses [Semantic Versioning](https://semver.org/) and [Keep a Changelog](https://keepachangelog.com/).
@@ -198,6 +239,7 @@ This project uses [Semantic Versioning](https://semver.org/) and [Keep a Changel
    - **MAJOR** (x.0.0): breaking changes to CLI interface, config format, state.json schema, or project folder structure
    - Pre-1.0: breaking changes are allowed in MINOR bumps, but still document them clearly
 4. **No commit without a CHANGELOG entry** for user-facing changes. Internal-only changes (CI config, test refactors, CLAUDE.md updates) are exempt.
+5. **Commit-message trailer.** End every commit message with `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>` (the global-CLAUDE.md form).
 
 ### Pre-push / Pre-release Documentation Check
 
@@ -323,7 +365,7 @@ Key config sections: `[tools]`, `[colmap_clean]`, `[postshot]` (profile, gpu, ma
 ## Tests
 
 ```bash
-pytest tests/ -v              # All 464 tests
+pytest tests/ -v              # 593 collected (567 passed, 26 skipped clean-committed)
 pytest tests/ -k colmap       # Just COLMAP tests
 pytest tests/ -k integration  # End-to-end with tiny data
 pytest tests/ -k trainers     # Trainer abstraction tests

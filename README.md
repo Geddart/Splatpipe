@@ -12,7 +12,7 @@
   <img src="https://img.shields.io/badge/python-3.12+-blue?logo=python&logoColor=white" alt="Python 3.12+">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-0078D4?logo=windows" alt="Windows / Linux">
-  <img src="https://img.shields.io/badge/tests-464%20passed-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-567%20passed-brightgreen" alt="Tests">
 </p>
 
 ---
@@ -82,6 +82,20 @@ splatpipe path-import-colmap --project /path/to/project --every-nth 5
 
 Paths play identically in both renderers (same `CubicSpline` ported from SuperSplat MIT).
 
+### In-viewer keyframe editor + cinematic playback (v0.8+)
+
+The Spark viewer ships a full **in-viewer camera-keyframe editor** for authors: viewport trajectory line + camera frustums + speed dots, a bottom timeline with live scrub and per-keyframe timing edits, click-to-select keyframe gizmo, a per-keyframe interpolation popover (auto-clamped default), and a **Record** action that captures the real flown pacing.
+
+End users get a **cinematic playback shell**: intro fade-in, a multi-camera **Camera-Cuts** tour with next-cut LOD pre-warm (no pop on hard cuts), and click-to-interrupt / resume with a per-cut idle auto-orbit.
+
+Deployed viewers are static files with no backend, so the editor's **Save** only *emits* an `SPCP1` token. Relay it back into the scene's `viewer-config.json` with:
+
+```bash
+splatpipe set-camera-path "SPCP1:<slug>:<token>" --project /path/to/project
+```
+
+The decode -> camera-scope merge (`primary_asset` force-kept) -> deploy path is shared with `set-start-view`. A pluggable `save_mode` (`cli` default, plus `php` / `cloudflare` adapters for browser-direct saves) is exposed per project.
+
 ### DCC bridge — round-trip authoring in 3ds Max + Blender (v0.6.1+)
 
 Two ways to drive the splat into your DCC, animate against it, and post the camera back as a new path:
@@ -126,6 +140,7 @@ splatpipe clean                 # Clean COLMAP data (outliers + KD-tree)
 splatpipe train                 # Train splats at all LOD levels
 splatpipe assemble              # Build LOD streaming output
 splatpipe export --mode folder  # Export to local folder (or --mode cdn)
+splatpipe set-camera-path TOK   # Apply a viewer-emitted SPCP1 camera-path token
 splatpipe publish -p .          # Deploy to a PERMANENT, redeploy-safe slug URL
 splatpipe status                # Show project state
 splatpipe run                   # Run full pipeline
@@ -164,7 +179,7 @@ MyProject/
 
 ```bash
 pip install -e ".[dev]"     # Install with dev dependencies
-pytest tests/ -v            # Run all 464 tests (~24s)
+pytest tests/ -v            # 593 collected; 567 passed, 26 skipped (~25s)
 ```
 
 Key design principle: **debug data over fallbacks**. No try/except — every step writes a `_debug.json` with full command, stdout/stderr, file stats, metrics, timing, and environment. When something fails, the debug JSON tells you exactly why.
