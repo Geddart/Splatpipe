@@ -1,0 +1,159 @@
+  // ============================================================
+  //  CameraPathModule (Phase 2B -- editor-arc-design #122 §4.1)
+  // ------------------------------------------------------------
+  //  THIN wrapper that registers the existing camera-path editor
+  //  surface (15_editor_trajectory + 16_editor_timeline +
+  //  17_editor_gizmo) with the EditorModuleRegistry coordinator.
+  //  Behaviour-preserving: every existing code path -- the
+  //  trajectory overlay, the timeline scrubber, the K-recorder,
+  //  the gizmo handles, the SPCP1 token build + emit -- runs
+  //  UNCHANGED. The module's job is purely to surface the camera
+  //  authoring slot to the registry so a later phase's
+  //  SceneSettings drawer / multi-lane timeline / undo store can
+  //  reach it through ONE coordinator.
+  //
+  //  CONTRACT (per spec §4.1):
+  //    stateKey       'camera_paths' (the primary owned key; the
+  //                    spec composite list `camera_paths +
+  //                    default_path_id + start_view` is honoured
+  //                    by the merged-patch fallback in
+  //                    17_editor_gizmo's _buildPatch -- this
+  //                    module's patchObject only carries the
+  //                    camera_paths slice so the registry's
+  //                    one-key-per-stateKey model holds).
+  //    defaultModes   ['author']
+  //    mount/unmount  no-op (the actual UI/overlay IIFEs in 15/16/17
+  //                    self-init off ModeManager.is('author'); we
+  //                    do not duplicate that)
+  //    getDirtyState  returns {isDirty, patchObject} -- conservative:
+  //                    reports dirty whenever the current cfg's
+  //                    camera_paths slice differs from the
+  //                    last-saved snapshot. On fresh mount we
+  //                    snap-clean off the boot cfg; subsequent
+  //                    edits show as dirty until a save calls
+  //                    markClean().
+  //    markClean      captures the current camera_paths slice as
+  //                    the new clean baseline.
+  //    timelineLane   (placeholder hook for Phase 2D multi-lane
+  //                    refactor; the actual timeline lane code
+  //                    still lives in 16_editor_timeline's IIFE).
+  //
+  //  TEST SURFACE: window.__editor.cameraPathModule exposes the
+  //  module instance + a getter for the dirty state -- the
+  //  registry collectPatch() test in test_html_for_save_mode.py
+  //  asserts the camera_paths slot is keyed off this module's
+  //  stateKey when registered.
+  // ============================================================
+  (function _cpmInit() {
+    if (!_EDITOR_AUTHOR) return;
+    if (typeof EditorModuleRegistry === 'undefined') return;
+
+    function _liveCfg() {
+      try { if (typeof cfg !== 'undefined' && cfg) return cfg; }
+      catch (e) {}
+      try { if (window.cfg) return window.cfg; }
+      catch (e) {}
+      return null;
+    }
+
+    // Conservative dirty tracking: the camera_paths slice is "clean"
+    // immediately after a save (markClean snapshots the current value);
+    // any structural change to the slice flips dirty back on. Phase 2's
+    // job is just to surface the slot through the registry -- the
+    // production save path in 17_editor_gizmo still walks the merged
+    // legacy _PATCH_KEYS so this conservative dirty signal is safe (a
+    // false-positive only costs an extra patch entry in the SPCP1
+    // payload; the merge target on the server side is idempotent).
+    let _cleanSig = null;
+    function _slice() {
+      const c = _liveCfg();
+      if (!c) return null;
+      // Return the camera_paths array (the module's primary owned key).
+      // null/undefined coalesces to an empty array so the diff stays
+      // well-defined for an unauthored / empty scene.
+      return Array.isArray(c.camera_paths) ? c.camera_paths : [];
+    }
+    function _sig(slice) {
+      try { return JSON.stringify(slice || []); }
+      catch (e) { return ''; }
+    }
+
+    const cameraPathModule = {
+      name: 'camera_paths',
+      stateKey: 'camera_paths',
+      defaultModes: ['author'],
+
+      mount: function (overlay, hud, interaction, modes) {
+        // The actual UI/overlay/gizmo IIFEs in 15/16/17 self-init on
+        // _EDITOR_AUTHOR / ModeManager.is('author'); duplicating any
+        // of that here would double-wire pointer handlers. Capture the
+        // current slice as the clean baseline so getDirtyState reports
+        // false until the author makes their first edit.
+        _cleanSig = _sig(_slice());
+      },
+
+      unmount: function () {
+        // Same logic -- the trajectory layer is OverlayScene-owned and
+        // its visibility is gated by ModeManager + the layer's modes
+        // filter; we do not tear down the underlying IIFEs.
+        _cleanSig = null;
+      },
+
+      getDirtyState: function () {
+        const sliceNow = _slice();
+        const sigNow = _sig(sliceNow);
+        // On fresh boot before mount() ran, _cleanSig is null -> the
+        // safe interpretation is "no edits yet" so we report clean.
+        // After mount() captures the boot signature, any drift = dirty.
+        const isDirty = (_cleanSig !== null && sigNow !== _cleanSig);
+        // patchObject is the camera_paths slice itself (the registry's
+        // collectPatch then sets patch[stateKey] = patchObject -- giving
+        // the legacy {camera_paths: [...]} shape the merge target reads).
+        return { isDirty: isDirty, patchObject: sliceNow };
+      },
+
+      markClean: function () {
+        // Called by the save dispatcher after a successful save (or by
+        // a future scene reload). Snapshot the current slice as the new
+        // clean baseline.
+        _cleanSig = _sig(_slice());
+      },
+
+      onCfgChange: function (prev, next, stateKey) {
+        // Wholesale cfg replacement (e.g. an EditHistory undo) -- the
+        // overlay rebuild + timeline redraw are driven by the existing
+        // sig-driven OverlayScene.update() tick and the per-frame
+        // playhead sync; nothing to do here. We DO refresh the clean
+        // baseline on an undo/redo that lands the cfg at a previously
+        // saved state -- a Phase 3 enhancement (not in this PR).
+      },
+
+      // Placeholder lane hook for the Phase 2D multi-lane refactor.
+      // The actual canvas-draw of the diamonds + ruler lives in
+      // 16_editor_timeline's _tlDraw; that fragment publishes its draw
+      // through this hook in Phase 2D when the multi-lane registry
+      // takes over the timeline strip.
+      timelineLane: {
+        rows: 1,
+        label: 'Cameras',
+        render: function (ctx, x, y, w, h, t) {
+          // No-op in Phase 2B -- the existing 16_editor_timeline IIFE
+          // owns the full-strip canvas draw. Phase 2D's multi-lane
+          // refactor will route _tlDraw's diamond row through here.
+        },
+      },
+
+      testSurface: {
+        get cameraPathModule() { return cameraPathModule; },
+        // Forces a recomputation of the dirty state -- the harness
+        // uses this to assert an edit flips dirty without going
+        // through the registry walk.
+        get cameraPathModuleDirty() {
+          return cameraPathModule.getDirtyState().isDirty;
+        },
+      },
+    };
+
+    EditorModuleRegistry.register(cameraPathModule);
+  })();
+

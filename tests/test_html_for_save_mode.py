@@ -107,6 +107,58 @@ def test_phase_2_registry_and_history_fragments_baked_in():
     assert framework_i < history_i, "05 framework must precede 17a history"
     assert history_i < publish_i, "history IIFE must precede its self-publish"
 
+
+# --------------------------------------------------------------------------
+# Phase 2B (editor-arc-design #122 §4.1): CameraPathModule wrapper +
+# Save dispatch via EditorModuleRegistry.collectPatch.
+# --------------------------------------------------------------------------
+
+_PHASE_2B_MARKERS = (
+    # 15a fragment: CameraPathModule definition + registration
+    "// ============================================================\n  //  CameraPathModule",
+    "name: 'camera_paths',",
+    "stateKey: 'camera_paths',",
+    "EditorModuleRegistry.register(cameraPathModule);",
+    # 17_editor_gizmo: _buildPatch refactor (registry overlay over legacy walk)
+    "function _buildLegacyPatch() {",
+    "function _buildPatch() {",
+    "EditorModuleRegistry.collectPatch();",
+)
+
+
+def test_phase_2b_camera_path_module_and_save_dispatch_present():
+    """The new 15a CameraPathModule fragment is registered with the
+    EditorModuleRegistry + 17_editor_gizmo's _buildPatch now overlays
+    the registry's collectPatch() onto the legacy _PATCH_KEYS walk."""
+    html = html_for("HarnessScene")
+    for mk in _PHASE_2B_MARKERS:
+        assert mk in html, f"Phase 2B marker missing: {mk!r}"
+    # The legacy _PATCH_KEYS array stays present (the fallback walk).
+    assert "const _PATCH_KEYS = ['start_view'" in html
+    # Structural ordering: _buildLegacyPatch is the function _buildPatch
+    # calls FIRST; collectPatch overlay happens AFTER the legacy base is
+    # built. The fragment loader runs 15 before 15a before 17 so the
+    # CameraPathModule registers in time for the Save dispatch.
+    cpm_i = html.index("// ============================================================\n  //  CameraPathModule")
+    gz_i = html.index("function _buildPatch() {")
+    assert cpm_i < gz_i, (
+        "CameraPathModule fragment (15a) must concatenate BEFORE the gizmo "
+        "fragment (17) so the module is registered + boot-mounted in time "
+        "for the Save dispatch to reach it via the registry"
+    )
+    # Inside _buildPatch, the legacy base is built FIRST, then the
+    # registry overlay merges in.
+    bp_i = html.index("function _buildPatch() {")
+    bp_end = html.index("function _buildSpcpPayload", bp_i)
+    body = html[bp_i:bp_end]
+    base_i = body.find("const base = _buildLegacyPatch();")
+    overlay_i = body.find("EditorModuleRegistry.collectPatch();")
+    assert base_i >= 0 and overlay_i > base_i, (
+        "_buildPatch must build the legacy base FIRST (preserves byte-id "
+        "save-shape when no modules registered) then overlay registry "
+        "collectPatch() on top (registered modules WIN over legacy)"
+    )
+
 # --------------------------------------------------------------------------
 # my16-M1 follow-up: the camera-path overlay must be SCENE-RELATIVE
 # --------------------------------------------------------------------------

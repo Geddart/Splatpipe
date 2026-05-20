@@ -305,7 +305,15 @@
     const _PATCH_KEYS = ['start_view', 'camera_paths', 'clips',
       'cameras', 'default_path_id', 'intro', 'titles3d',
       'spark_render', 'annotations'];
-    function _buildPatch() {
+    function _buildLegacyPatch() {
+      // The pre-Phase-2 hard-coded walk over the locked allow-list.
+      // Phase 2B uses this as the BASE that the EditorModuleRegistry's
+      // collectPatch() overlay merges into -- so a registered module's
+      // dirty patch slot WINS (cleaner, narrower payload) while every
+      // un-registered legacy key still rides along (byte-identical save
+      // shape for Phase 2 where only CameraPathModule is wired). When
+      // every module has registered (Phases 3-8), the legacy walk is
+      // pure belt-and-braces and the registry walk dominates.
       const patch = {};
       for (const k of _PATCH_KEYS) {
         if (cfg && Object.prototype.hasOwnProperty.call(cfg, k) &&
@@ -314,6 +322,37 @@
         }
       }
       return patch;
+    }
+    function _buildPatch() {
+      // Phase 2B (#122): Save dispatch via EditorModuleRegistry.
+      //   1. Start with the legacy _PATCH_KEYS walk as the BASE (every
+      //      allow-listed key included if cfg has it -- byte-identical
+      //      to the pre-Phase-2 payload shape).
+      //   2. Overlay every registered module's getDirtyState().patchObject
+      //      keyed off the module's stateKey. The registry collectPatch
+      //      already filters to dirty modules; an empty registry (no
+      //      modules registered) is a clean fallback to step 1.
+      //   3. A registered module's slot WINS over the legacy slot of the
+      //      same name (the module is the canonical owner; the legacy
+      //      slot is the back-compat duplicate). For Phase 2B, only
+      //      CameraPathModule is registered -- so camera_paths comes
+      //      from the module and every other key (start_view, clips,
+      //      default_path_id, intro, titles3d, spark_render, annotations,
+      //      cameras) rides along from the legacy walk.
+      const base = _buildLegacyPatch();
+      try {
+        if (typeof EditorModuleRegistry !== 'undefined' &&
+            typeof EditorModuleRegistry.collectPatch === 'function') {
+          const collected = EditorModuleRegistry.collectPatch();
+          if (collected && collected.patch &&
+              typeof collected.patch === 'object') {
+            for (const k of Object.keys(collected.patch)) {
+              base[k] = collected.patch[k];
+            }
+          }
+        }
+      } catch (e) {}
+      return base;
     }
     function _buildSpcpPayload() {
       // Exactly decode_spcp's gate shape: v + scope FIRST (insertion
