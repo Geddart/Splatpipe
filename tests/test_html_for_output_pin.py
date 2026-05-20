@@ -44,6 +44,16 @@ PIN UPDATES:
     recorder for the 1-kf -> 2-kf bridge, and rewords the
     ``startPath`` <2-kf alert). All 6 fixtures shifted by the same
     +4383 byte delta in lockstep; pins updated to the new baseline.
+  * 2026-05-20 (Phase 1 Q5): #author=<secret> -> #token=<token> URL
+    fragment param rename (decouples the bearer name from the
+    ?author=1 mode flag). The fragment parser ``_gzAuthorSecret()``
+    was renamed to ``_gzReadAuthToken()`` with a backwards-compat
+    branch that still reads ``#author=`` and ``console.warn``s. The
+    Save body shape was also corrected to ``{slug, ...patch}`` (flat
+    top-level, matching the PHP adapter wire contract) from the prior
+    ``{slug, patch}`` wrapper that was wrong for the live PHP
+    round-trip. All 6 fixtures shifted by the same +1408 byte delta
+    in lockstep; pins re-pinned to the new baseline.
 """
 
 from __future__ import annotations
@@ -57,44 +67,44 @@ from splatpipe.viewers.spark.template import html_for
 
 # CORPUS: list of (name, args, kwargs, expected_len, expected_sha256).
 # Pins captured 2026-05-20 at HEAD f46fa67 (before T1 of #118), then
-# re-pinned 2026-05-20 (UX-5 fix; all 6 fixtures +4383 bytes in lockstep
-# from the lifted controls re-enable + K-recorder DT bridge + startPath
-# alert wording).
+# re-pinned 2026-05-20 (UX-5 fix; +4383 bytes in lockstep), then
+# re-pinned 2026-05-20 again (Phase 1 Q5: #author= -> #token= rename +
+# Save body shape correction; all 6 fixtures +1408 bytes in lockstep).
 CORPUS: list[tuple[str, tuple, dict, int, str]] = [
     (
         "harness_defaults",
         ("HarnessScene",),
         {},
-        471854,
-        "28cd38fbea3c20cf4494469c8e1c13c956d703b5b1ad1200a719f542d7155854",
+        473262,
+        "dfc2b1565e6f0513b41d18fbc5ddc4f030c07241b808f58ff3a64a5c9c7909a2",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        471826,
-        "dbd423a52d18ae8703248a83213ccbef6533e03d8f87e6145a5a72333f39827c",
+        473234,
+        "cd2a64148dad7af992d0aef1c866f9febb0da971618a2811faafa3b144111511",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        471821,
-        "e561578bda437ec3fba83376c22c692d312471c0cc9eb8166929629038aff2f8",
+        473229,
+        "854efcc59fbd803b338a109957fbb80384ca0264e02caa7b7c51c1e9b2808f60",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        471800,
-        "0d4923dafe787ff3dc415fbef09fb9d52b3af1a93f5cf482651e40030032b826",
+        473208,
+        "3d9a0046e88bd828a37944d64d83f57fa42876d51325753654479a7400821c6d",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        471865,
-        "12fa16a474c074d91d801f1ffbd7388fadccbc0cc237d12a45e4343882cdb635",
+        473273,
+        "80986510c8ec46d9f363920a6998b6d24b191a2257652ee3339beaa964724ca1",
     ),
     (
         "share_card",
@@ -104,8 +114,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        471724,
-        "96b02cde60ed27af4e39cff700d2429c5fa6779f15c144f169925a6621d9b1fe",
+        473132,
+        "31478dd551a4c6f324b8ade963097d6443f33d9f42d6dfec7fe7e5313419b06f",
     ),
 ]
 

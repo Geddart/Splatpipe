@@ -38,10 +38,29 @@ declare(strict_types=1);
  *   denied to the web by the sibling .htaccess). Never logged/echoed.
  * MAX_BODY_BYTES: hard request-body cap. Over it -> 413 pointing the author
  *   at `splatpipe set-camera-path` (the always-available over-cap escape).
+ *
+ * BUNNY_ENV_FILE: optional .env-style file with Bunny CDN credentials. When
+ *   present, save-camera.php ALSO pushes the merged viewer-config.json to
+ *   Bunny Storage (additive — the local atomic write stays as the source of
+ *   truth for the oracle's data-parity contract). This lets a deployed
+ *   Spark viewer on Bunny CDN see the new state on the very next reload.
+ *   When ABSENT, the local Strato write is the only side-effect (the
+ *   original "scenes/ tree co-located with the viewer" model).
+ *
+ *   The file holds .env-style KEY=VALUE lines:
+ *     BUNNY_STORAGE_ZONE=<zone>     (e.g. splatpipe-cdn-zone)
+ *     BUNNY_STORAGE_PASSWORD=<key>  (Bunny Storage access key; READ+PUT)
+ *     BUNNY_CDN_URL=<url>           (e.g. https://splatpipe-cdn.b-cdn.net)
+ *     BUNNY_ACCOUNT_API_KEY=<key>   (optional, for edge purge)
+ *
+ *   Place it OUTSIDE the docroot OR behind the sibling .htaccess (the
+ *   `^\.` deny rule already covers `.bunny_env`). The file MUST NOT be
+ *   web-readable.
  */
 const SCENES_ROOT     = __DIR__ . '/scenes';
 const TOKEN_BASENAME  = '.author-token';
 const MAX_BODY_BYTES  = 256 * 1024;            // 256 KB
+const BUNNY_ENV_FILE  = __DIR__ . '/.bunny_env';
 
 /**
  * The §H2 locked camera-scope allow-list — the ONLY keys an untrusted patch
@@ -84,6 +103,131 @@ function fail(int $status, string $error): never
 {
     // The token is NEVER part of $error (we never put it there).
     send_json($status, ['ok' => false, 'error' => $error]);
+}
+
+/**
+ * Read a .env-style file into an assoc array (KEY=VALUE per line).
+ *
+ * Returns `[]` if the file is absent / unreadable -- caller treats that as
+ * "no Bunny sync configured" and falls back to local-only writes. Quotes
+ * around values are stripped; blank lines + `#` comments skipped. Never
+ * logged / never echoed (the only consumer is the Bunny helpers below).
+ */
+function load_env_file(string $path): array
+{
+    if (!is_file($path) || !is_readable($path)) {
+        return [];
+    }
+    $env = [];
+    foreach (file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
+        $line = trim($line);
+        if ($line === '' || $line[0] === '#') {
+            continue;
+        }
+        if (preg_match('/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/', $line, $m)) {
+            $val = $m[2];
+            if (strlen($val) >= 2 &&
+                (($val[0] === '"' && $val[strlen($val) - 1] === '"') ||
+                 ($val[0] === "'" && $val[strlen($val) - 1] === "'"))) {
+                $val = substr($val, 1, -1);
+            }
+            $env[$m[1]] = $val;
+        }
+    }
+    return $env;
+}
+
+/**
+ * GET the live viewer-config.json from Bunny Storage. Returns null on any
+ * error (network, 404, parse failure, missing creds) -- caller falls back
+ * to the local file (or `{}`). Never throws.
+ */
+function bunny_fetch_config(array $env, string $slug): ?array
+{
+    $zone = $env['BUNNY_STORAGE_ZONE'] ?? '';
+    $key  = $env['BUNNY_STORAGE_PASSWORD'] ?? '';
+    if ($zone === '' || $key === '') {
+        return null;
+    }
+    $url = 'https://storage.bunnycdn.com/' . rawurlencode($zone)
+         . '/' . rawurlencode($slug) . '/viewer-config.json';
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER     => ['AccessKey: ' . $key, 'Accept: application/json'],
+        CURLOPT_TIMEOUT        => 30,
+        CURLOPT_FAILONERROR    => false,
+    ]);
+    $body = curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    if (!is_string($body) || $code < 200 || $code >= 300) {
+        return null;
+    }
+    $decoded = json_decode($body, true);
+    return is_array($decoded) ? $decoded : null;
+}
+
+/**
+ * PUT the merged viewer-config.json to Bunny Storage. Returns true on
+ * success, false on any error. A failure here does NOT abort the response:
+ * the local atomic write already succeeded; a Bunny-push failure surfaces
+ * via the success body's `bunny_push_ok: false` flag so the operator can
+ * investigate without losing the edit.
+ */
+function bunny_put_config(array $env, string $slug, string $body): bool
+{
+    $zone = $env['BUNNY_STORAGE_ZONE'] ?? '';
+    $key  = $env['BUNNY_STORAGE_PASSWORD'] ?? '';
+    if ($zone === '' || $key === '') {
+        return false;
+    }
+    $url = 'https://storage.bunnycdn.com/' . rawurlencode($zone)
+         . '/' . rawurlencode($slug) . '/viewer-config.json';
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_CUSTOMREQUEST  => 'PUT',
+        CURLOPT_POSTFIELDS     => $body,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER     => [
+            'AccessKey: ' . $key,
+            'Content-Type: application/json',
+        ],
+        CURLOPT_TIMEOUT        => 60,
+        CURLOPT_FAILONERROR    => false,
+    ]);
+    curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return $code >= 200 && $code < 300;
+}
+
+/**
+ * Purge the Bunny edge cache for the slug's viewer-config.json so the
+ * very next read sees the new state. Best-effort -- a purge failure does
+ * NOT abort the response (the no-cache headers also keep the edge fresh
+ * after a short TTL).
+ */
+function bunny_purge_config(array $env, string $slug): bool
+{
+    $api = $env['BUNNY_ACCOUNT_API_KEY'] ?? '';
+    $cdn = rtrim($env['BUNNY_CDN_URL'] ?? '', '/');
+    if ($api === '' || $cdn === '') {
+        return false;
+    }
+    $purge_url = 'https://api.bunny.net/purge?url='
+               . urlencode($cdn . '/' . $slug . '/viewer-config.json');
+    $ch = curl_init($purge_url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER     => ['AccessKey: ' . $api],
+        CURLOPT_TIMEOUT        => 10,
+        CURLOPT_FAILONERROR    => false,
+    ]);
+    curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return $code >= 200 && $code < 300;
 }
 
 /* ===== 1. CORS preflight =============================================== */
@@ -196,17 +340,31 @@ if (!$ok_auth) {
     fail(401, 'unauthorized');
 }
 
-/* ===== 6. load existing config (missing => {}) ======================= */
-
-$existing = [];
-if (is_file($cfg_path)) {
-    $existing_raw = (string) file_get_contents($cfg_path);
-    if (trim($existing_raw) !== '') {
-        $decoded = json_decode($existing_raw, true);
-        if (!is_array($decoded)) {
-            fail(500, 'existing viewer-config.json is not a JSON object');
+/* ===== 6. load existing config (Bunny first, then local fallback) ===== *
+ * Two-source read so the merge always operates on the actual deployed
+ * state: if BUNNY_ENV_FILE is configured + the CDN returns a config, that
+ * is the source of truth (the deployed viewer reads from Bunny). Otherwise
+ * fall back to the local Strato file (the documented "scenes/<slug>/ tree
+ * co-located with the viewer" model). Both branches still feed the same
+ * merge -> local-write -> Bunny-push pipeline; only the "existing" base
+ * changes.
+ */
+$bunny_env = load_env_file(BUNNY_ENV_FILE);
+$existing  = null;
+if ($bunny_env) {
+    $existing = bunny_fetch_config($bunny_env, $slug);
+}
+if ($existing === null) {
+    $existing = [];
+    if (is_file($cfg_path)) {
+        $existing_raw = (string) file_get_contents($cfg_path);
+        if (trim($existing_raw) !== '') {
+            $decoded = json_decode($existing_raw, true);
+            if (!is_array($decoded)) {
+                fail(500, 'existing viewer-config.json is not a JSON object');
+            }
+            $existing = $decoded;
         }
-        $existing = $decoded;
     }
 }
 
@@ -301,9 +459,34 @@ try {
     fclose($lock);
 }
 
+/* ===== 8b. Bunny push (additive; non-blocking) ======================== *
+ * If BUNNY_ENV_FILE is configured, also push the merged config to Bunny
+ * Storage so the deployed viewer on the CDN sees the new state. Failure
+ * here is NON-FATAL — the local atomic write already succeeded; surface
+ * the status as `bunny_push_ok` in the success body so the operator can
+ * investigate without re-doing the edit. (The oracle test_php_save_oracle
+ * does not configure BUNNY_ENV_FILE, so its data-parity contract on the
+ * local file is unchanged.)
+ */
+$bunny_push_ok    = false;
+$bunny_purge_ok   = false;
+$bunny_configured = !empty($bunny_env);
+if ($bunny_configured) {
+    $bunny_push_ok = bunny_put_config($bunny_env, $slug, $encoded);
+    if ($bunny_push_ok) {
+        $bunny_purge_ok = bunny_purge_config($bunny_env, $slug);
+    }
+}
+
 /* ===== 9. success ===================================================== *
  * `ignored` = the dropped non-allow-listed key names — INFORMATIONAL, not
  * an error (Task-4 carry-forward; mirrors SaveResult.ignored_keys). The
- * token is never part of any response or log.
+ * token is never part of any response or log. `bunny_push_ok` is OMITTED
+ * entirely when Bunny is not configured (the legacy local-only path).
  */
-send_json(200, ['ok' => true, 'ignored' => $ignored]);
+$out = ['ok' => true, 'ignored' => $ignored];
+if ($bunny_configured) {
+    $out['bunny_push_ok']  = $bunny_push_ok;
+    $out['bunny_purge_ok'] = $bunny_purge_ok;
+}
+send_json(200, $out);

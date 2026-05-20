@@ -51,8 +51,8 @@
   //      existing SPV1 "Set start view" relay UI (no client secret,
   //      identical trust model). SAVE_MODE=="http" (opt-in) POSTs
   //      the camera-scope patch JSON to SAVE_ENDPOINT with
-  //      Authorization: Bearer <secret> where <secret> is read ONLY
-  //      from the author URL fragment (#author=<secret>).
+  //      Authorization: Bearer <token> where <token> is read ONLY
+  //      from the author URL fragment (#token=<token>).
   //  AUTO-TOUR: in ?author=1 the default-path tour AUTO-PLAYS
   //  (_cinematic is usermode-only). Authoring while it auto-advances
   //  is disorienting, so the FIRST author interaction (gizmo attach
@@ -1519,8 +1519,8 @@
     //      (same overlay/card/textarea/copy pattern, same trust
     //      model -- no client secret). SAVE_MODE=="http" (opt-in):
     //      POST the camera-scope patch JSON to SAVE_ENDPOINT with
-    //      Authorization: Bearer <secret> where <secret> is read
-    //      ONLY from the author URL fragment (#author=<secret>) --
+    //      Authorization: Bearer <token> where <token> is read
+    //      ONLY from the author URL fragment (#token=<token>) --
     //      never baked, never in viewer-config.json. Returns the
     //      token (cli) or a Promise (http) so the harness can
     //      deterministically assert both paths.
@@ -1528,17 +1528,39 @@
       return String(s).replace(/[&<>]/g, (c) =>
         ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
     }
-    function _gzAuthorSecret() {
+    function _gzReadAuthToken() {
       // The http-mode bearer lives ONLY in the URL fragment
-      // (#author=<secret>), never baked / in config. Parse it
-      // leniently (#author=... possibly among &-joined fields).
+      // (#token=<token>), never baked / in config. Parse it leniently
+      // (#token=... possibly among &-joined fields). Backwards-compat:
+      // also reads the legacy #author=<secret> form with a warn -- the
+      // fragment-param rename (per spec §11.5 / Q5) decoupled the bearer
+      // name from the ?author=1 mode flag, but in-flight bookmarks saved
+      // during testing should keep working until the operator rotates.
+      // PREFER the canonical #token= over a legacy #author= if both are
+      // present (the explicit migration path).
       try {
         const h = (location.hash || '').replace(/^#/, '');
+        let legacy = '';
+        let modern = '';
         for (const part of h.split('&')) {
           const eq = part.indexOf('=');
-          if (eq > 0 && part.slice(0, eq) === 'author') {
-            return decodeURIComponent(part.slice(eq + 1));
+          if (eq <= 0) continue;
+          const key = part.slice(0, eq);
+          if (key === 'token') {
+            modern = decodeURIComponent(part.slice(eq + 1));
+          } else if (key === 'author') {
+            legacy = decodeURIComponent(part.slice(eq + 1));
           }
+        }
+        if (modern) return modern;
+        if (legacy) {
+          try {
+            console.warn(
+              '[splatpipe] #author=<secret> URL fragment is deprecated -- ' +
+              'use #token=<token> instead (per init-php-auth output).'
+            );
+          } catch (e) {}
+          return legacy;
         }
       } catch (e) {}
       return '';
@@ -1620,18 +1642,20 @@
       _gzShowTokenCard(token);
       return token;
     }
-    // The opt-in http Save: POST {slug, patch} (the allow-listed
-    // camera-scope patch keys ONLY -- NEVER primary_asset)
-    // to SAVE_ENDPOINT with Bearer <fragment secret>. The body is
-    // the SAME allow-listed patch (NEVER primary_asset) -- mirrors
-    // the Contract-C {slug, patch} body shape. Returns the fetch
-    // Promise so the harness can assert the call (no real server).
+    // The opt-in http Save: POST {slug, ...patch} (flat top-level
+    // body shape -- slug + the allow-listed camera-scope patch keys
+    // ONLY -- NEVER primary_asset) to SAVE_ENDPOINT with Bearer
+    // <fragment token>. The body shape MATCHES the PHP adapter's
+    // wire contract (infra/php/save-camera.php reads $patch['slug']
+    // and iterates $patch as a flat dict; the cross-language oracle
+    // sends json.dumps({"slug": SLUG, **patch}) too). Returns the
+    // fetch Promise so the harness can assert the call.
     function _gzSaveHttp() {
       const patch = _buildPatch();
-      const secret = _gzAuthorSecret();
-      const body = JSON.stringify({ slug: _gzSlug, patch: patch });
+      const token = _gzReadAuthToken();
+      const body = JSON.stringify(Object.assign({ slug: _gzSlug }, patch));
       const headers = { 'Content-Type': 'application/json' };
-      if (secret) headers['Authorization'] = 'Bearer ' + secret;
+      if (token) headers['Authorization'] = 'Bearer ' + token;
       return fetch(SAVE_ENDPOINT, {
         method: 'POST', headers: headers, body: body,
       });
@@ -1981,7 +2005,12 @@
           // http -> the fetch Promise) -- so the harness can assert
           // the http path POSTs the right patch to SAVE_ENDPOINT.
           gzSave() { return _gzSave(); },
-          gzAuthorSecret() { return _gzAuthorSecret(); },
+          // Renamed from gzAuthorSecret per spec §11.5 / Q5 (the
+          // fragment param is now #token=<token>; the legacy
+          // gzAuthorSecret alias is kept for backwards-compat with
+          // any in-flight harness scripts that still call it).
+          gzReadAuthToken() { return _gzReadAuthToken(); },
+          gzAuthorSecret() { return _gzReadAuthToken(); },
           // Close the Save card if open (harness cleanup so its
           // textarea focus does not eat later key probes).
           gzCloseSaveCard() {
