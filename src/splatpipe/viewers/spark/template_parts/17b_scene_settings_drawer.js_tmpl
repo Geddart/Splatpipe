@@ -184,7 +184,7 @@
       _ssCog.style.background = _ssIsOpen
         ? 'rgba(53,224,255,0.28)' : 'rgba(255,255,255,0.10)';
     }
-    function _ssOpen() {
+    function _ssDoOpen() {
       if (_ssIsOpen) return;
       _ssApply(true);
       _ssPersist(true);
@@ -195,20 +195,23 @@
       try { EditorModuleRegistry.emit('scene-settings:open'); }
       catch (e) {}
     }
-    function _ssClose() {
+    function _ssDoClose() {
       if (!_ssIsOpen) return;
       _ssApply(false);
       _ssPersist(false);
       try { EditorModuleRegistry.emit('scene-settings:close'); }
       catch (e) {}
     }
-    function _ssToggle() { _ssIsOpen ? _ssClose() : _ssOpen(); }
+    function _ssToggle() { _ssIsOpen ? _ssDoClose() : _ssDoOpen(); }
 
     _ssCog.addEventListener('click', (ev) => {
       ev.stopPropagation();
       _ssToggle();
     });
-    _ssClose.addEventListener('click', _ssClose);
+    // The close BUTTON (_ssClose DOM ref) -> the close FUNCTION (_ssDoClose).
+    // We separate the const + function names so they don't collide in the
+    // IIFE scope (a single `_ssClose` for both would clash on lookup).
+    _ssClose.addEventListener('click', _ssDoClose);
 
     // Esc closes (per spec §12.4 -- "PageDown / Esc semantics stay
     // simple"). Author-mode gated; skips text-input focus.
@@ -222,7 +225,7 @@
         return;
       }
       ev.preventDefault();
-      _ssClose();
+      _ssDoClose();
     });
 
     // Initial state from sessionStorage (default = closed).
@@ -278,8 +281,8 @@
               drawerEl: _ssDrawer,
               cogEl: _ssCog,
               get isOpen() { return _ssIsOpen; },
-              open: _ssOpen,
-              close: _ssClose,
+              open: _ssDoOpen,
+              close: _ssDoClose,
               toggle: _ssToggle,
               // The DOM sections in registration order (their
               // `data-section` ids).
