@@ -1,0 +1,702 @@
+  // ============================================================
+  //  CutsModule (Phase 6 -- editor-arc-design #122 §4.3)
+  // ------------------------------------------------------------
+  //  THIN wrapper that registers the existing ClipPlayer surface
+  //  (11_clip_player.js_tmpl -- end-user multi-camera Camera-Cuts
+  //  tour playback) with the EditorModuleRegistry coordinator + adds
+  //  the EDIT-TIME authoring surface (Scene Settings cuts CRUD +
+  //  timeline lane visualisation). Behaviour-preserving for end-user
+  //  playback: every existing code path in 11_clip_player runs
+  //  UNCHANGED (the IIFE-shared globals _clipState / _clipMode /
+  //  _clipSeq / _clipCameras / _clipStart are NOT redeclared here;
+  //  this module references them via closure-scope from the same
+  //  <script type="module"> block).
+  //
+  //  CONTRACT (per spec §4.3):
+  //    stateKey       'clips' (the primary owned key; the spec
+  //                    composite list `clips + cameras` is honoured
+  //                    by both CameraPathModule (cameras) and this
+  //                    module (clips). One stateKey per module so the
+  //                    registry's one-key-per-stateKey model holds.
+  //                    The legacy _PATCH_KEYS walk in 17_editor_gizmo
+  //                    still includes clips for the merge target's
+  //                    composite shape.)
+  //    defaultModes   ['author','user','embed'] (clips DRIVE playback
+  //                    in all modes; editing is author-only and is
+  //                    gated separately inside renderSceneSettings).
+  //    mount/unmount  no-op (11_clip_player's IIFE self-init owns
+  //                    playback; we do not duplicate that machinery)
+  //    getDirtyState  returns {isDirty, patchObject} -- conservative:
+  //                    reports dirty whenever the current cfg's
+  //                    clips slice differs from the last-saved
+  //                    snapshot (JSON-stringify diff vs the clean
+  //                    baseline). On fresh mount we snap-clean off
+  //                    the boot cfg; subsequent edits show as dirty
+  //                    until a save calls markClean().
+  //    markClean      captures the current clips slice as the new
+  //                    clean baseline.
+  //    timelineLane   { rows: 1, label: 'Cuts',
+  //                     render(ctx, x, y, w, h, t) } -- contributes
+  //                    coloured per-camera clip blocks to the Phase
+  //                    2D multi-lane registry. v1 ships a basic
+  //                    render that draws a clip rect per ordered
+  //                    clip with the camera_id label inside if the
+  //                    block is wide enough; the actual visual
+  //                    stacking onto the bottom-timeline canvas
+  //                    lands when the multi-lane visual integration
+  //                    pulls it (Phase 2D infra is registered in
+  //                    16_editor_timeline; v1 here just provides
+  //                    the lane object for that pull).
+  //    renderSceneSettings(parentEl)
+  //                   populates the Scene Settings drawer's cuts
+  //                   section (replaces the empty Phase 2D
+  //                   placeholder) with a per-clip card UI: camera
+  //                   dropdown (cfg.cameras), in-point + duration
+  //                   numeric inputs, delete button, up/down arrow
+  //                   reorder buttons, "+ Add clip" button. Every
+  //                   edit pushes ONE EditHistory snapshot at
+  //                   gesture-end (commit on change, never per
+  //                   keystroke -- mirrors the Phase 2C total-time
+  //                   convention).
+  //
+  //  ANNOTATION TRIGGERS ACROSS CUTS (Q6 semantics):
+  //    Per the user-locked Q6 decision in spec §11.6, annotations
+  //    are "one-shot per playback session" and per-clip annotation
+  //    triggers fire when the master playhead crosses the
+  //    annotation's t_in within the clip's mapped time. The full
+  //    cross-clip unwind (annotation t_out past the clip boundary
+  //    dropping cleanly into the next cut) is OUT OF SCOPE for this
+  //    commit -- documented here + in the spec as a Phase 5/6
+  //    integration TODO that lands when AnnotationModule wires its
+  //    onClipBoundary listener.
+  //
+  //  TEST SURFACE: window.__editor.cutsModule exposes the module
+  //  instance + a getter for the dirty state -- the harness asserts
+  //  the registry.get('cuts') is the same object and that an edit
+  //  flips dirty.
+  // ============================================================
+  (function _cutsInit() {
+    if (typeof EditorModuleRegistry === 'undefined') return;
+
+    function _liveCfg() {
+      try { if (typeof cfg !== 'undefined' && cfg) return cfg; }
+      catch (e) {}
+      try { if (window.cfg) return window.cfg; }
+      catch (e) {}
+      return null;
+    }
+
+    // Conservative dirty tracking: the clips slice is "clean"
+    // immediately after a save (markClean snapshots the current value);
+    // any structural change to the slice flips dirty back on. Same
+    // convention as CameraPathModule (15a).
+    let _cleanSig = null;
+    function _clipsSlice() {
+      const c = _liveCfg();
+      if (!c) return null;
+      return Array.isArray(c.clips) ? c.clips : [];
+    }
+    function _camerasSlice() {
+      const c = _liveCfg();
+      if (!c) return null;
+      return Array.isArray(c.cameras) ? c.cameras : [];
+    }
+    function _sig(slice) {
+      try { return JSON.stringify(slice || []); }
+      catch (e) { return ''; }
+    }
+
+    // Stable colour assignment for a given camera_id. The same id
+    // always picks the same palette entry across renders so the
+    // timeline lane + the Scene Settings cards reference the same
+    // colour for one camera. djb2 string-hash (compact, ASCII-safe).
+    const _CUT_PALETTE = [
+      '#ff8a3d',  // orange (matches the trajectory accent)
+      '#35e0ff',  // cyan (matches the timeline accent)
+      '#7dd87d',  // mint
+      '#ffd95a',  // amber
+      '#d896ff',  // lilac
+      '#ff6b9d',  // pink
+      '#7fc0ff',  // sky
+      '#ffac5a',  // peach
+    ];
+    function _cameraColor(camId) {
+      if (!camId) return _CUT_PALETTE[0];
+      let h = 5381;
+      for (let i = 0; i < camId.length; i++) {
+        h = ((h << 5) + h + camId.charCodeAt(i)) | 0;
+      }
+      return _CUT_PALETTE[Math.abs(h) % _CUT_PALETTE.length];
+    }
+
+    // Push ONE EditHistory snapshot at gesture-end (mirrors
+    // _tlPushHistorySnap in 16_editor_timeline). Safe-typeof so the
+    // module survives a boot order that places it before history.
+    function _pushSnap(label) {
+      try {
+        if (typeof EditorModuleRegistry !== 'undefined' &&
+            typeof EditorModuleRegistry.pushUndo === 'function') {
+          EditorModuleRegistry.pushUndo(label || 'cuts-edit');
+        }
+      } catch (e) {}
+    }
+
+    // Notify ClipPlayer + any downstream listeners that the clip
+    // sequence changed. The ClipPlayer reads _clipSeq at module init
+    // (const-bound) and at restart-time; for in-place edits we fire
+    // the registry 'cfgChange' event so the rest of the editor can
+    // react. The ClipPlayer's own restart path is exposed via
+    // window.__clip.restart() (TEST-ONLY) -- we do NOT trigger it
+    // here from edit ops; the author would press Play to preview.
+    function _notifyClipsChanged() {
+      try {
+        if (typeof EditorModuleRegistry !== 'undefined' &&
+            typeof EditorModuleRegistry.notifyCfgChange === 'function') {
+          const c = _liveCfg();
+          EditorModuleRegistry.notifyCfgChange(
+            'clips', null, c ? c.clips : null);
+        }
+      } catch (e) {}
+      // Mark dirty + re-render the cuts section if the drawer is open.
+      cutsModule._isDirty = true;
+      _renderCutsSection();
+    }
+
+    // ---- Edit ops (each pushes ONE snapshot at gesture-end). All
+    //      mutate cfg.clips in place + call _notifyClipsChanged.
+    function _genClipId() {
+      // Compact unique id; mirrors the existing convention used by
+      // _camSelCreate ('cam_' + Date.now() + counter). _clipState's
+      // existing test surface (window.__clip.clips) shows the live
+      // wired-up id; we never collide because the timestamp + counter
+      // monotonically increases across a single page session.
+      _clipIdCounter++;
+      return 'clip_' + Date.now().toString(36) + '_' + _clipIdCounter;
+    }
+    let _clipIdCounter = 0;
+    function _addClip(cameraId, duration, inPoint) {
+      if (!cameraId) {
+        // No camera given -> pick the first available; if none,
+        // the call is a no-op (the UI guards against the no-camera
+        // case by disabling the "+ Add clip" button when empty).
+        const cams = _camerasSlice();
+        if (!cams || !cams.length) return null;
+        cameraId = cams[0].id;
+      }
+      _pushSnap('cuts-add');
+      const c = _liveCfg();
+      if (!c) return null;
+      if (!Array.isArray(c.clips)) c.clips = [];
+      // Append at the end of the existing sequence so the new clip
+      // plays AFTER the current last clip. clip_start = sum of
+      // durations of all preceding clips (ordered) keeps the timeline
+      // contiguous without gaps -- matches the typical NLE expectation
+      // (drag a new clip onto the rightmost empty space).
+      let clipStart = 0;
+      for (const k of c.clips) {
+        clipStart += (typeof k.duration === 'number' && k.duration > 0)
+          ? k.duration : 0;
+      }
+      const dur = (typeof duration === 'number' && duration > 0)
+        ? duration : 5.0;
+      const inT = (typeof inPoint === 'number' && inPoint >= 0)
+        ? inPoint : 0.0;
+      const clip = {
+        id: _genClipId(),
+        camera_id: cameraId,
+        clip_start: clipStart,
+        duration: dur,
+        in: inT,
+      };
+      c.clips.push(clip);
+      _notifyClipsChanged();
+      return clip;
+    }
+    function _deleteClip(clipId) {
+      const c = _liveCfg();
+      if (!c || !Array.isArray(c.clips)) return false;
+      const i = c.clips.findIndex(k => k && k.id === clipId);
+      if (i < 0) return false;
+      _pushSnap('cuts-delete');
+      c.clips.splice(i, 1);
+      // Re-pack clip_start so the timeline stays contiguous after a
+      // delete. Without this, deleting clip 1 of [0, 5, 10] would
+      // leave clips at [0, 10] -- a 5s gap where the previous clip
+      // played. NLE semantics: delete = ripple delete (close gap).
+      _ripplePackClipStarts(c.clips);
+      _notifyClipsChanged();
+      return true;
+    }
+    function _ripplePackClipStarts(clips) {
+      // Walk clips in clip_start ORDER (the playback order), re-pack
+      // each one's clip_start to be the running sum of preceding
+      // durations. Pure: mutates the clip objects' clip_start in
+      // place; never re-orders the array itself (id-based reorder is
+      // a separate op below).
+      const ordered = clips.slice().sort(
+        (a, b) => ((a && a.clip_start) || 0) - ((b && b.clip_start) || 0));
+      let t = 0;
+      for (const k of ordered) {
+        if (!k) continue;
+        k.clip_start = t;
+        t += (typeof k.duration === 'number' && k.duration > 0)
+          ? k.duration : 0;
+      }
+    }
+    function _reorderClipUp(clipId) {
+      const c = _liveCfg();
+      if (!c || !Array.isArray(c.clips)) return false;
+      // The cards render in clip_start ORDER (the playback order),
+      // not the raw array order. "Up" in the UI = earlier in
+      // playback order = swap this clip with the previous clip.
+      // True reorder = swap clip_start values then re-pack to
+      // canonicalise (a re-pack collapses any pre-existing drift in
+      // the starts; durations are preserved -- they own each clip's
+      // length, which the reorder must NOT mutate).
+      const ordered = c.clips.slice().sort(
+        (a, b) => ((a && a.clip_start) || 0) - ((b && b.clip_start) || 0));
+      const i = ordered.findIndex(k => k && k.id === clipId);
+      if (i <= 0) return false;          // already first, or not found
+      _pushSnap('cuts-reorder');
+      // Resolve indices in the RAW c.clips array (the source of
+      // truth) by id so we can swap the clip_start fields directly.
+      const idA = ordered[i - 1].id;
+      const idB = ordered[i].id;
+      const iA = c.clips.findIndex(k => k && k.id === idA);
+      const iB = c.clips.findIndex(k => k && k.id === idB);
+      if (iA < 0 || iB < 0) return false;
+      // Swap clip_start values so the entry that should now play
+      // first owns the smaller start; _ripplePackClipStarts then
+      // canonicalises so the post-swap sequence is gap-free.
+      const sA = c.clips[iA].clip_start;
+      const sB = c.clips[iB].clip_start;
+      c.clips[iA].clip_start = sB;
+      c.clips[iB].clip_start = sA;
+      _ripplePackClipStarts(c.clips);
+      _notifyClipsChanged();
+      return true;
+    }
+    function _reorderClipDown(clipId) {
+      const c = _liveCfg();
+      if (!c || !Array.isArray(c.clips)) return false;
+      const ordered = c.clips.slice().sort(
+        (a, b) => ((a && a.clip_start) || 0) - ((b && b.clip_start) || 0));
+      const i = ordered.findIndex(k => k && k.id === clipId);
+      if (i < 0 || i >= ordered.length - 1) return false;  // last / missing
+      // "Down" = move later in playback order; swap with the next clip
+      // by reusing _reorderClipUp(nextClipId).
+      return _reorderClipUp(ordered[i + 1].id);
+    }
+    function _retimeClip(clipId, fields) {
+      const c = _liveCfg();
+      if (!c || !Array.isArray(c.clips)) return false;
+      const k = c.clips.find(x => x && x.id === clipId);
+      if (!k) return false;
+      _pushSnap('cuts-retime');
+      let changed = false;
+      if (fields && typeof fields.duration === 'number' &&
+          fields.duration > 0 && fields.duration !== k.duration) {
+        k.duration = fields.duration;
+        changed = true;
+      }
+      if (fields && typeof fields.in === 'number' &&
+          fields.in >= 0 && fields.in !== k.in) {
+        k.in = fields.in;
+        changed = true;
+      }
+      if (fields && fields.camera_id && fields.camera_id !== k.camera_id) {
+        k.camera_id = fields.camera_id;
+        changed = true;
+      }
+      if (changed) {
+        _ripplePackClipStarts(c.clips);
+        _notifyClipsChanged();
+      }
+      return changed;
+    }
+
+    // ---- Scene Settings cuts section render. Called once on
+    //      register (the 17b drawer's hook listener fires it), then
+    //      re-rendered after any edit op (so the cards reflect the
+    //      new state without a full drawer rebuild). The section
+    //      REPLACES the Phase 2D placeholder by replacing its body
+    //      content -- the placeholder DOM exists at register-time so
+    //      finding [data-section="cuts"] is reliable.
+    let _cutsSectionEl = null;
+    function _renderCutsSection() {
+      if (!_cutsSectionEl) return;
+      // Clear + re-render. The cuts section's `<details>` wrapper
+      // stays; we replace only its body div.
+      const body = _cutsSectionEl.querySelector(
+        '.spcp-scene-settings-section-body');
+      if (!body) return;
+      body.innerHTML = '';
+      body.style.cssText =
+        'padding:6px 0 4px 0;color:#ccc;font-size:11px;' +
+        'display:flex;flex-direction:column;gap:6px;';
+      const c = _liveCfg();
+      const clips = (c && Array.isArray(c.clips)) ? c.clips : [];
+      const cams = (c && Array.isArray(c.cameras)) ? c.cameras : [];
+      // Ordered for UI display (matches playback order).
+      const ordered = clips.slice().sort(
+        (a, b) => ((a && a.clip_start) || 0) - ((b && b.clip_start) || 0));
+
+      if (!ordered.length) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'color:#999;font-style:italic;padding:6px 0;';
+        empty.textContent = cams.length
+          ? 'No clips yet. Click + Add clip to start the cut sequence.'
+          : 'No cameras yet. Add a camera first via the + Add camera button.';
+        body.appendChild(empty);
+      }
+      for (let i = 0; i < ordered.length; i++) {
+        body.appendChild(_renderClipCard(ordered[i], i, ordered.length, cams));
+      }
+      // + Add clip button (always rendered; disabled when no cameras).
+      const addRow = document.createElement('div');
+      addRow.style.cssText =
+        'margin-top:4px;display:flex;justify-content:flex-end;';
+      const addBtn = document.createElement('button');
+      addBtn.type = 'button';
+      addBtn.textContent = '+ Add clip';
+      addBtn.disabled = !cams.length;
+      addBtn.style.cssText =
+        'background:rgba(53,224,255,0.20);color:#fff;border:0;' +
+        'border-radius:5px;padding:4px 10px;cursor:pointer;' +
+        'font:12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;' +
+        (cams.length ? '' : 'opacity:0.45;cursor:not-allowed;');
+      addBtn.title = cams.length
+        ? 'Append a new clip referencing the first camera (5s default)'
+        : 'Add at least one camera before creating a clip';
+      addBtn.addEventListener('click', () => {
+        if (!cams.length) return;
+        _addClip(cams[0].id, 5.0, 0.0);
+      });
+      addRow.appendChild(addBtn);
+      body.appendChild(addRow);
+    }
+    function _renderClipCard(clip, idx, total, cams) {
+      const card = document.createElement('div');
+      card.dataset.clipId = clip.id || '';
+      card.style.cssText =
+        'background:rgba(255,255,255,0.04);border-radius:5px;' +
+        'padding:6px 8px;border:1px solid rgba(255,255,255,0.06);' +
+        'display:flex;flex-direction:column;gap:4px;';
+      // Header row: colour swatch + clip index label + reorder + delete.
+      const head = document.createElement('div');
+      head.style.cssText =
+        'display:flex;align-items:center;gap:6px;justify-content:space-between;';
+      const left = document.createElement('div');
+      left.style.cssText = 'display:flex;align-items:center;gap:6px;';
+      const swatch = document.createElement('span');
+      swatch.style.cssText =
+        'width:10px;height:10px;border-radius:2px;display:inline-block;' +
+        'background:' + _cameraColor(clip.camera_id) + ';';
+      left.appendChild(swatch);
+      const lbl = document.createElement('span');
+      lbl.style.cssText = 'color:#fff;font-weight:600;font-size:11px;';
+      lbl.textContent = 'Clip ' + (idx + 1);
+      left.appendChild(lbl);
+      head.appendChild(left);
+      // Reorder + delete on the right.
+      const ctrls = document.createElement('div');
+      ctrls.style.cssText = 'display:flex;gap:3px;';
+      const upBtn = _smallBtn('▲', 'Move clip earlier');
+      upBtn.disabled = (idx === 0);
+      if (idx === 0) upBtn.style.opacity = '0.35';
+      upBtn.addEventListener('click', () => _reorderClipUp(clip.id));
+      const dnBtn = _smallBtn('▼', 'Move clip later');
+      dnBtn.disabled = (idx >= total - 1);
+      if (idx >= total - 1) dnBtn.style.opacity = '0.35';
+      dnBtn.addEventListener('click', () => _reorderClipDown(clip.id));
+      const delBtn = _smallBtn('×', 'Delete clip');
+      delBtn.style.color = '#ff8a8a';
+      delBtn.addEventListener('click', () => {
+        if (confirm('Delete clip ' + (idx + 1) + '?')) {
+          _deleteClip(clip.id);
+        }
+      });
+      ctrls.appendChild(upBtn);
+      ctrls.appendChild(dnBtn);
+      ctrls.appendChild(delBtn);
+      head.appendChild(ctrls);
+      card.appendChild(head);
+      // Camera dropdown row.
+      const camSel = document.createElement('select');
+      camSel.className = 'cuts-card-camera';
+      camSel.style.cssText =
+        'background:rgba(255,255,255,0.10);color:#eee;border:0;' +
+        'border-radius:4px;padding:3px 4px;font:11px monospace;width:100%;';
+      camSel.title = 'Bound camera (its path is what plays for this clip)';
+      for (const cam of cams) {
+        const o = document.createElement('option');
+        o.value = cam.id;
+        o.textContent = cam.name || cam.id || '?';
+        if (cam.id === clip.camera_id) o.selected = true;
+        camSel.appendChild(o);
+      }
+      camSel.addEventListener('change', () => {
+        _retimeClip(clip.id, { camera_id: camSel.value });
+      });
+      card.appendChild(camSel);
+      // In-point + duration row (numeric inputs with labels).
+      const inLbl = document.createElement('span');
+      inLbl.textContent = 'in';
+      inLbl.style.cssText = 'color:#9aa;font-size:10px;';
+      const inInput = _numInput(clip.in || 0, 'In-point (s)');
+      inInput.className = 'cuts-card-in';
+      inInput.addEventListener('change', () => {
+        const v = parseFloat(inInput.value);
+        if (isFinite(v) && v >= 0) {
+          _retimeClip(clip.id, { in: v });
+        } else {
+          inInput.value = (clip.in || 0).toString();
+        }
+      });
+      const durLbl = document.createElement('span');
+      durLbl.textContent = 'dur';
+      durLbl.style.cssText = 'color:#9aa;font-size:10px;';
+      const durInput = _numInput(clip.duration || 0, 'Duration (s)');
+      durInput.className = 'cuts-card-duration';
+      durInput.addEventListener('change', () => {
+        const v = parseFloat(durInput.value);
+        if (isFinite(v) && v > 0) {
+          _retimeClip(clip.id, { duration: v });
+        } else {
+          durInput.value = (clip.duration || 0).toString();
+        }
+      });
+      const sub = document.createElement('div');
+      sub.style.cssText =
+        'display:grid;grid-template-columns:auto 1fr auto 1fr;gap:4px;' +
+        'align-items:center;';
+      sub.appendChild(inLbl); sub.appendChild(inInput);
+      sub.appendChild(durLbl); sub.appendChild(durInput);
+      card.appendChild(sub);
+      return card;
+    }
+    function _smallBtn(txt, title) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = txt;
+      b.title = title || '';
+      b.style.cssText =
+        'background:rgba(255,255,255,0.10);color:#eee;border:0;' +
+        'border-radius:3px;padding:2px 6px;cursor:pointer;' +
+        'font:11px monospace;line-height:1;';
+      return b;
+    }
+    function _numInput(initialVal, title) {
+      const inp = document.createElement('input');
+      inp.type = 'number';
+      inp.min = '0';
+      inp.step = '0.1';
+      inp.value = (Math.round((+initialVal || 0) * 100) / 100).toString();
+      inp.title = title || '';
+      inp.style.cssText =
+        'background:rgba(255,255,255,0.10);color:#eee;border:0;' +
+        'border-radius:4px;padding:3px 4px;font:11px monospace;' +
+        'width:56px;';
+      return inp;
+    }
+
+    // ---- Timeline-lane render. Phase 2D registers this lane in the
+    //      multi-lane registry (16_editor_timeline subscribes to the
+    //      'register' event). The lane object exposes a render
+    //      callback (ctx, x, y, w, h, t) used by the future visual
+    //      stacking pass; v1 here ships the function shape + a basic
+    //      block-per-clip implementation that the harness can assert
+    //      against. The render is FAULT-TOLERANT: a no-clips scene
+    //      draws nothing (no errors).
+    const timelineLane = {
+      rows: 1,
+      label: 'Cuts',
+      render: function (ctx, x, y, w, h, playhead) {
+        // Lane background (subtle stripe so the empty lane is still
+        // visible in the timeline).
+        if (!ctx) return;
+        ctx.save();
+        ctx.fillStyle = 'rgba(255,255,255,0.03)';
+        ctx.fillRect(x, y, w, h);
+        const c = _liveCfg();
+        const clips = (c && Array.isArray(c.clips)) ? c.clips : [];
+        if (!clips.length) { ctx.restore(); return; }
+        // Total sequence duration (sum of all clip durations) -- the
+        // lane width maps 0..totalDur to 0..w.
+        let totalDur = 0;
+        for (const k of clips) {
+          totalDur += (typeof k.duration === 'number' && k.duration > 0)
+            ? k.duration : 0;
+        }
+        if (totalDur <= 0) { ctx.restore(); return; }
+        const ordered = clips.slice().sort(
+          (a, b) => ((a && a.clip_start) || 0) - ((b && b.clip_start) || 0));
+        for (const k of ordered) {
+          const start = (typeof k.clip_start === 'number' && k.clip_start >= 0)
+            ? k.clip_start : 0;
+          const dur = (typeof k.duration === 'number' && k.duration > 0)
+            ? k.duration : 0;
+          if (dur <= 0) continue;
+          const bx = x + (start / totalDur) * w;
+          const bw = (dur / totalDur) * w;
+          ctx.fillStyle = _cameraColor(k.camera_id);
+          ctx.globalAlpha = 0.85;
+          ctx.fillRect(bx, y + 2, Math.max(1, bw - 1), h - 4);
+          ctx.globalAlpha = 1.0;
+          // Camera label inside the block if the width allows.
+          if (bw > 36) {
+            ctx.fillStyle = 'rgba(0,0,0,0.85)';
+            ctx.font = '10px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif';
+            ctx.textBaseline = 'middle';
+            const label = (k.camera_id || '').substring(0, 8);
+            ctx.fillText(label, bx + 4, y + h / 2);
+          }
+        }
+        ctx.restore();
+      },
+    };
+
+    // ---- The CutsModule object itself. Per Phase 2 contract.
+    const cutsModule = {
+      name: 'cuts',
+      stateKey: 'clips',
+      defaultModes: ['author', 'user', 'embed'],
+
+      _isDirty: false,
+
+      mount: function (overlay, hud, interaction, modes) {
+        // 11_clip_player's IIFE self-init owns the runtime playback
+        // (clip-boundary OverlayScene layer + prewarm + stop-button
+        // binding); duplicating that here would double-wire those
+        // handlers. We snapshot the boot cfg's clips slice as the
+        // clean baseline so getDirtyState reports false until the
+        // author makes their first edit.
+        _cleanSig = _sig(_clipsSlice());
+      },
+
+      unmount: function () {
+        _cleanSig = null;
+      },
+
+      getDirtyState: function () {
+        // Dirty if either the conservative slice diff drifted OR the
+        // edit-time _isDirty flag was set by an edit op (the flag is
+        // set on every CRUD; the sig diff catches a wholesale cfg
+        // replacement via undo/redo). On fresh boot before mount()
+        // ran, _cleanSig is null -> report clean.
+        const sliceNow = _clipsSlice();
+        const sigNow = _sig(sliceNow);
+        const sigDirty = (_cleanSig !== null && sigNow !== _cleanSig);
+        const isDirty = sigDirty || cutsModule._isDirty;
+        return { isDirty: isDirty, patchObject: sliceNow };
+      },
+
+      markClean: function () {
+        _cleanSig = _sig(_clipsSlice());
+        cutsModule._isDirty = false;
+      },
+
+      onCfgChange: function (prev, next, stateKey) {
+        // Wholesale cfg replacement (e.g. an EditHistory undo): the
+        // ClipPlayer's _clipSeq is const-bound at module init so it
+        // does NOT pick up runtime cfg.clips edits without a restart;
+        // the live playback machinery is owned by 11_clip_player and
+        // its restart() test hook -- author edits affect the SAVED
+        // config + the NEXT playback. We re-render the cuts section
+        // so the cards reflect the new clips. Conservative dirty
+        // signal stays on until markClean.
+        cutsModule._isDirty = true;
+        _renderCutsSection();
+      },
+
+      timelineLane: timelineLane,
+
+      renderSceneSettings: function (parentEl) {
+        // The 17b drawer's hook listener fires this once when the
+        // module registers. We FIND the existing 'cuts' placeholder
+        // section (Phase 2D wires one as a stub) and rewrite its
+        // body content; we do NOT remove + re-append the section
+        // because the placeholder order is fixed in 17b and a
+        // re-append would put cuts at the bottom.
+        if (!parentEl) return;
+        _cutsSectionEl = parentEl.querySelector(
+          'details[data-section="cuts"]');
+        if (!_cutsSectionEl) {
+          // 17b's _SS_PLACEHOLDER_ORDER does NOT include a 'cuts'
+          // section in Phase 2D (the placeholder set is six items
+          // covering Backdrop / Post-FX / Annotations / Audio /
+          // Intro / Start View; cuts is NOT in that list). For
+          // Phase 6 we CREATE a fresh cuts section + append it
+          // ourselves; future Phase 2D follow-on will hoist this
+          // into the placeholder list and the existing branch above
+          // will fire.
+          _cutsSectionEl = document.createElement('details');
+          _cutsSectionEl.className = 'spcp-scene-settings-section';
+          _cutsSectionEl.dataset.section = 'cuts';
+          _cutsSectionEl.style.cssText =
+            'background:rgba(255,255,255,0.04);border-radius:6px;' +
+            'padding:6px 10px;border:1px solid rgba(255,255,255,0.06);';
+          const sm = document.createElement('summary');
+          sm.textContent = 'Cuts';
+          sm.style.cssText =
+            'cursor:pointer;color:#fff;font-weight:600;font-size:12px;' +
+            'padding:4px 0;list-style:none;';
+          _cutsSectionEl.appendChild(sm);
+          const innerBody = document.createElement('div');
+          innerBody.className = 'spcp-scene-settings-section-body';
+          innerBody.style.cssText =
+            'padding:6px 0 4px 0;color:#ccc;font-size:11px;';
+          _cutsSectionEl.appendChild(innerBody);
+          parentEl.appendChild(_cutsSectionEl);
+        }
+        _renderCutsSection();
+      },
+
+      // Test surface -- merged onto window.__editor at register-time
+      // by the EditorModuleRegistry. Exposes the module instance, a
+      // dirty getter, and deterministic hooks for the CRUD ops the
+      // Scene Settings buttons run -- mirrors the CameraPathModule
+      // testSurface convention.
+      testSurface: {
+        // Exposed as a FUNCTION (not a getter) because the registry's
+        // testSurface merge uses Object.assign -- getters are evaluated
+        // once at merge time and the result frozen as a static data
+        // property, so a live-state getter would always return the
+        // boot-time value. The function form sidesteps the freeze by
+        // recomputing per call (the SAME pattern 16_editor_timeline
+        // documents at its Object.defineProperties site). Harness:
+        // window.__editor.cutsGet() returns the module instance.
+        cutsGet() { return cutsModule; },
+        // Same fix: function returns the LIVE dirty state -- the
+        // value a getter would return only at merge-time.
+        cutsModuleDirty() {
+          return cutsModule.getDirtyState().isDirty;
+        },
+        // Drive the CRUD ops deterministically (same code paths the
+        // Scene Settings buttons run). Functions, not getters --
+        // sidesteps the Object.assign getter-freeze noted above.
+        cutsAddClip(cameraId, duration, inPoint) {
+          return _addClip(cameraId, duration, inPoint);
+        },
+        cutsDeleteClip(clipId) { return _deleteClip(clipId); },
+        cutsReorderUp(clipId) { return _reorderClipUp(clipId); },
+        cutsReorderDown(clipId) { return _reorderClipDown(clipId); },
+        cutsRetimeClip(clipId, fields) {
+          return _retimeClip(clipId, fields);
+        },
+        // Render hook (used by the harness to assert the cards
+        // populate after register without waiting for the drawer
+        // open event).
+        cutsRender() { _renderCutsSection(); },
+        // Live accessor to the section element (function form so
+        // a late-arriving render's element is observable).
+        cutsSectionEl() { return _cutsSectionEl; },
+        // The colour palette function the harness asserts against
+        // the timeline lane render output.
+        cutsCameraColor(camId) { return _cameraColor(camId); },
+      },
+    };
+
+    EditorModuleRegistry.register(cutsModule);
+  })();
+
