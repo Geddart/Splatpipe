@@ -16,6 +16,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history required: negative-control tests in
+          # test_html_for_save_mode.py fetch historical blobs via
+          # `git cat-file blob <sha>:path` to prove discriminators.
+          fetch-depth: 0
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
@@ -26,7 +31,7 @@ jobs:
         run: pip install -e ".[dev,web]"
 
       - name: Lint with ruff
-        run: ruff check src/ tests/
+        run: ruff check src/ tests/ tools/
 
       - name: Run tests
         run: pytest tests/ -v
