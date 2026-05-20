@@ -163,6 +163,40 @@
     const _tlFpsBtn = _tlBtn('fps', 'Toggle fps grid (relabels ruler only)');
     _tlBar.appendChild(_tlPlay); _tlBar.appendChild(_tlPause);
     _tlBar.appendChild(_tlLoop); _tlBar.appendChild(_tlFpsBtn);
+
+    // ---- Phase 2C (#122 \u00A74.1.1): Prev/Next-keyframe skip + total-time
+    //      input + auto toggle. Prev/Next consult the SORTED-by-t kf
+    //      view as the source of truth (the editor permits dragging a
+    //      diamond past its neighbours, so raw array order is NOT
+    //      chronological). Total-time edits the path's
+    //      `total_duration_s` (per spec \u00A73.7) and pushes ONE
+    //      EditHistory snapshot on commit (Enter/blur). The auto
+    //      toggle flips the field between `null` (auto -> derive from
+    //      last kf with a 10.0s floor) and the typed value (manual).
+    const _tlPrevKf = _tlBtn('\u25C0\uFE0F|', 'Prev keyframe (Ctrl+Left)');
+    const _tlNextKf = _tlBtn('|\u25B6\uFE0F', 'Next keyframe (Ctrl+Right)');
+    // Total-time input -- numeric, narrow (4ch); editable only when
+    // the auto toggle is OFF. Always reflects the current scrub-range
+    // ceiling (`effectiveScrubRange[1]`).
+    const _tlTotalInput = document.createElement('input');
+    _tlTotalInput.type = 'number';
+    _tlTotalInput.min = '0';
+    _tlTotalInput.step = '0.1';
+    _tlTotalInput.style.cssText =
+      'background:rgba(255,255,255,0.10);color:#eee;border:0;' +
+      'border-radius:5px;padding:3px 6px;font:12px monospace;' +
+      'line-height:1;width:56px;';
+    _tlTotalInput.title = 'Total path duration (seconds)';
+    const _tlTotalUnit = document.createElement('span');
+    _tlTotalUnit.textContent = 's total';
+    _tlTotalUnit.style.cssText = 'color:#9aa;font:11px monospace;';
+    const _tlAutoBtn = _tlBtn('auto', 'Auto-derive total time from keyframes');
+    _tlBar.appendChild(_tlPrevKf);
+    _tlBar.appendChild(_tlNextKf);
+    _tlBar.appendChild(_tlTotalInput);
+    _tlBar.appendChild(_tlTotalUnit);
+    _tlBar.appendChild(_tlAutoBtn);
+
     _tlStrip.appendChild(_tlBar);
     // A4: publish the transport row so _gzInit (runs AFTER this IIFE)
     // can merge the Rec/interp/tangents/Save cluster onto it instead
@@ -370,6 +404,93 @@
         (x >= -2 && x <= _tlW + 2) ? 'block' : 'none';
     }
 
+    // ---- Phase 2C (#122 §3.7): effectiveScrubRange JS mirror of the
+    //      Python core/path_io.effective_scrub_range helper. When
+    //      `path.total_duration_s` is a positive number it wins;
+    //      otherwise derive from the largest kf.t with a 10.0s floor.
+    //      Used by the total-time input + auto toggle + Prev/Next
+    //      buttons -- the existing scrub/playhead math still goes
+    //      through _tlDuration (player-clock-aware accumulating hold_s);
+    //      this helper is the AUTHOR-FACING declarative range that
+    //      decouples ceiling from last-kf time.
+    function _effectiveScrubRange(p) {
+      if (!p) return [0.0, 10.0];
+      const total = p.total_duration_s;
+      if (total !== null && total !== undefined && +total > 0) {
+        return [0.0, +total];
+      }
+      const kfs = p.keyframes || [];
+      let last = 0.0;
+      for (const k of kfs) {
+        const t = +(k.t || 0);
+        if (t > last) last = t;
+      }
+      return [0.0, Math.max(last, 10.0)];
+    }
+    function _tlIsAutoTotal(p) {
+      if (!p) return true;
+      const total = p.total_duration_s;
+      return !(total !== null && total !== undefined && +total > 0);
+    }
+    function _tlRefreshTotalUI() {
+      const p = _tlActivePath();
+      const isAuto = _tlIsAutoTotal(p);
+      const [, hi] = _effectiveScrubRange(p);
+      _tlTotalInput.value = (Math.round(hi * 100) / 100).toString();
+      _tlTotalInput.disabled = !!isAuto;
+      _tlTotalInput.style.opacity = isAuto ? '0.55' : '1';
+      _tlAutoBtn.textContent = isAuto ? 'auto' : 'manual';
+      _tlAutoBtn.style.background = isAuto
+        ? 'rgba(53,224,255,0.32)' : 'rgba(255,255,255,0.10)';
+    }
+    function _tlSortedKfTimes(p) {
+      if (!p || !p.keyframes) return [];
+      const out = [];
+      for (const k of p.keyframes) {
+        const t = +(k.t || 0);
+        if (isFinite(t)) out.push(t);
+      }
+      out.sort((a, b) => a - b);
+      return out;
+    }
+    function _tlSkipPrev() {
+      const p = _tlActivePath();
+      if (!p) return;
+      const cur = _tlPlayheadT();
+      const sorted = _tlSortedKfTimes(p);
+      // Strictly LESS THAN current. Walk back from the end.
+      let target = 0.0;
+      for (let i = sorted.length - 1; i >= 0; i--) {
+        if (sorted[i] < cur - 1e-4) { target = sorted[i]; break; }
+      }
+      _tlScrubToTime(Math.max(0, target));
+    }
+    function _tlSkipNext() {
+      const p = _tlActivePath();
+      if (!p) return;
+      const cur = _tlPlayheadT();
+      const sorted = _tlSortedKfTimes(p);
+      // Strictly GREATER THAN current. Walk forward from the start.
+      let target = null;
+      for (const t of sorted) {
+        if (t > cur + 1e-4) { target = t; break; }
+      }
+      if (target === null) {
+        // No kf after current -> jump to scrub-range ceiling.
+        const [, hi] = _effectiveScrubRange(p);
+        target = hi;
+      }
+      _tlScrubToTime(Math.max(0, target));
+    }
+    function _tlPushHistorySnap(label) {
+      try {
+        if (typeof EditorModuleRegistry !== 'undefined' &&
+            typeof EditorModuleRegistry.pushUndo === 'function') {
+          EditorModuleRegistry.pushUndo(label || 'tl-edit');
+        }
+      } catch (e) {}
+    }
+
     // ---- The SINGLE source of truth for live scrub: set the
     //      EXISTING #path-scrub slider value (0..1000 of the active
     //      path duration) and dispatch its REAL 'input' event so the
@@ -467,6 +588,9 @@
       } catch (e) {}
       _tlDraw();
       _tlSyncPlayhead();
+      // Phase 2C: keep the total-time input mirrored against
+      // last-kf-changes when auto is on.
+      _tlRefreshTotalUI();
     }
 
     // ---- Pointer interaction on the lane. One pointerdown router:
@@ -706,6 +830,79 @@
       _tlDraw();                 // relabel only; NO _tlAfterEdit()
     });
 
+    // ---- Phase 2C handlers: Prev/Next-keyframe skip + total-time
+    //      input commit + auto toggle. Prev/Next are NAVIGATION
+    //      (no EditHistory snapshot). Total-time commit + auto toggle
+    //      are EDITS (one snapshot each, on commit -- never per
+    //      keystroke).
+    _tlPrevKf.addEventListener('click', () => { _tlSkipPrev(); });
+    _tlNextKf.addEventListener('click', () => { _tlSkipNext(); });
+    function _tlCommitTotalInput() {
+      const p = _tlActivePath();
+      if (!p) return;
+      // Auto mode -> commit no-op (the input is disabled anyway).
+      if (_tlIsAutoTotal(p)) { _tlRefreshTotalUI(); return; }
+      const v = parseFloat(_tlTotalInput.value);
+      const next = (isFinite(v) && v > 0) ? v : null;
+      const prev = (p.total_duration_s !== undefined &&
+        p.total_duration_s !== null) ? +p.total_duration_s : null;
+      if (next === prev) { _tlRefreshTotalUI(); return; }
+      _tlPushHistorySnap('path-total-time');
+      p.total_duration_s = next;
+      _tlRefreshTotalUI();
+      _tlDraw();
+      _tlSyncPlayhead();
+    }
+    _tlTotalInput.addEventListener('change', _tlCommitTotalInput);
+    _tlTotalInput.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        try { _tlTotalInput.blur(); } catch (e) {}
+        _tlCommitTotalInput();
+      }
+    });
+    _tlAutoBtn.addEventListener('click', () => {
+      const p = _tlActivePath();
+      if (!p) return;
+      _tlPushHistorySnap('path-auto-toggle');
+      const wasAuto = _tlIsAutoTotal(p);
+      if (wasAuto) {
+        // auto -> manual: bake the current effective ceiling.
+        const [, hi] = _effectiveScrubRange(p);
+        p.total_duration_s = hi;
+      } else {
+        // manual -> auto: clear the field.
+        p.total_duration_s = null;
+      }
+      _tlRefreshTotalUI();
+      _tlDraw();
+      _tlSyncPlayhead();
+    });
+
+    // ---- Phase 2C hotkeys: Ctrl+Left / Ctrl+Right -> Prev/Next-kf
+    //      skip. Same author-mode gate + text-input skip pattern the
+    //      17a Ctrl+Z/Y handler uses. NO EditHistory snapshot
+    //      (navigation, not edit -- the playhead position is not part
+    //      of the persisted cfg).
+    window.addEventListener('keydown', (ev) => {
+      if (!ModeManager.is('author')) return;
+      const mod = ev.metaKey || ev.ctrlKey;
+      if (!mod) return;
+      const ae = document.activeElement;
+      if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' ||
+                 ae.tagName === 'SELECT' ||
+                 (ae.isContentEditable === true))) {
+        return;
+      }
+      if (ev.key === 'ArrowLeft') {
+        ev.preventDefault();
+        _tlSkipPrev();
+      } else if (ev.key === 'ArrowRight') {
+        ev.preventDefault();
+        _tlSkipNext();
+      }
+    });
+
     // ---- X deletes the selected keyframes (in-memory mutation +
     //      spline rebuild; refuse to drop below 2 so the path stays
     //      a valid spline -- a sensible clamp, not a hidden mode).
@@ -743,7 +940,7 @@
     // synced from the ONE OverlayScene tick (no parallel rAF: we
     // fan a tiny per-frame playhead sync off the SAME tick the
     // Task-16 overlay already uses -- see the layer below).
-    requestAnimationFrame(() => { _tlResize(); });
+    requestAnimationFrame(() => { _tlResize(); _tlRefreshTotalUI(); });
 
     // Fan the per-frame playhead sync off the ONE OverlayScene
     // tick (Task-0 contract -- no parallel rAF). modes:['author']
@@ -981,6 +1178,57 @@
           tlRedraw() {
             _tlDraw();
             _tlSyncPlayhead();
+            // Phase 2C: the active path may have changed; refresh
+            // the total-time UI off the new path's
+            // total_duration_s / kf-derived ceiling.
+            _tlRefreshTotalUI();
+          },
+          // ---- Phase 2C test surface ----
+          // The Python-mirror helper (tests assert against it).
+          get tlEffectiveScrubRange() {
+            return _effectiveScrubRange(_tlActivePath());
+          },
+          get tlIsAutoTotal() {
+            return _tlIsAutoTotal(_tlActivePath());
+          },
+          // Drive the REAL handler the click runs (so the harness can
+          // assert the snapshot + cfg mutation without simulating a
+          // pointer event).
+          tlSkipPrev() { _tlSkipPrev(); return _tlPlayheadT(); },
+          tlSkipNext() { _tlSkipNext(); return _tlPlayheadT(); },
+          // Drive the auto toggle as if the button was clicked.
+          tlToggleAuto() {
+            _tlPushHistorySnap('path-auto-toggle');
+            const p = _tlActivePath();
+            if (!p) return null;
+            const wasAuto = _tlIsAutoTotal(p);
+            if (wasAuto) {
+              const [, hi] = _effectiveScrubRange(p);
+              p.total_duration_s = hi;
+            } else {
+              p.total_duration_s = null;
+            }
+            _tlRefreshTotalUI();
+            _tlDraw();
+            _tlSyncPlayhead();
+            return _tlIsAutoTotal(p);
+          },
+          // Set a total-duration value (the SAME path Enter/blur in
+          // the input runs). Returns the post-commit value.
+          tlSetTotalDuration(v) {
+            const p = _tlActivePath();
+            if (!p) return null;
+            const next = (v === null || v === undefined || +v <= 0)
+              ? null : +v;
+            const prev = (p.total_duration_s !== undefined &&
+              p.total_duration_s !== null) ? +p.total_duration_s : null;
+            if (next === prev) return prev;
+            _tlPushHistorySnap('path-total-time');
+            p.total_duration_s = next;
+            _tlRefreshTotalUI();
+            _tlDraw();
+            _tlSyncPlayhead();
+            return p.total_duration_s;
           },
         };
         // Copy onto the Task-16 window.__editor PRESERVING getters as

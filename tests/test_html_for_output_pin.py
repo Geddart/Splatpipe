@@ -87,6 +87,15 @@ PIN UPDATES:
     duplicates; an empty registry is a clean fallback to legacy). All
     6 fixtures shifted by the same +9515 byte delta in lockstep; pins
     re-pinned to the new baseline.
+  * 2026-05-21 (Phase 2C #122 §3.7 + §4.1.1): three timeline addenda
+    in ``16_editor_timeline.js_tmpl`` -- (1) total-time numeric input
+    + auto toggle (writes ``path.total_duration_s``; one EditHistory
+    snapshot on commit, never per keystroke); (2) Prev/Next-keyframe
+    skip buttons (navigation, no snapshot); (3) Ctrl+Left / Ctrl+Right
+    hotkeys (NAVIGATION; same author-mode gate + text-input skip
+    pattern the 17a Ctrl+Z handler uses). Plus the JS mirror of the
+    Python ``effective_scrub_range`` helper. All 6 fixtures shifted by
+    the same +10141 byte delta in lockstep; pins re-pinned.
 """
 
 from __future__ import annotations
@@ -111,42 +120,44 @@ from splatpipe.viewers.spark.template import html_for
 # framework wiring + Ctrl+Z hotkeys; all 6 fixtures +23616 bytes in
 # lockstep), then re-pinned 2026-05-21 (Phase 2B #122: CameraPathModule
 # 15a wrapper + Save dispatch via registry collectPatch; all 6 fixtures
-# +9515 bytes in lockstep).
+# +9515 bytes in lockstep), then re-pinned 2026-05-21 (Phase 2C #122:
+# 3 timeline addenda -- total-time UI, Prev/Next, Ctrl+Left/Right;
+# all 6 fixtures +10141 bytes in lockstep).
 CORPUS: list[tuple[str, tuple, dict, int, str]] = [
     (
         "harness_defaults",
         ("HarnessScene",),
         {},
-        506807,
-        "cb6b93384b5f69151bfe9a6f36cebd9592100c0f46ca6f39fddaf36e360db8ae",
+        516948,
+        "cdefdc5bb28b8556b54ec10b64fc6990c95283ab42759532bf7791f056b44945",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        506779,
-        "85908ab5e9fdc1148175526b96f53d1b94c1ce35d1573b74885e2a22bdcfeb37",
+        516920,
+        "7f038ef7454ec6b261759826700f0dfb591299ba5b35fbad3df1b45614f209b7",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        506774,
-        "dbda15ba8fed30201a729c12994a89f802b9522d2bbc219758b440487f1ad292",
+        516915,
+        "7ac1ee2ca28d383bd0bf2d5a91fdbe10b3e2c676bb04b24eae42f9c0a1ef10ea",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        506753,
-        "48b82212e0ad51e5b530d862fc9085fb46b11dd8e7e05f1adb697a08ad5c60f6",
+        516894,
+        "b8d42c67fbc3f54fe74172f589a0f97441f02f2774e5cef12bdab627af1e34d9",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        506818,
-        "ed1ed30822a0feeada6733f031f400faaaa74569d72f9f8c09223fdd7020fbea",
+        516959,
+        "cfb68887b7223844ee87bcb48469852144b47e625b9f14756c1305b45677c323",
     ),
     (
         "share_card",
@@ -156,8 +167,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        506677,
-        "5965acdab080e68deb12bc56b02f672531cd532ebaea5d2b2d935cf6b1c13b9c",
+        516818,
+        "f1b85f4c78001301e49098a69909c6fa7517912eefdb72ee7b6c1a40a8ab668d",
     ),
 ]
 

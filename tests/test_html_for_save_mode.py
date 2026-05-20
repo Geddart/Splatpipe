@@ -159,6 +159,72 @@ def test_phase_2b_camera_path_module_and_save_dispatch_present():
         "collectPatch() on top (registered modules WIN over legacy)"
     )
 
+
+# --------------------------------------------------------------------------
+# Phase 2C (editor-arc-design #122 §3.7 + §4.1.1): 3 timeline addenda --
+# total-time input + auto toggle, Prev/Next-keyframe skip buttons,
+# Ctrl+Left/Right hotkeys.
+# --------------------------------------------------------------------------
+
+_PHASE_2C_MARKERS = (
+    # JS mirror of the Python effective_scrub_range (spec §3.7)
+    "function _effectiveScrubRange(p) {",
+    "const total = p.total_duration_s;",
+    "Math.max(last, 10.0)",  # 10s floor for empty paths
+    "function _tlIsAutoTotal(p) {",
+    # Total-time input + auto toggle DOM
+    "_tlTotalInput",
+    "_tlAutoBtn",
+    # Prev/Next skip buttons
+    "_tlPrevKf",
+    "_tlNextKf",
+    "_tlSkipPrev",
+    "_tlSkipNext",
+    # EditHistory commit labels (per spec §6.5.1)
+    "'path-total-time'",
+    "'path-auto-toggle'",
+    # Ctrl+Left / Ctrl+Right hotkey wiring
+    "ev.key === 'ArrowLeft'",
+    "ev.key === 'ArrowRight'",
+)
+
+
+def test_phase_2c_timeline_addenda_present():
+    """The 3 timeline addenda (total-time UI, Prev/Next, Ctrl+Left/Right)
+    are wired into the rendered HTML."""
+    html = html_for("HarnessScene")
+    for mk in _PHASE_2C_MARKERS:
+        assert mk in html, f"Phase 2C marker missing: {mk!r}"
+    # Structural: the Ctrl+Left / Ctrl+Right keydown handler is gated on
+    # the same author-mode + text-input checks the Ctrl+Z handler uses
+    # (single convention). Locate the handler by its key checks.
+    al_i = html.index("ev.key === 'ArrowLeft'")
+    # Walk back to find the surrounding handler header -- the metaKey/
+    # ctrlKey check must precede.
+    body = html[max(0, al_i - 1500):al_i]
+    assert "ModeManager.is('author')" in body
+    assert "ev.metaKey || ev.ctrlKey" in body
+    # Prev/Next skip helpers consult the SORTED-by-t view (not raw
+    # array order) -- the editor permits dragging diamonds past
+    # neighbours so raw order is NOT chronological.
+    sk_i = html.index("function _tlSortedKfTimes(p)")
+    sk_body = html[sk_i:sk_i + 600]
+    assert ".sort((a, b) => a - b);" in sk_body, (
+        "Prev/Next-keyframe skip must consult a SORTED-by-t view, NOT "
+        "raw keyframe-array order (the editor allows out-of-order kfs)"
+    )
+    # Total-time commit on Enter/blur, NEVER per keystroke. The change
+    # listener fires on blur; an explicit keydown handler triggers blur+
+    # commit on Enter. There must be NO per-keystroke commit hook.
+    ct_i = html.index("function _tlCommitTotalInput()")
+    ct_end = html.index("_tlTotalInput.addEventListener('change'", ct_i)
+    # ('input' would be per-keystroke; 'change' fires on blur.)
+    ct_block = html[ct_i:ct_end + 200]
+    assert "_tlTotalInput.addEventListener('input'" not in ct_block, (
+        "Total-time input must NOT commit per keystroke (would push 60+ "
+        "EditHistory snapshots/s); commit only on blur/Enter."
+    )
+
 # --------------------------------------------------------------------------
 # my16-M1 follow-up: the camera-path overlay must be SCENE-RELATIVE
 # --------------------------------------------------------------------------
