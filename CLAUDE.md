@@ -59,6 +59,7 @@ splatpipe/                    # repo root
       path_io.py              # Camera-path schema + glTF/COLMAP importers + mutate_paths helper + per-keyframe interp/mode (v0.6+)
       spcp_token.py           # SPCP1 camera-path token codec (CLI/viewer wire contract; JS port byte-identical; v0.8+)
       config_merge.py         # Shared camera-scope merge core (single source of truth; primary_asset force-kept; v0.8+)
+      config_safety.py        # Public viewer-config sanitiser: allow-list top-level + save_backend sub-keys (bug-audit #3; v0.8+)
       scene_cuts.py           # Multi-camera clip sequence validation + ordering helpers (cameras/cuts/intro/titles; v0.8+)
     viewers/                  # (v0.6+) Output viewer renderers
       base.py                 # ViewerRenderer Protocol + clear_output_dir helper
@@ -142,6 +143,7 @@ splatpipe/                    # repo root
     test_html_for_save_mode.py     # Generated viewer save_mode/save_endpoint plumbing (v0.8+)
     test_php_save_oracle.py        # PHP save adapter cross-language merge oracle (v0.8+)
     test_cloudflare_save_oracle.py # Cloudflare Worker save cross-language merge oracle (v0.8+)
+    test_publish_config_sanitize.py # Public viewer-config sanitiser + publish_scene secret-leak regression (bug-audit #3; v0.8+)
     manual/                   # Browser harnesses (not collected): keyframe-editor.html, pc-compare.html, etc.
 ```
 

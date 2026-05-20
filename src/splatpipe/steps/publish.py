@@ -34,7 +34,6 @@ The public URL is forever ``https://<cdn>/<slug>/index.html`` (+ ``?embed=1``).
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 import shutil
@@ -43,6 +42,7 @@ from pathlib import Path
 from typing import Callable, Generator
 from urllib.request import Request, urlopen
 
+from ..core.config_safety import sanitize_public_viewer_config
 from ..core.constants import STEP_PUBLISH
 from ..core.events import ProgressEvent, StepResult
 from ..deploy_targets import get_deploy_target
@@ -246,10 +246,18 @@ def publish_scene(
 
         # 4. viewer-config.json - inherit (project scene_config or live slug),
         #    apply per-scene overrides, then the primary_asset pointer.
+        #    SANITISE before writing: this file is publicly served from the
+        #    CDN, so a hostile/careless `base_config` (e.g. via
+        #    `publish --config` -- bug-audit #3) MUST NOT carry secrets,
+        #    internal notes, or local paths into the public artifact. The
+        #    sanitiser is the single chokepoint; per-scene overrides
+        #    (clip_xy / move_speed_mult / splat_budget) are applied AFTER
+        #    sanitisation so they always end up in the result; the
+        #    primary_asset pointer is set LAST so it's the final word.
         if base_config is not None:
-            cfg = copy.deepcopy(base_config)
+            cfg = sanitize_public_viewer_config(base_config)
         elif live_slug:
-            cfg = _fetch_live_config(cdn, live_slug)
+            cfg = sanitize_public_viewer_config(_fetch_live_config(cdn, live_slug))
             yield _ev(0.46, f"Inherited config from {live_slug} "
                             f"(start_view={bool(cfg.get('start_view'))})")
         else:
