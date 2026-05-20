@@ -1,0 +1,691 @@
+  // ---- Detail-lever URL overrides (A/B tuning; same spirit as ?budget=) ----
+  // SparkRenderer opts: ?lodRenderScale=N ?lodSplatScale=N ?lodInflate=0|1
+  //   ?focalAdjustment=N ?blurAmount=N ?preBlurAmount=N ?maxStdDev=N
+  // (mesh foveation ?coneFov0/?coneFov/?coneFoveate/?behindFoveate and
+  //  ?maxSh applied further below; ?budget=N via the budget picker.)
+  // All highest-priority, for visual A/B of "detail" knobs.
+  {
+    const _Q = new URLSearchParams(location.search);
+    const _qf = (k) => { const v = parseFloat(_Q.get(k)); return Number.isFinite(v) ? v : undefined; };
+    let _v;
+    if ((_v = _qf('lodRenderScale')) !== undefined && _v > 0) sparkOpts.lodRenderScale = _v;
+    if ((_v = _qf('lodSplatScale'))  !== undefined && _v > 0) sparkOpts.lodSplatScale = _v;
+    if ((_v = _qf('clipXY'))         !== undefined && _v > 0) sparkOpts.clipXY = _v;
+    if ((_v = _qf('focalAdjustment'))!== undefined && _v > 0) sparkOpts.focalAdjustment = _v;
+    if ((_v = _qf('blurAmount'))     !== undefined && _v >= 0) sparkOpts.blurAmount = _v;
+    if ((_v = _qf('preBlurAmount'))  !== undefined && _v >= 0) sparkOpts.preBlurAmount = _v;
+    if ((_v = _qf('maxStdDev'))      !== undefined && _v > 0) sparkOpts.maxStdDev = _v;
+    const _li = _Q.get('lodInflate');
+    if (_li === '0' || _li === 'false') sparkOpts.lodInflate = false;
+    if (_li === '1' || _li === 'true')  sparkOpts.lodInflate = true;
+  }
+  const spark = new SparkRenderer(sparkOpts);
+  scene.add(spark);
+
+  // SplatMesh — load the primary asset (.rad with paged streaming by default).
+  // Apply the 180°-X flip to match the PlayCanvas viewer's splat orientation,
+  // so annotations and camera-paths stored in PC-displayed frame line up.
+  // raycastable: true enables Spark's first-class pick API — standard
+  // THREE.Raycaster.intersectObject(splat) returns world-space hit points,
+  // which we use below for the double-click pivot.
+  const splatMeshOpts = { url: _PRIMARY, raycastable: true };
+  if (PAGED) splatMeshOpts.paged = true;
+  // Moderate cone foveation ON by default (2026-05-15): centre crisp,
+  // edges softer but still "sharp enough" (NOT the aggressive global mush).
+  // Pairs with the auto view-tracking focus below. Per-scene config and
+  // ?coneFov0= URL params still override these.
+  if (!STOCK) {
+    splatMeshOpts.coneFov0 = 55; splatMeshOpts.coneFov = 110;
+    splatMeshOpts.coneFoveate = 0.5; splatMeshOpts.behindFoveate = 0.25;
+  }
+  // Foveation (Spark-only):
+  if (sr.foveation?.enabled) {
+    if (typeof sr.foveation.cone_fov0 === 'number') splatMeshOpts.coneFov0 = sr.foveation.cone_fov0;
+    if (typeof sr.foveation.cone_fov === 'number') splatMeshOpts.coneFov = sr.foveation.cone_fov;
+    if (typeof sr.foveation.cone_foveate === 'number') splatMeshOpts.coneFoveate = sr.foveation.cone_foveate;
+    if (typeof sr.foveation.behind_foveate === 'number') splatMeshOpts.behindFoveate = sr.foveation.behind_foveate;
+  }
+  // Foveation URL overrides (apply regardless of config, for A/B tuning).
+  {
+    const _Q = new URLSearchParams(location.search);
+    const _qf = (k) => { const v = parseFloat(_Q.get(k)); return Number.isFinite(v) ? v : undefined; };
+    let _v;
+    if ((_v = _qf('coneFov0'))      !== undefined) splatMeshOpts.coneFov0 = _v;
+    if ((_v = _qf('coneFov'))       !== undefined) splatMeshOpts.coneFov = _v;
+    if ((_v = _qf('coneFoveate'))   !== undefined) splatMeshOpts.coneFoveate = _v;
+    if ((_v = _qf('behindFoveate')) !== undefined) splatMeshOpts.behindFoveate = _v;
+  }
+  // (maxSh cap for mobile is applied after construction, not as a ctor opt —
+  // see below. Setting it as an opt didn't take effect in observed Spark
+  // behaviour; the post-construction setter + updateGenerator() does.)
+
+  // If .rad isn't available, tiny-lod fallback in-browser:
+  if (!PAGED && sr.ondemand_lod_fallback) splatMeshOpts.lod = true;
+
+  const splat = new SplatMesh(splatMeshOpts);
+  // Debug handle — lets tooling (Playwright) read/mutate live detail levers
+  // without a reload: window.__sp.spark.lodRenderScale = 0.5, .splat.maxSh,
+  // .pager (lazy), etc. Harmless, always on; no secrets exposed.
+  try { window.__sp = { get spark() { return spark; }, get splat() { return splat; }, get pager() { return spark.pager; }, THREE }; } catch (e) {}
+  // Cap spherical-harmonics degree to 1 on mobile (default 3 = SH0+SH1+SH2+SH3).
+  // SH3 contributes view-dependent specular detail that's negligible on a small
+  // phone screen, and the pager skips SH2/SH3 texture allocs entirely when
+  // maxSh < 2 — big bandwidth + shader win on iPhone/Android. Per Spark's
+  // own behaviour (verified via bench traces 2026-05-14: setting maxSh in the
+  // constructor opts had no effect on splat.maxSh after init), the assignment
+  // has to happen post-construction with updateGenerator() called.
+  if (!STOCK && (_deviceProfile.tier === 'phone' || _deviceProfile.tier === 'tablet')) {
+    // maxSh=1 dropped both SH2 + SH3 texture allocs — saved bandwidth but
+    // also stripped most view-dependent surface variation, giving a matte
+    // "flimsy" look on iPhone. =2 keeps SH2 (lobed specular) and skips
+    // only SH3 — the most expensive texture but the smallest perceptual
+    // contribution on a phone-sized screen. Best quality/perf compromise.
+    splat.maxSh = 2;
+    if (typeof splat.updateGenerator === 'function') {
+      try { splat.updateGenerator(); } catch (e) { console.warn('updateGenerator failed', e); }
+    }
+  }
+  splat.quaternion.setFromEuler(new THREE.Euler(Math.PI, 0, 0));
+  scene.add(splat);
+
+  const controls = new OrbitControls(camera, canvas);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  // Orbit target: from start_view if set, else ~5m in front of the camera
+  // so dragging feels natural. Set before the _orig* snapshot below so
+  // Reset/Home and the orbit bench pivot return to the start view too.
+  {
+    const sv = cfg.start_view;
+    if (sv && Array.isArray(sv.target)) {
+      controls.target.set(sv.target[0], sv.target[1], sv.target[2]);
+    } else {
+      const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+      controls.target.copy(camera.position).addScaledVector(fwd, 5);
+    }
+  }
+  controls.update();
+
+  // Snapshot the initial camera + pivot so the programmatic-orbit bench can
+  // always reproduce the same world-space circle on every run, regardless of
+  // where the user has moved the view. Without this, every bench produced a
+  // different orbit and cross-device comparisons were nonsense.
+  // These get re-snapshotted post-init by the bbox-based camera framing
+  // below (which knows where the splat actually is, not just (0, 2, 10)).
+  const _origCamPos = camera.position.clone();
+  const _origCamQuat = camera.quaternion.clone();
+  let _origCamFov = camera.fov;
+  const _origTarget = controls.target.clone();
+
+  // ---- WASD / arrow-key fly navigation (layered on top of OrbitControls) ----
+  // The principle: move both `camera.position` AND `controls.target` by the
+  // same offset each frame. The orbit pivot follows the camera around, so the
+  // user gets fly movement from keys + orbit-around-pivot from mouse drag.
+  // Same pattern as PlayCanvas CameraControls' WASD + orbit hybrid.
+  const _keys = {};
+  const _isInputFocused = () => {
+    const a = document.activeElement;
+    return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.tagName === 'SELECT');
+  };
+  window.addEventListener('keydown', (e) => {
+    if (_isInputFocused()) return;
+    _keys[e.code] = true;
+  });
+  window.addEventListener('keyup', (e) => { _keys[e.code] = false; });
+  window.addEventListener('blur', () => { for (const k in _keys) _keys[k] = false; });
+
+  // Camera fly speed = sceneBase × a LIVE multiplier. sceneBase scales to the
+  // initial camera→target distance (authored start-view framing — an
+  // imperfect scene-size proxy, which is why a far-framed scene like Polygraf
+  // wants a lower multiplier). The multiplier is tunable with NO redeploy:
+  //   • in-viewer "Speed" dropdown — primary control, persisted per device
+  //     in localStorage (your pick sticks across reloads & scenes);
+  //   • ?moveSpeed=N — forces a value, wins over all (A/B / deep link);
+  //   • spark_render.move_speed_mult — per-scene default for first visitors.
+  const _initDist = camera.position.distanceTo(controls.target);
+  const _moveBase = Math.max(2, _initDist * 0.6);
+  const _msQ = parseFloat(new URLSearchParams(location.search).get('moveSpeed'));
+  const _msFromUrl = Number.isFinite(_msQ) && _msQ > 0;
+  const _msCfg = (typeof sr.move_speed_mult === 'number' && sr.move_speed_mult > 0) ? sr.move_speed_mult : 1.0;
+  let _msLS = null;
+  try { const _v = parseFloat(localStorage.getItem('splatpipe.moveSpeedMult')); if (Number.isFinite(_v) && _v > 0) _msLS = _v; } catch (e) {}
+  let _moveSpeedMult = _msFromUrl ? _msQ : (_msLS != null ? _msLS : _msCfg);
+  const _speedSel = document.getElementById('move-speed');
+  if (_speedSel) {
+    const _opts = Array.from(_speedSel.options).map(o => parseFloat(o.value));
+    let _best = _opts[0];
+    for (const o of _opts) if (Math.abs(o - _moveSpeedMult) < Math.abs(_best - _moveSpeedMult)) _best = o;
+    _speedSel.value = String(_best);
+    _speedSel.addEventListener('change', () => {
+      const m = parseFloat(_speedSel.value);
+      if (Number.isFinite(m) && m > 0) {
+        _moveSpeedMult = m;
+        try { localStorage.setItem('splatpipe.moveSpeedMult', String(m)); } catch (e) {}
+        console.info('[Splatpipe] move speed ×' + m + ' (saved on this device)');
+      }
+    });
+  }
+  const SPRINT_MULT = 4;                                     // Shift
+  let _lastMoveTime = performance.now();
+
+  function applyKeyMovement() {
+    const now = performance.now();
+    const dt = Math.min(0.1, (now - _lastMoveTime) / 1000);  // cap dt to avoid jumps after tab switch
+    _lastMoveTime = now;
+    if (_player) return;  // camera-path playback owns the camera; ignore keys
+
+    const intent = new THREE.Vector3(0, 0, 0);
+    if (_keys.KeyW || _keys.ArrowUp)    intent.z -= 1;
+    if (_keys.KeyS || _keys.ArrowDown)  intent.z += 1;
+    if (_keys.KeyA || _keys.ArrowLeft)  intent.x -= 1;
+    if (_keys.KeyD || _keys.ArrowRight) intent.x += 1;
+    if (_keys.KeyQ) intent.y += 1;
+    if (_keys.KeyE) intent.y -= 1;
+    if (intent.lengthSq() === 0) return;
+
+    intent.normalize();
+    // Forward/right derived from camera basis; up is world-up so flying
+    // doesn't tilt the pivot ring out of plane.
+    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+    const up = new THREE.Vector3(0, 1, 0);
+
+    const sprint = (_keys.ShiftLeft || _keys.ShiftRight) ? SPRINT_MULT : 1;
+    const step = _moveBase * _moveSpeedMult * sprint * dt;   // live multiplier
+    const offset = new THREE.Vector3()
+      .addScaledVector(fwd, -intent.z * step)
+      .addScaledVector(right, intent.x * step)
+      .addScaledVector(up, intent.y * step);
+
+    camera.position.add(offset);
+    controls.target.add(offset);  // pivot follows
+  }
+
+  // ---- Right-drag "look" (FPS yaw/pitch, replacing OrbitControls' pan) ----
+  // Trick to coexist with OrbitControls: we don't rotate the camera directly
+  // (the next controls.update() would clobber it). Instead we *move the
+  // orbit target* around the camera by the mouse delta. controls.update()
+  // then reorients the camera to look at the moved target, which is
+  // equivalent to FPS look. Distance to target stays constant so the orbit
+  // ring is preserved — subsequent left-drag orbits around the new gaze.
+  // Pan is moved to middle-drag so it's still reachable.
+  controls.mouseButtons = {
+    LEFT: THREE.MOUSE.ROTATE,
+    MIDDLE: THREE.MOUSE.PAN,
+    // RIGHT intentionally omitted — handled below.
+  };
+
+  let _looking = false;
+  let _lookLastX = 0, _lookLastY = 0;
+  const LOOK_SENSITIVITY = 0.0035;  // radians per pixel
+
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  canvas.addEventListener('pointerdown', (e) => {
+    if (e.button !== 2 || _player) return;
+    _looking = true;
+    // Mirror right-drag look ownership into the single broker (Task 0).
+    // `_looking` stays the live gate (this handler + the moves read it),
+    // so behavior is byte-identical; 'look' is non-exclusive so the
+    // call never blocks — it just makes ownership queryable.
+    InteractionManager.requestPointer('look');
+    _lookLastX = e.clientX; _lookLastY = e.clientY;
+    try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    if (!_looking) return;
+    const dx = e.clientX - _lookLastX;
+    const dy = e.clientY - _lookLastY;
+    _lookLastX = e.clientX; _lookLastY = e.clientY;
+
+    const offset = new THREE.Vector3().subVectors(controls.target, camera.position);
+    // Yaw around world Y
+    offset.applyAxisAngle(new THREE.Vector3(0, 1, 0), -dx * LOOK_SENSITIVITY);
+    // Pitch around camera-right (offset × worldUp, after yaw)
+    const right = new THREE.Vector3()
+      .crossVectors(offset, new THREE.Vector3(0, 1, 0)).normalize();
+    if (right.lengthSq() > 0) {
+      offset.applyAxisAngle(right, -dy * LOOK_SENSITIVITY);
+    }
+    // Pitch clamp — prevent over-the-top gimbal flip (±~89°)
+    const len = offset.length();
+    const maxY = len * 0.9998;
+    if (offset.y >  maxY) offset.y =  maxY;
+    if (offset.y < -maxY) offset.y = -maxY;
+
+    controls.target.copy(camera.position).add(offset);
+  });
+  const _endLook = (e) => {
+    if (!_looking) return;
+    if (e && e.button !== undefined && e.button !== 2) return;
+    _looking = false;
+    InteractionManager.releasePointer('look');
+    if (e && e.pointerId !== undefined) {
+      try { canvas.releasePointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+    }
+  };
+  canvas.addEventListener('pointerup', _endLook);
+  canvas.addEventListener('pointercancel', _endLook);
+  window.addEventListener('blur', () => { _looking = false; InteractionManager.releasePointer('look'); });
+
+  // ---- Double-click / double-tap pivot (Spark first-class raycast) ----
+  // SplatMesh implements three.js's raycast() hook with `raycastable: true`,
+  // so a standard THREE.Raycaster against the splat returns world-space hit
+  // points. We snap controls.target to the hit point, matching Postshot's
+  // "click to set the orbit pivot" behaviour.
+  //
+  // Desktop: use the native `dblclick` event (mouse-only, reliable).
+  // Touch: roll our own double-tap detector — mobile browsers do NOT
+  // synthesize `dblclick` reliably from two quick taps (some never do).
+  // A "tap" is a pointerdown+pointerup pair on the same finger where the
+  // pointer barely moves (< 12 px) and the gesture is short (< 250 ms).
+  // Two such taps within 350 ms and 40 px of each other count as a
+  // double-tap. We ignore pinch / multi-finger gestures by tracking the
+  // active touch pointer's id and bailing out if any other pointer is down.
+  const _raycaster = new THREE.Raycaster();
+  const _ndc = new THREE.Vector2();
+  function _raycastAt(clientX, clientY) {
+    const rect = canvas.getBoundingClientRect();
+    _ndc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+    _ndc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+    _raycaster.setFromCamera(_ndc, camera);
+    const hits = _raycaster.intersectObject(splat, false);
+    return hits.length > 0 ? hits[0].point.clone() : null;
+  }
+  function _setPivotAt(clientX, clientY) {
+    if (_player) return;  // ignore during path playback
+    const p = _raycastAt(clientX, clientY);
+    if (p) {
+      controls.target.copy(p);
+      controls.update();
+    }
+  }
+  canvas.addEventListener('dblclick', (event) => {
+    _setPivotAt(event.clientX, event.clientY);
+  });
+
+  // ---- Auto view-tracking focus (2026-05-15) ----
+  // Continuously drives spark.lodPosOverride/Quat to a virtual pose CLOSE
+  // to whatever the camera centre is looking at, so the LoD selects the
+  // fine leaves for that region even at a far framing (the only mechanism
+  // that beats the distance ceiling — see the detail saga). No clicking:
+  // turn the camera, the new centre sharpens by itself ~0.2 s later.
+  // Gated to AFTER preload (so it doesn't fight the preload orbit-walk),
+  // off during camera-path playback / bench. Off entirely in STOCK.
+  let _afOn = !STOCK, _afReady = false, _afLast = 0, _afKey = '', _afSet = false;
+  const _afPos = new THREE.Vector3(), _afDir = new THREE.Vector3();
+  const FOCUS_NEAR_FRAC = 0.10;   // virtual cam sits 10% of the hit distance off the surface
+  // #81: how far AHEAD of the real camera the virtual LoD origin may sit
+  // (metres). DEFAULT 0 = origin pinned to the camera ⇒ near geometry always
+  // gets finest LoD (the "always high-detail ~5 m around the viewer" goal).
+  // History: a 3 m default was tried and REGRESSED the foreground — at a
+  // ground-truth user pose, foliage ~1 m ahead had its LoD measured from a
+  // point 3 m past it → coarse → "FG totally blurred" (reproduced on desktop
+  // at 120 fps, A/B-proven: focusAhead=0 razor-sharp, =3 mush; coneFoveate
+  // ruled out). ?focusAhead=N opts back into an ahead-bias if ever wanted.
+  const FOCUS_MAX_AHEAD = (() => {
+    const _fa = parseFloat(new URLSearchParams(location.search).get('focusAhead'));
+    return Number.isFinite(_fa) ? Math.min(Math.max(_fa, 0), 30) : 0.0;
+  })();
+  function _afClear() {
+    if (_afSet) { spark.lodPosOverride = undefined; spark.lodQuatOverride = undefined; _afSet = false; }
+  }
+  function _autoFocusTick(now) {
+    // Path playback / bench own the camera+LoD → release focus.
+    // A clip tour also owns the LoD origin for the WHOLE tour including
+    // the single inter-clip cut-transition frame: stopPath() nulls
+    // _player ONE frame before _clipLayer.update() starts the next clip,
+    // so without this disjunct _autoFocusTick would raycast the stale
+    // pose and write spark.lodPosOverride for ~1 frame, contending with
+    // the clip layer's LoD ownership. The 6 live single-camera scenes
+    // have no cameras/clips so _clipMode is false there (this disjunct
+    // is always false) -> byte-runtime-identical to before for them.
+    if (_player || BENCH_AUTO || (_clipMode && _clipState.active)) { _afClear(); return; }
+    // User toggled focus off (F) → balanced LoD.
+    if (!_afOn) { _afClear(); return; }
+    // Before the raycast can work (early load, !_afReady) we KEEP whatever
+    // override is set — the initial centre override (from start_view) was
+    // applied at frame 1 so the centre loads first; don't wipe it.
+    if (!_afReady) return;
+    if (now - _afLast < 180) return;          // throttle: ~5 Hz
+    const k = camera.position.x.toFixed(2)+','+camera.position.y.toFixed(2)+','+camera.position.z.toFixed(2)
+            +'|'+camera.quaternion.x.toFixed(3)+','+camera.quaternion.y.toFixed(3)+','+camera.quaternion.z.toFixed(3);
+    if (k === _afKey && _afSet) return;        // camera unchanged & focus already applied
+    // Stamp the throttle NOW (so a persistent miss retries at ~5 Hz, not
+    // every frame) but DO NOT commit _afKey here — committing the pose
+    // before the raycast means a centre-ray miss (common right after a
+    // fast move: centre over still-coarse geometry / a gap / sky) marks
+    // the resting pose "handled", and since the camera is now stopped the
+    // guard above latches forever → focus frozen at the last in-motion
+    // point, resting-view chunks never demanded. _afKey is committed only
+    // after a focus is actually applied (below), so a miss/degenerate
+    // return leaves _afKey stale and the next tick retries until it hits.
+    _afLast = now;
+    _ndc.set(0, 0);
+    _raycaster.setFromCamera(_ndc, camera);
+    const hits = _raycaster.intersectObject(splat, false);
+    if (!hits.length) return;  // miss → keep last good focus; _afKey NOT yet committed so the next tick re-tries (until the rest view is hit)
+    const hp = hits[0].point;
+    _afDir.subVectors(hp, camera.position);
+    const D = _afDir.length();
+    if (!(D > 1e-4)) return;
+    _afDir.multiplyScalar(1 / D);
+    // #81: place the virtual LoD origin AHEAD of the real camera by at most
+    // FOCUS_MAX_AHEAD m (was: 0.9·D, i.e. teleported onto the far looked-at
+    // surface — which starved near foliage off the centre ray to base LoD and
+    // popped as the centre ray jumped between near/far). min() of two smooth
+    // terms ⇒ no LoD pop; a near look (0.9·D < cap) keeps the original
+    // surface-hugging focus, a far look keeps a high-detail bubble on the user.
+    const ahead = Math.min(D * (1 - FOCUS_NEAR_FRAC), FOCUS_MAX_AHEAD);
+    _afPos.copy(camera.position).addScaledVector(_afDir, Math.max(ahead, 1e-3));
+    if (!spark.lodPosOverride) spark.lodPosOverride = new THREE.Vector3();
+    if (!spark.lodQuatOverride) spark.lodQuatOverride = new THREE.Quaternion();
+    spark.lodPosOverride.copy(_afPos);
+    spark.lodQuatOverride.copy(camera.quaternion);
+    _afSet = true;
+    _afKey = k;   // commit "pose handled" ONLY now (a focus was applied); any
+                  // miss/degenerate return above leaves _afKey stale so the
+                  // next tick re-tries — fixes fast-move→stop "chunks don't LOD in"
+  }
+
+  // ---- Toggleable on-screen settings HUD (press 'H') ----
+  const _hud = document.createElement('div');
+  _hud.id = 'sp-hud';
+  _hud.style.cssText = 'position:fixed;left:10px;bottom:10px;z-index:9998;display:none;'
+    + 'background:rgba(0,0,0,.72);color:#0f8;font:12px/1.5 monospace;padding:8px 11px;'
+    + 'border-radius:7px;white-space:pre;pointer-events:none;';
+  document.body.appendChild(_hud);
+  // Register the existing 2D panels through the ONE HudLayer (Task 0).
+  // No `modes` ⇒ HudLayer never touches their display ⇒ byte-identical
+  // to today (the settings HUD's own H-toggle still owns its
+  // visibility; #controls-hint keeps its CSS; embed still hides them
+  // via the unchanged `body.embed` rules). This just makes them part
+  // of the single panel registry future panels also join.
+  HudLayer.register({ id: 'settings-hud', el: _hud });
+  {
+    const _ch = document.getElementById('controls-hint');
+    if (_ch) HudLayer.register({ id: 'controls-hint', el: _ch });
+  }
+  let _hudOn = false, _hudF = 0, _hudT = performance.now(), _hudFps = 0;
+  function _hudTick() {
+    if (_hudOn) {
+      _hudF++;
+      const t = performance.now();
+      if (t - _hudT >= 500) { _hudFps = Math.round(_hudF * 1000 / (t - _hudT)); _hudF = 0; _hudT = t; }
+      const fmt = n => n >= 1e6 ? (n/1e6).toFixed(2)+'M' : (n>=1e3?(n/1e3).toFixed(0)+'K':String(n|0));
+      _hud.textContent =
+        'budget       ' + fmt(spark.lodSplatCount) +
+        '\nactiveSplats ' + fmt(spark.activeSplats || 0) +
+        '\nfps          ' + _hudFps +
+        '\nfocus        ' + (_afSet ? 'auto (tracking view)' : (_afOn ? 'auto (idle)' : 'off')) +
+        '\nlodRenderScl ' + spark.lodRenderScale +
+        '\ndevice       ' + _deviceProfile.tier;
+    }
+  }
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'h' || e.key === 'H') { _hudOn = !_hudOn; _hud.style.display = _hudOn ? 'block' : 'none'; }
+    if (e.key === 'f' || e.key === 'F') { _afOn = !_afOn; if (!_afOn) _afClear(); }
+  });
+
+  // ---- Touch gesture state machine ----
+  //
+  // Two coexisting gestures on touch, sharing the same first stage:
+  //   • Quick double-tap            → set orbit pivot at hit point
+  //   • Double-tap-and-hold-drag    → dolly camera toward/away from hit point
+  //                                   (Google/Apple Maps "one-finger zoom")
+  //
+  // First stage = a regular tap on the same finger: short (<250 ms),
+  // stationary (<12 px). At the *second* pointerdown that lands within the
+  // double-tap window (≤350 ms, ≤40 px from the first tap), we raycast and
+  // arm a zoom gesture *speculatively*. If the finger lifts quickly without
+  // moving, we cancel the zoom and fire the pivot instead. If the finger
+  // moves vertically more than 6 px, we commit the zoom and clear the pivot
+  // candidate so it can't double-fire on lift.
+  //
+  // Zoom mapping (sources: Mapbox tap_drag_zoom.ts uses 128 px/level;
+  // Leaflet.DoubleTapDragZoom uses ~139 px/level; we split at 150):
+  //   scale = 2^(-dy / 150)
+  // where dy is finger Y movement since the second touchdown. dy>0 (drag
+  // down) → scale < 1 → camera closer to anchor (zoom IN). This matches
+  // Google Maps; Apple Maps is the well-known outlier.
+  //
+  // Anchor handling: we raycast ONCE at the second touchdown and lock the
+  // world-space point for the entire gesture. Re-raycasting per frame is
+  // the #1 reported bug ("focal drift") on Mapbox / Apple Maps issue
+  // trackers — don't do it.
+  const TAP_MAX_MOVE = 12;            // px — finger jitter on a real "tap"
+  const TAP_MAX_DURATION = 250;       // ms
+  const DOUBLE_TAP_MAX_GAP = 350;     // ms between two taps
+  const DOUBLE_TAP_MAX_DIST = 40;     // px between the two tap positions
+  const ZOOM_PROMOTE_PX = 6;          // |dy| at which the gesture flips to zoom
+  const ZOOM_PX_PER_2X = 150;         // px of vertical drag = 2× dolly
+  const ZOOM_MIN_SCALE = 0.001;       // safety: don't pass through the anchor
+  const ZOOM_MAX_SCALE = 1000;        // safety: don't fly to infinity
+  let _touchDown = null;              // in-flight first tap: { id, x, y, t }
+  let _activeTouches = 0;             // current down-finger count
+  let _lastTap = null;                // last completed first tap: { x, y, t }
+  let _zoom = null;                   // speculative-or-committed zoom gesture:
+                                       // { id, startY, anchor: Vector3,
+                                       //   initialOffset: Vector3, savedTarget,
+                                       //   savedEnabled, savedDamping,
+                                       //   committed: bool }
+
+  function _endZoom(restore) {
+    if (!_zoom) return;
+    if (restore && _zoom.committed) {
+      controls.enabled = _zoom.savedEnabled;
+      controls.enableDamping = _zoom.savedDamping;
+    }
+    _zoom = null;
+  }
+  function _commitZoom() {
+    // Promote a speculative zoom to active zoom: clear pivot/tap state
+    // so the eventual pointerup doesn't also fire the pivot.
+    _zoom.committed = true;
+    _zoom.savedEnabled = controls.enabled;
+    _zoom.savedDamping = controls.enableDamping;
+    controls.enabled = false;       // suppress OrbitControls' single-finger orbit
+    controls.enableDamping = false; // remove smoothing lag during drag
+    _touchDown = null;
+    _lastTap = null;
+  }
+
+  // ---- iOS callout wedge (TouchEvent layer, must run BEFORE the OS gesture timer) ----
+  //
+  // iOS Safari dispatches TouchEvents *before* synthesizing PointerEvents,
+  // and the long-press / loupe / selection-callout timer starts on
+  // `touchstart` (~500 ms). By the time our `pointerdown` handler runs and
+  // calls preventDefault on it, UIKit has already started its gesture
+  // pipeline — and the synthesized PointerEvent's preventDefault does NOT
+  // propagate back to the native recognizers. The CSS opt-outs above kill
+  // the callout most of the time but the second tap of a double-tap-and-hold
+  // still leaks through on iOS 15+ (Apple Developer Forums 691021, 808606).
+  //
+  // The fix is to listen to TouchEvents directly on the canvas with
+  // {passive: false} and preventDefault the second tap of a potential
+  // double-tap-and-hold-drag. Mapbox uses exactly this pattern in
+  // tap_drag_zoom.ts. The wedge is gesture-aware: it only fires on what
+  // looks like a second tap, so it doesn't break single-tap, scrolling, or
+  // pinch (multi-finger).
+  //
+  // Note: element-level listeners are NOT forced passive by iOS (unlike
+  // document/window-level ones), so `{passive: false}` is honored here.
+  canvas.addEventListener('touchstart', (event) => {
+    if (event.touches.length !== 1) return;            // multi-finger → leave to OC pinch
+    // Is this a potential second tap of a double-tap-and-hold?
+    if (_lastTap) {
+      const now = event.timeStamp;
+      const t = event.touches[0];
+      if (now - _lastTap.t <= DOUBLE_TAP_MAX_GAP &&
+          Math.hypot(t.clientX - _lastTap.x, t.clientY - _lastTap.y) <= DOUBLE_TAP_MAX_DIST) {
+        // Kill the iOS callout/loupe/selection pipeline BEFORE it starts.
+        event.preventDefault();
+      }
+    }
+  }, { passive: false });
+  canvas.addEventListener('touchmove', (event) => {
+    // Once a zoom gesture is committed, preventDefault every touchmove so
+    // iOS doesn't start mid-gesture text selection or scroll.
+    if (_zoom?.committed) event.preventDefault();
+  }, { passive: false });
+
+  canvas.addEventListener('pointerdown', (event) => {
+    if (event.pointerType !== 'touch') return;
+    _activeTouches++;
+    if (_activeTouches > 1) {
+      // Multi-finger gesture — abort everything and let OrbitControls' pinch
+      // handler take over. If we're mid-zoom, restore controls state.
+      if (_zoom?.committed) _endZoom(true); else _zoom = null;
+      _touchDown = null;
+      _lastTap = null;
+      return;
+    }
+
+    const now = performance.now();
+    // Is this potentially the second tap of a double-tap?
+    const isSecondTap = _lastTap &&
+      (now - _lastTap.t) <= DOUBLE_TAP_MAX_GAP &&
+      Math.hypot(event.clientX - _lastTap.x, event.clientY - _lastTap.y)
+        <= DOUBLE_TAP_MAX_DIST;
+    if (isSecondTap && !_player) {
+      // Speculatively arm a zoom gesture by locking a world-space anchor at
+      // this tap location. If the user lifts quickly, the regular tap-end
+      // logic will turn this into a pivot-set instead.
+      const anchor = _raycastAt(event.clientX, event.clientY);
+      if (anchor) {
+        _zoom = {
+          id: event.pointerId,
+          startY: event.clientY,
+          anchor: anchor,
+          initialOffset: camera.position.clone().sub(anchor),
+          committed: false,
+        };
+      }
+    }
+
+    _touchDown = {
+      id: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      t: now,
+    };
+  });
+
+  canvas.addEventListener('pointermove', (event) => {
+    if (event.pointerType !== 'touch') return;
+    if (!_zoom || _zoom.id !== event.pointerId) return;
+
+    const dy = event.clientY - _zoom.startY;
+    if (!_zoom.committed) {
+      if (Math.abs(dy) < ZOOM_PROMOTE_PX) return;  // still might be a quick pivot
+      _commitZoom();
+    }
+
+    event.preventDefault();
+    // Drag DOWN (dy > 0) = zoom IN: shrink camera→anchor offset toward anchor.
+    let scale = Math.pow(2, -dy / ZOOM_PX_PER_2X);
+    if (scale < ZOOM_MIN_SCALE) scale = ZOOM_MIN_SCALE;
+    if (scale > ZOOM_MAX_SCALE) scale = ZOOM_MAX_SCALE;
+    camera.position.copy(_zoom.anchor)
+      .add(_zoom.initialOffset.clone().multiplyScalar(scale));
+    controls.target.copy(_zoom.anchor);
+    camera.lookAt(_zoom.anchor);
+  });
+
+  canvas.addEventListener('pointerup', (event) => {
+    if (event.pointerType !== 'touch') return;
+    _activeTouches = Math.max(0, _activeTouches - 1);
+
+    if (_zoom && _zoom.id === event.pointerId) {
+      if (_zoom.committed) {
+        // Real zoom completed → restore controls, anchor becomes new pivot.
+        controls.update();   // sync OrbitControls' internal spherical to new pose
+        _endZoom(true);
+        _touchDown = null;
+        return;  // do NOT also fire pivot
+      }
+      // Speculative zoom that never committed — discard, fall through to
+      // standard tap logic (which will fire the pivot if it qualifies).
+      _zoom = null;
+    }
+
+    const down = _touchDown;
+    _touchDown = null;
+    if (!down || down.id !== event.pointerId) return;
+
+    const dx = event.clientX - down.x;
+    const dy = event.clientY - down.y;
+    const moved = Math.hypot(dx, dy);
+    const dur = performance.now() - down.t;
+    if (moved > TAP_MAX_MOVE || dur > TAP_MAX_DURATION) {
+      _lastTap = null;
+      return;
+    }
+
+    const now = performance.now();
+    if (_lastTap &&
+        now - _lastTap.t <= DOUBLE_TAP_MAX_GAP &&
+        Math.hypot(event.clientX - _lastTap.x, event.clientY - _lastTap.y)
+          <= DOUBLE_TAP_MAX_DIST) {
+      _setPivotAt(event.clientX, event.clientY);
+      _lastTap = null;
+    } else {
+      _lastTap = { x: event.clientX, y: event.clientY, t: now };
+    }
+  });
+
+  canvas.addEventListener('pointercancel', (event) => {
+    if (event.pointerType !== 'touch') return;
+    _activeTouches = Math.max(0, _activeTouches - 1);
+    if (_zoom?.committed) _endZoom(true); else _zoom = null;
+    _touchDown = null;
+  });
+
+  // CSS2D layer for DOM annotations
+  const css2d = new CSS2DRenderer({ element: document.getElementById('css2d-root') });
+  css2d.setSize(window.innerWidth, window.innerHeight);
+
+  // Audio (conditional on config having audio sources — matches PC viewer)
+  let audioListener = null;
+  if ((cfg.audio || []).length > 0) {
+    audioListener = new THREE.AudioListener();
+    camera.add(audioListener);
+    const audioLoader = new THREE.AudioLoader();
+    for (const src of cfg.audio) {
+      const isPositional = !!src.positional;
+      const sound = isPositional ? new THREE.PositionalAudio(audioListener) : new THREE.Audio(audioListener);
+      audioLoader.load(src.file, (buffer) => {
+        sound.setBuffer(buffer);
+        sound.setLoop(src.loop !== false);
+        sound.setVolume(typeof src.volume === 'number' ? src.volume : 0.5);
+        if (isPositional) {
+          sound.setRefDistance(5);
+          sound.setMaxDistance(100);
+        }
+        if (src.pos && isPositional) {
+          const holder = new THREE.Object3D();
+          holder.position.set(src.pos[0], src.pos[1], src.pos[2]);
+          holder.add(sound);
+          scene.add(holder);
+        }
+        sound.play();
+      });
+    }
+  }
+
+  // ---- Annotations (CSS2DObject) ----
+  const annotationsData = cfg.annotations || [];
+  const markerObjs = [];  // index-aligned with annotationsData
+  for (const a of annotationsData) {
+    const el = document.createElement('div');
+    el.className = 'ann-marker';
+    const lbl = (a.label || '?').replace(/</g, '&lt;');
+    const title = (a.title || '').replace(/</g, '&lt;');
+    const text = (a.text || '').replace(/</g, '&lt;');
+    el.innerHTML = '<div class="ann-dot">' + lbl + '</div>' +
+      '<div class="ann-tooltip">' + (title ? '<h4>' + title + '</h4>' : '') + (text ? '<p>' + text + '</p>' : '') + '</div>';
+    const obj = new CSS2DObject(el);
+    obj.position.fromArray(a.pos);
+    scene.add(obj);
+    markerObjs.push({ el, obj });
+  }
+
