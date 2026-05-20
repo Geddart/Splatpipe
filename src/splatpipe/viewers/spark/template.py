@@ -519,7 +519,7 @@ _VIEWER_TEMPLATE = """\
         <!-- v2-C Phase 3: AUTHOR-ONLY Delete action. Same role/class/
              inline-style shape as Rename (single visual language).
              Click handler in T19-JS closes the popup then calls
-             _camSelDelete(currentId), which double-guards via
+             _camSelDelete(), which double-guards via
              ModeManager.is('author') (defense-in-depth -- the kebab
              is already CSS-hidden in usermode/embed via the T12-CSS
              region's body.usermode/body.embed selectors). NO new CSS
@@ -2797,7 +2797,7 @@ _VIEWER_TEMPLATE = """\
       }}
       if (refs.length > 0) {{
         try {{
-          alert('Cannot delete "' + displayName + '" -- it\\'s referenced by '
+          alert('Cannot delete "' + displayName + '" — it\\'s referenced by '
                 + refs.length + ' clip(s) in the cut sequence. '
                 + 'Remove those clips first.');
         }} catch (e) {{}}
