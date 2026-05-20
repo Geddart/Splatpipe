@@ -673,19 +673,35 @@
   }
 
   // ---- Annotations (CSS2DObject) ----
+  // Phase 5 (#122 §4.2): the AnnotationModule in 15c owns annotation
+  // rendering when registered. The legacy DOM construction below is
+  // GUARDED so it never double-renders -- 15c also tears down any
+  // pre-existing markerObjs in its mount() (which fires after this
+  // block runs, since fragment-order is 08 < 15c). The `annotationsData`
+  // + `markerObjs` bindings stay in place because legacy consumers in
+  // 10_camera_select / 18_frame_loop reference them as closure-scoped
+  // vars; an empty `markerObjs` is length-tolerant -- forEach is a
+  // no-op and findIndex returns -1 -- so the 09 "path-active glow" is
+  // taken over by the AnnotationModule's per-frame tick.
   const annotationsData = cfg.annotations || [];
   const markerObjs = [];  // index-aligned with annotationsData
-  for (const a of annotationsData) {
-    const el = document.createElement('div');
-    el.className = 'ann-marker';
-    const lbl = (a.label || '?').replace(/</g, '&lt;');
-    const title = (a.title || '').replace(/</g, '&lt;');
-    const text = (a.text || '').replace(/</g, '&lt;');
-    el.innerHTML = '<div class="ann-dot">' + lbl + '</div>' +
-      '<div class="ann-tooltip">' + (title ? '<h4>' + title + '</h4>' : '') + (text ? '<p>' + text + '</p>' : '') + '</div>';
-    const obj = new CSS2DObject(el);
-    obj.position.fromArray(a.pos);
-    scene.add(obj);
-    markerObjs.push({ el, obj });
+  const _annotationsOwnedByModule = !!(
+    window.__sceneview && window.__sceneview.modules &&
+    typeof window.__sceneview.modules.get === 'function' &&
+    window.__sceneview.modules.get('annotations'));
+  if (!_annotationsOwnedByModule) {
+    for (const a of annotationsData) {
+      const el = document.createElement('div');
+      el.className = 'ann-marker';
+      const lbl = (a.label || '?').replace(/</g, '&lt;');
+      const title = (a.title || '').replace(/</g, '&lt;');
+      const text = (a.text || '').replace(/</g, '&lt;');
+      el.innerHTML = '<div class="ann-dot">' + lbl + '</div>' +
+        '<div class="ann-tooltip">' + (title ? '<h4>' + title + '</h4>' : '') + (text ? '<p>' + text + '</p>' : '') + '</div>';
+      const obj = new CSS2DObject(el);
+      obj.position.fromArray(a.pos);
+      scene.add(obj);
+      markerObjs.push({ el, obj });
+    }
   }
 
