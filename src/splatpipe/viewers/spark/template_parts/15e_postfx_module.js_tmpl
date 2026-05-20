@@ -1,0 +1,430 @@
+  // ============================================================
+  //  PostFXModule (Phase 4 -- editor-arc-design #122 §4.X)
+  // ------------------------------------------------------------
+  //  Tonemap preset + exposure slider EDIT-TIME control surface.
+  //  The underlying cfg.postprocessing -> renderer.toneMapping +
+  //  renderer.toneMappingExposure pipeline is ALREADY wired in
+  //  07_setup_three_spark.js_tmpl (lines ~108-116); this module
+  //  only adds the editor surface that lets the author retune
+  //  those values at runtime. Owns:
+  //    * cfg.postprocessing             (the schema slot)
+  //    * runtime re-apply onto          (the WebGLRenderer captured
+  //      renderer.toneMapping            in mount() via IIFE scope --
+  //      renderer.toneMappingExposure    R6: modules own their THREE
+  //                                      setup, never edit 07_setup)
+  //    * the "Post-FX" section of the Scene Settings drawer (17b)
+  //
+  //  CONTRACT (per spec §4.X + R6 -- modules own their own THREE setup):
+  //    name              'postfx'
+  //    stateKey          'postprocessing'
+  //    defaultModes      ['author', 'user', 'embed']  -- shows in ALL modes
+  //                      (post-fx renderer wiring is mode-agnostic; the
+  //                      editor UI is gated separately by the drawer's
+  //                      HudLayer registration in 17b -- modes:['author']).
+  //    mount(...)        captures renderer; re-applies cfg.postprocessing
+  //    unmount()         no-op (07_setup wires the renderer once at init;
+  //                      nothing to dispose -- toneMapping is an int field,
+  //                      not a resource).
+  //    onCfgChange       wholesale cfg replacement (e.g. an undo) -> re-apply
+  //    getDirtyState     conservative slice-signature diff (mirrors 15b)
+  //    markClean         snapshot current slice as the new clean baseline
+  //    renderSceneSettings(parentEl)
+  //                      populate the drawer's "Post-FX" section
+  //                      (tonemap preset dropdown + exposure slider +
+  //                      tooltip). Idempotent.
+  //    timelineLane      null -- post-fx is scene-global, not animatable.
+  //                      The lane-registry filters null/missing so 16's
+  //                      _tlLaneRegister silently skips this module.
+  //
+  //  WHY DEFAULT-MODES = ALL: the renderer.toneMapping + exposure that
+  //  07_setup wires is a render setting that applies in EVERY mode
+  //  (the tone mapper runs on the framebuffer composite). Putting the
+  //  module's defaultModes at ['author'] would WRONGLY prevent the
+  //  module from re-applying the cfg in enduser/embed mode if the
+  //  cfg is hot-swapped after init (defensive -- the renderer's
+  //  07-time wiring covers the boot case, but a future cfg reload
+  //  path through onCfgChange must still produce correct pixels in
+  //  every mode). The EDITOR UI visibility is gated by the drawer's
+  //  HudLayer in 17b (modes:['author']).
+  //
+  //  WHY THE _TONEMAP DICT IS REDECLARED HERE (not shared with 07):
+  //  the const _TONEMAP in 07_setup_three_spark lives inside that
+  //  fragment's module-scope IIFE closure -- there's no JS surface to
+  //  reach it from 15e. Redeclaring the same five entries here keeps
+  //  the module self-contained per R6 and ensures the runtime apply
+  //  is byte-identical to 07's initial wiring (the test suite's
+  //  _THREE_INTEGRATION_MARKERS locks the key set match).
+  //
+  //  DRAWER-ATTACH ORDERING (subtle, mirrors 15b PanoramaModule): 15e
+  //  runs BEFORE 17b in fragment lexical order, so when 15e's IIFE
+  //  calls EditorModuleRegistry.register(...), the 'register' event
+  //  fires BEFORE 17b's listener for that event attaches. Unlike the
+  //  16 fragment (multi-lane timeline) which does an explicit catch-up
+  //  walk on already-registered modules, 17b is documented as Phase 2
+  //  owned -- this module must NOT modify 17b to add a catch-up walk.
+  //  Instead the PostFXModule SELF-ATTACHES to the drawer: in mount()
+  //  it schedules a setTimeout(_attachToDrawer, 0) which fires AFTER
+  //  every synchronous IIFE (including 17b) has finished.
+  //  _attachToDrawer finds the placeholder <details data-section="postfx">
+  //  and replaces its body with the real controls. Idempotent + safe.
+  //
+  //  GESTURE-END SNAPSHOT PUSH (R8 §4.2): every UI control pushes ONE
+  //  EditHistory snapshot at gesture start (before mutating cfg). The
+  //  dropdown pushes on change (one click = one gesture); the slider
+  //  pushes on pointerdown (the gesture-start convention from the
+  //  gizmo TransformControls handling + the PanoramaModule sliders).
+  //  No per-frame snapshots during slider drag -- the 'input' handler
+  //  ONLY updates the live preview; the cfg commit + EditHistory push
+  //  happen on change/blur.
+  //
+  //  TEST SURFACE: window.__editor.postfxModule exposes the module
+  //  instance + a few getters for the harness to assert internal state.
+  // ============================================================
+  (function _pfxInit() {
+    if (typeof EditorModuleRegistry === 'undefined') return;
+
+    // Resolve the live cfg object (mirrors 15a / 15b / 17a -- a cfg
+    // shim or window.cfg or the IIFE-scoped const all work). One source
+    // of truth.
+    function _liveCfg() {
+      try { if (typeof cfg !== 'undefined' && cfg) return cfg; }
+      catch (e) {}
+      try { if (window.cfg) return window.cfg; }
+      catch (e) {}
+      return null;
+    }
+
+    // ---- Module-local state ----
+    let _renderer = null;           // captured THREE.WebGLRenderer reference
+    let _isDirty = false;           // gesture-end dirty flag (post-edit)
+    let _cleanSig = null;           // signature of the slice at last markClean
+    let _sectionEl = null;          // <details data-section="postfx"> in the drawer
+    let _sectionBodyEl = null;      // .spcp-scene-settings-section-body inside it
+    let _ddockAttached = false;     // idempotency guard for _attachToDrawer
+
+    function _sig(slice) {
+      try { return JSON.stringify(slice || null); }
+      catch (e) { return ''; }
+    }
+    function _currentSlice() {
+      const c = _liveCfg();
+      if (!c) return null;
+      return Object.prototype.hasOwnProperty.call(c, 'postprocessing')
+        ? c.postprocessing : null;
+    }
+
+    // ---- Re-apply cfg.postprocessing onto the captured renderer.
+    //      Mirrors the wiring in 07_setup_three_spark.js_tmpl lines
+    //      ~108-116 byte-for-byte (same tonemap key set, same default
+    //      THREE.NeutralToneMapping fallback, same `?? 1.5` exposure
+    //      fallback). The _TONEMAP dict is redeclared here because the
+    //      one in 07 is inside that fragment's IIFE closure and not
+    //      reachable from 15e (the modules-own-their-THREE-setup R6
+    //      convention).
+    function _reapply() {
+      if (!_renderer) return;
+      const c = _liveCfg();
+      const p = c ? c.postprocessing : null;
+      const _TONEMAP = {
+        linear: THREE.LinearToneMapping,
+        neutral: THREE.NeutralToneMapping ?? THREE.NoToneMapping,
+        aces: THREE.ACESFilmicToneMapping,
+        aces2: THREE.ACESFilmicToneMapping,
+        filmic: THREE.AgXToneMapping ?? THREE.ACESFilmicToneMapping,
+      };
+      try {
+        _renderer.toneMapping = _TONEMAP[p && p.tonemapping]
+          ?? THREE.NeutralToneMapping;
+      } catch (e) {}
+      try {
+        _renderer.toneMappingExposure = (p && typeof p.exposure === 'number')
+          ? p.exposure : 1.5;
+      } catch (e) {}
+    }
+
+    // ---- Drawer attachment.
+    //      Finds the placeholder <details data-section="postfx"> built
+    //      by 17b and replaces its body with our real controls. Run via
+    //      setTimeout(0) so 17b's synchronous IIFE has executed by the
+    //      time we look. Idempotent -- the _ddockAttached guard prevents
+    //      double-wiring if mount() runs more than once (it normally
+    //      doesn't, but the registry contract permits it).
+    function _attachToDrawer() {
+      if (_ddockAttached) return;
+      const drawer = document.getElementById('scene-settings-drawer');
+      if (!drawer) return;
+      const sect = drawer.querySelector('details[data-section="postfx"]');
+      if (!sect) return;
+      const body = sect.querySelector('.spcp-scene-settings-section-body');
+      if (!body) return;
+      _sectionEl = sect;
+      _sectionBodyEl = body;
+      _renderControls();
+      _ddockAttached = true;
+    }
+
+    // ---- Render the live controls inside the drawer section's body.
+    //      Called from _attachToDrawer (first time) and from
+    //      onCfgChange (to refresh the dropdown/slider display after an
+    //      external cfg replacement, e.g. an undo). The DOM is fully
+    //      rebuilt each render -- the section is tiny + the live state
+    //      is read back from cfg, so a wholesale rebuild keeps the code
+    //      simple + the live state in lockstep with cfg.
+    function _renderControls() {
+      if (!_sectionBodyEl) return;
+      const c = _liveCfg();
+      const p = (c && c.postprocessing) || null;
+      const tm = (p && typeof p.tonemapping === 'string')
+        ? p.tonemapping : 'neutral';
+      const ex = (p && typeof p.exposure === 'number') ? p.exposure : 1.5;
+
+      _sectionBodyEl.innerHTML = '';
+      _sectionBodyEl.style.color = '#ddd';
+      _sectionBodyEl.style.fontSize = '12px';
+
+      const wrap = document.createElement('div');
+      wrap.className = 'pfx-controls';
+      wrap.style.cssText = 'display:flex;flex-direction:column;gap:8px;';
+      _sectionBodyEl.appendChild(wrap);
+
+      // ---- Tonemap dropdown row -----------------------------------
+      const tmRow = document.createElement('label');
+      tmRow.className = 'pfx-row';
+      tmRow.style.cssText =
+        'display:flex;align-items:center;gap:6px;';
+      const tmLbl = document.createElement('span');
+      tmLbl.textContent = 'Tonemap';
+      tmLbl.style.cssText = 'min-width:84px;color:#bbb;';
+      tmRow.appendChild(tmLbl);
+      const tmSel = document.createElement('select');
+      tmSel.className = 'pfx-tm';
+      tmSel.style.cssText =
+        'flex:1;background:rgba(255,255,255,0.06);color:#ddd;' +
+        'border:1px solid rgba(255,255,255,0.12);border-radius:4px;' +
+        'padding:3px 6px;font:12px -apple-system,BlinkMacSystemFont,' +
+        'Segoe UI,sans-serif;';
+      // The five tonemap presets per spec §4.X + the matching set in
+      // 07_setup_three_spark's _TONEMAP dict. Built directly as HTML so
+      // the option value strings + labels are pinned by the test markers.
+      tmSel.innerHTML =
+        '<option value="linear">Linear</option>' +
+        '<option value="neutral">Neutral</option>' +
+        '<option value="aces">ACES</option>' +
+        '<option value="aces2">ACES 2</option>' +
+        '<option value="filmic">AgX (filmic)</option>';
+      tmSel.value = tm;
+      tmRow.appendChild(tmSel);
+      wrap.appendChild(tmRow);
+
+      // ---- Exposure slider row ------------------------------------
+      const exRow = document.createElement('label');
+      exRow.className = 'pfx-row';
+      exRow.style.cssText =
+        'display:flex;align-items:center;gap:6px;';
+      const exLbl = document.createElement('span');
+      exLbl.textContent = 'Exposure';
+      exLbl.style.cssText = 'min-width:84px;color:#bbb;';
+      exRow.appendChild(exLbl);
+      const exSlider = document.createElement('input');
+      exSlider.type = 'range';
+      exSlider.min = '0.5';
+      exSlider.max = '4';
+      exSlider.step = '0.05';
+      exSlider.value = String(ex);
+      exSlider.className = 'pfx-ex';
+      exSlider.style.cssText = 'flex:1;';
+      exRow.appendChild(exSlider);
+      const exVal = document.createElement('span');
+      exVal.className = 'pfx-ex-val';
+      exVal.style.cssText = 'min-width:36px;color:#9aa;font-size:11px;' +
+                            'text-align:right;';
+      exVal.textContent = ex.toFixed(2);
+      exRow.appendChild(exVal);
+      wrap.appendChild(exRow);
+
+      // ---- Tooltip (per spec §4.X + R7) ---------------------------
+      const tip = document.createElement('div');
+      tip.className = 'pfx-tooltip';
+      tip.style.cssText =
+        'font-size:10px;color:#788;margin-top:2px;line-height:1.4;' +
+        'font-style:italic;';
+      tip.textContent =
+        'Lighting affects the panorama background only. ' +
+        'Splats are pre-lit from training.';
+      wrap.appendChild(tip);
+
+      // ---- Wire handlers ------------------------------------------
+      // Tonemap dropdown: one change = one gesture. Snapshot BEFORE
+      // mutating cfg (R8 §4.2 gesture-START convention).
+      tmSel.addEventListener('change', function () {
+        try { EditorModuleRegistry.pushUndo('postfx-tonemap'); } catch (e) {}
+        const live = _liveCfg();
+        if (!live) return;
+        if (!live.postprocessing) {
+          live.postprocessing = { tonemapping: 'neutral', exposure: 1.5 };
+        }
+        const prev = Object.assign({}, live.postprocessing);
+        live.postprocessing.tonemapping = tmSel.value;
+        _isDirty = true;
+        _reapply();
+        try {
+          EditorModuleRegistry.notifyCfgChange(
+            'postprocessing', prev, live.postprocessing);
+        } catch (e) {}
+      });
+
+      // Exposure slider: same gesture-end pattern as the PanoramaModule
+      // intensity slider. Pointerdown = snapshot + gesture start; input
+      // = live preview only (NO cfg commit, NO undo push per frame);
+      // change/blur = commit cfg.
+      let _exDragStart = null;
+      exSlider.addEventListener('pointerdown', function () {
+        _exDragStart = parseFloat(exSlider.value);
+        try { EditorModuleRegistry.pushUndo('postfx-exposure'); } catch (e) {}
+      });
+      exSlider.addEventListener('input', function () {
+        // Live preview ONLY -- no cfg commit, no undo push per frame.
+        const v = parseFloat(exSlider.value);
+        exVal.textContent = v.toFixed(2);
+        if (_renderer) {
+          try { _renderer.toneMappingExposure = v; } catch (e) {}
+        }
+      });
+      function _exCommit() {
+        const v = parseFloat(exSlider.value);
+        const live = _liveCfg();
+        if (!live) return;
+        if (!live.postprocessing) {
+          live.postprocessing = { tonemapping: 'neutral', exposure: 1.5 };
+        }
+        const prev = Object.assign({}, live.postprocessing);
+        if (prev.exposure === v) return;     // no-op gesture
+        live.postprocessing.exposure = v;
+        _isDirty = true;
+        _reapply();
+        try {
+          EditorModuleRegistry.notifyCfgChange(
+            'postprocessing', prev, live.postprocessing);
+        } catch (e) {}
+        _exDragStart = null;
+      }
+      exSlider.addEventListener('change', _exCommit);
+      exSlider.addEventListener('blur', _exCommit);
+    }
+
+    // ---- The module instance ------------------------------------------
+    const postfxModule = {
+      name: 'postfx',
+      stateKey: 'postprocessing',
+      // Postprocessing renderer wiring applies in EVERY mode (toneMapping
+      // runs on the framebuffer composite). The EDITOR UI visibility is
+      // gated by the drawer's HudLayer registration in 17b (modes:['author']).
+      defaultModes: ['author', 'user', 'embed'],
+
+      mount: function (overlay, hud, interaction, modes) {
+        // Capture the THREE.WebGLRenderer from the IIFE-scoped `renderer`
+        // const set up in 07_setup_three_spark. R6: modules own their
+        // own THREE setup via mount() -- no edit to 07_setup needed.
+        try {
+          if (typeof renderer !== 'undefined' && renderer) _renderer = renderer;
+        } catch (e) {}
+        if (!_renderer) {
+          // The harness may run this fragment in isolation -- fall back
+          // to window.__sceneview.renderer if a future framework exposes it.
+          try {
+            if (window.__sceneview && window.__sceneview.renderer) {
+              _renderer = window.__sceneview.renderer;
+            }
+          } catch (e) {}
+        }
+        // Capture the clean baseline + re-apply the current cfg. The
+        // re-apply is defensive: 07_setup already wires the renderer
+        // at boot, so the re-apply is a byte-identical no-op on first
+        // mount. It exists for the onCfgChange path (an undo that
+        // wholesale-replaces cfg.postprocessing must produce correct
+        // pixels without a renderer re-init).
+        _cleanSig = _sig(_currentSlice());
+        _reapply();
+        // Self-attach to the Scene Settings drawer once 17b has run.
+        // setTimeout(0) lands AFTER every synchronous IIFE in the page
+        // -- mirrors the 15b PanoramaModule pattern.
+        try { setTimeout(_attachToDrawer, 0); } catch (e) {}
+      },
+
+      unmount: function () {
+        // No-op. The renderer's toneMapping + toneMappingExposure are
+        // primitive ints/floats, not allocations -- nothing to dispose.
+        // Future re-mount would re-apply via mount() as usual.
+        _renderer = null;
+        _cleanSig = null;
+        _ddockAttached = false;
+        _sectionEl = null;
+        _sectionBodyEl = null;
+      },
+
+      onCfgChange: function (prev, next, stateKey) {
+        // Wholesale cfg replacement (e.g. an EditHistory undo, or a save
+        // that re-loaded the saved cfg) -- re-apply the renderer + refresh
+        // the drawer controls so the dropdown/slider reflect the new state.
+        _reapply();
+        if (_ddockAttached) _renderControls();
+      },
+
+      getDirtyState: function () {
+        // Two-track signal mirroring 15b PanoramaModule: explicit _isDirty
+        // flag set by every gesture-end commit, plus a conservative slice-
+        // signature diff for the post-undo / post-reload paths where
+        // _isDirty might not have been touched. Either being true reports
+        // dirty.
+        const sigNow = _sig(_currentSlice());
+        const sigDiffers = (_cleanSig !== null && sigNow !== _cleanSig);
+        return {
+          isDirty: !!_isDirty || sigDiffers,
+          patchObject: _currentSlice(),
+        };
+      },
+
+      markClean: function () {
+        _isDirty = false;
+        _cleanSig = _sig(_currentSlice());
+      },
+
+      // Post-fx is scene-global, not animatable in v1. Explicit `null`
+      // (not undefined) so the contract is unambiguous -- 16's
+      // _tlLaneRegister filters both null + missing, so this module
+      // contributes no lane to the bottom-timeline.
+      timelineLane: null,
+
+      renderSceneSettings: function (parentEl) {
+        // Called by 17b's 'register' listener WHEN it fires AFTER 17b
+        // has wired its listener. In the current 15e-before-17b
+        // fragment order this code path is the fallback for a future
+        // re-registration; the primary attach path is the
+        // setTimeout(_attachToDrawer, 0) from mount(). We still
+        // implement the hook because the contract documents it.
+        if (!parentEl) return;
+        const sect = parentEl.querySelector
+          ? parentEl.querySelector('details[data-section="postfx"]')
+          : null;
+        if (!sect) return;
+        const body = sect.querySelector('.spcp-scene-settings-section-body');
+        if (!body) return;
+        _sectionEl = sect;
+        _sectionBodyEl = body;
+        _renderControls();
+        _ddockAttached = true;
+      },
+
+      testSurface: {
+        get postfxModule() { return postfxModule; },
+        get postfxRenderer() { return _renderer; },
+        get postfxSectionEl() { return _sectionEl; },
+        get postfxDirty() {
+          return postfxModule.getDirtyState().isDirty;
+        },
+      },
+    };
+
+    EditorModuleRegistry.register(postfxModule);
+  })();
+
