@@ -1216,20 +1216,150 @@ async def delete_audio(request: Request, project_path: str, index: int):
     return JSONResponse({"ok": True, "audio": saved})
 
 
+# Allow-listed audio extensions for the upload-audio route.
+# Matched case-insensitively against ``Path(name).suffix``.
+# Bug-audit #7 (2026-05-19): keep this tight; favour deny-by-default.
+_AUDIO_UPLOAD_ALLOWED_EXTS = {
+    ".mp3", ".wav", ".ogg", ".opus", ".m4a", ".aac", ".flac", ".webm",
+}
+# Defense-in-depth size cap for audio uploads. 50 MiB is well above any
+# normal scene-audio loop and far below any reasonable abuse vector.
+# (No project-wide audio size cap exists in config/defaults.toml; if one is
+# ever added, route this through it instead. TODO(task #110): factor the
+# path-safety + size-limit helpers into a single shared utility used by every
+# upload route.)
+_AUDIO_UPLOAD_MAX_BYTES = 50 * 1024 * 1024
+
+
 @router.post("/{project_path:path}/upload-audio")
 async def upload_audio(request: Request, project_path: str):
-    """Upload an audio file to the project's assets/audio/ folder."""
+    """Upload an audio file to the project's assets/audio/ folder.
+
+    Hardened against path traversal per bug-audit-2026-05-19 #7:
+
+    * Strip path components via ``Path(name).name`` and reject any change.
+    * Reject empty / ``.`` / ``..`` / dotfile names.
+    * Allow-list audio extensions (case-insensitive).
+    * Cap the upload at 50 MB (Content-Length pre-check + streaming guard).
+    * Defense-in-depth: resolve the destination and confirm it lives inside
+      the project's ``assets/audio`` directory via ``Path.relative_to``.
+    * Collision policy: reject existing names with 409 (safer than silently
+      overwriting; user can rename + retry).
+    """
     form = await request.form()
     upload = form.get("file")
     if not upload or not hasattr(upload, "filename"):
-        return _toast("No file uploaded", "error")
+        return JSONResponse({"ok": False, "error": "No file uploaded"}, status_code=400)
+
+    raw_name = upload.filename or ""
+
+    # --- Filename sanitisation ----------------------------------------------
+    # Path(name).name on Windows still resolves backslashes as separators,
+    # but not on POSIX; normalise both first so the rejection is OS-uniform.
+    if "/" in raw_name or "\\" in raw_name:
+        return JSONResponse(
+            {"ok": False, "error": "Filename must not contain path separators"},
+            status_code=400,
+        )
+    # Drive-letter prefix like ``C:foo`` -- Path.name keeps only ``foo`` on
+    # POSIX but the COLON itself is a hard-no for a destination filename on
+    # Windows; reject it everywhere for parity.
+    if ":" in raw_name:
+        return JSONResponse(
+            {"ok": False, "error": "Filename must not contain path separators"},
+            status_code=400,
+        )
+    safe_name = Path(raw_name).name
+    if safe_name != raw_name:
+        # ``Path(name).name`` removed something -- a separator, a drive
+        # prefix, etc. Per the audit, reject rather than try to recover.
+        return JSONResponse(
+            {"ok": False, "error": "Filename was rewritten by sanitiser"},
+            status_code=400,
+        )
+    if not safe_name or safe_name in (".", "..") or safe_name.startswith("."):
+        return JSONResponse(
+            {"ok": False, "error": "Filename must not be empty or a dotfile"},
+            status_code=400,
+        )
+
+    # --- Extension allow-list -----------------------------------------------
+    if Path(safe_name).suffix.lower() not in _AUDIO_UPLOAD_ALLOWED_EXTS:
+        return JSONResponse(
+            {"ok": False, "error": "Unsupported audio file extension"},
+            status_code=400,
+        )
+
+    # --- Size cap (upfront) -------------------------------------------------
+    cl_header = request.headers.get("content-length")
+    if cl_header is not None:
+        try:
+            if int(cl_header) > _AUDIO_UPLOAD_MAX_BYTES:
+                return JSONResponse(
+                    {"ok": False, "error": "Audio file is too large"},
+                    status_code=413,
+                )
+        except ValueError:
+            # Malformed Content-Length -- fall through to the streaming guard.
+            pass
+
     proj = Project(Path(project_path))
     audio_dir = proj.root / "assets" / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
-    dest = audio_dir / upload.filename
-    content = await upload.read()
-    dest.write_bytes(content)
-    return JSONResponse({"ok": True, "path": f"assets/audio/{upload.filename}"})
+    dest = audio_dir / safe_name
+
+    # --- Defense-in-depth containment check ---------------------------------
+    # Resolve both sides and require ``dest`` to live INSIDE ``audio_dir``.
+    # ``Path.relative_to`` raises ValueError on escape; we never write on
+    # ValueError. (TODO(task #110): centralise this in a shared helper.)
+    try:
+        dest.resolve().relative_to(audio_dir.resolve())
+    except ValueError:
+        return JSONResponse(
+            {"ok": False, "error": "Resolved destination is outside the audio directory"},
+            status_code=400,
+        )
+
+    # --- Collision handling --------------------------------------------------
+    if dest.exists():
+        return JSONResponse(
+            {"ok": False, "error": f"File already exists: {safe_name}"},
+            status_code=409,
+        )
+
+    # --- Streaming read with size guard --------------------------------------
+    # Defensive against a missing/lying Content-Length: read in chunks and
+    # abort if the total exceeds the cap, without ever fully materialising
+    # the body in memory beyond the cap.
+    written = 0
+    try:
+        with open(dest, "wb") as fh:
+            while True:
+                chunk = await upload.read(64 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > _AUDIO_UPLOAD_MAX_BYTES:
+                    fh.close()
+                    try:
+                        dest.unlink()
+                    except OSError:
+                        pass
+                    return JSONResponse(
+                        {"ok": False, "error": "Audio file is too large"},
+                        status_code=413,
+                    )
+                fh.write(chunk)
+    except Exception:
+        # Best-effort cleanup of any partial write.
+        try:
+            if dest.exists():
+                dest.unlink()
+        except OSError:
+            pass
+        raise
+
+    return JSONResponse({"ok": True, "path": f"assets/audio/{safe_name}"})
 
 
 # --- Export settings ---
