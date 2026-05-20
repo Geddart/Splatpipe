@@ -129,11 +129,14 @@ splatpipe/                    # repo root
     test_cli.py               # CLI command tests via CliRunner
     test_runner.py            # Background runner + cancel + multi-step tests
     test_web_routes.py        # Web route integration tests (TestClient)
+    test_dcc_routes.py        # DCC bridge route tests (/dcc/manifest, /dcc/splat.ply, /dcc/import-camera)
     test_route_helpers.py     # Route helper function tests
     test_steps_base.py        # PipelineStep base class tests
     test_events.py            # ProgressEvent + StepResult tests
     test_export.py            # Folder export tests
-    test_deploy_extended.py   # CDN deploy + env loading tests
+    test_deploy_extended.py   # CDN deploy + env loading tests (incl. Edge Rule split-trigger cap)
+    test_spark_chunked.py     # Spark chunked --rad-chunked cache layout + completeness guard (v0.7+)
+    test_publish.py           # publish_scene() invariants (build-agnostic index, primary_asset pointer, purge=False) (v0.7+)
     test_path_io.py           # Camera-path schema, mutate_paths, COLMAP missing-source, JSON round-trip (v0.6+)
     test_path_io_interp.py    # Per-keyframe interpolation + mode schema (v0.8+)
     test_spcp_token.py        # SPCP1 token codec round-trip + version/scope gating (v0.8+)
@@ -147,9 +150,13 @@ splatpipe/                    # repo root
     test_php_save_oracle.py        # PHP save adapter cross-language merge oracle (v0.8+)
     test_cloudflare_save_oracle.py # Cloudflare Worker save cross-language merge oracle (v0.8+)
     test_publish_config_sanitize.py # Public viewer-config sanitiser + publish_scene secret-leak regression (bug-audit #3; v0.8+)
+    test_audio_upload_security.py   # Audio-upload path-traversal hardening (bug-audit #7; v0.8+)
     test_web_cmd_security.py  # `splatpipe web` default-loopback + --unsafe-network opt-in (bug-audit #5; v0.8+)
     test_path_safety.py       # Shared path-containment helper: sibling-prefix attack rejection (bug-audit #6; v0.8+)
     test_serve_cmd_security.py # `splatpipe serve` preview server containment regression (bug-audit #6; v0.8+)
+    test_sh_encoding_cli.py   # ShEncoding enum + --sh-encoding CLI choice gating + auto/paged/clamped truth table (bug-audit #1/#2; v0.8+)
+    test_build_lod_cache_key.py # Cache namespacing per --sh-encoding mode (e<a|p|c> marker) (v0.8+)
+    test_publish_sh_encoding.py # publish_scene threads sh_encoding into staged viewer-config (v0.8+)
     manual/                   # Browser harnesses (not collected): keyframe-editor.html, pc-compare.html, etc.
 ```
 
@@ -232,6 +239,9 @@ These were paid for in hours during the keyframe-editor build. Treat them as har
 5. **The byte-lock protects file IDENTITY, not correctness inside excised regions.** It cannot protect code bodies inside excised regions, nor geometry / getter-liveness / codec-byte-identity. Independently review old-vs-new for: a refactor of a function whose body lives inside an excised region, a frozen getter, and any JS<->Python codec port.
 6. **A spec-mandated real test legitimately raises the test count.** Distinguish a genuine spec-required new test (e.g. a Node-driven codec byte-identity round-trip) from count-padding. Do not blanket-forbid count changes -- the pre-push doc-check exists to RECONCILE the count, not to freeze it.
 7. **Serialize Playwright/stash agents -- never run >1 concurrently.** Two agents driving the shared Playwright-MCP browser, or git-stashing the same file, contend; a transient stash window mimics "an external process reverted my file". The boring hypothesis is your own over-parallelized agents, not a phantom external process. Verify final state only AFTER all such agents finish.
+8. **Path containment NEVER uses `str(p).startswith(str(root))` -- always go through `core/path_safety.is_contained()` / `ensure_contained()`.** The `startswith` form is bypassable by a sibling-prefix attack: a SIBLING directory like `05_output_evil` literally starts with the intended root `05_output` so the predicate returns `True` even though the path is NOT inside the root. The shared helper uses `Path.resolve().relative_to(parent.resolve())` (catching `ValueError` for cross-drive Windows + sibling-prefix candidates) so only a real sub-path is accepted. `ensure_contained` raises `PathContainmentError(ValueError)` so legacy `except ValueError` callsites still catch it. There must be ONE chokepoint for every containment check in the codebase.
+9. **Dashboard bind is a security boundary.** `splatpipe web` defaults to `127.0.0.1`. NEVER document or recommend `--host 0.0.0.0` (or `--unsafe-network`) without naming the exposure surface (filesystem browsing + OS-level open actions + no auth + no CSRF). The intended use case for LAN exposure is a trusted dev network, never production.
+10. **Byte-lock recipes.** The `template.py` byte-lock has three recipes: **2a** (additive — change is appended/excised purely inside an existing region; the byte-lock pin is unchanged), **2b** (deliberate re-pin — the pin advances when an opt-in stray is being retired into HEAD; document the WHY in the commit), **2c** (region-interior — change lives strictly inside an existing excised region; pin unchanged). Recipe-2b is the right tool when retiring a long-running uncommitted template stray (e.g. the 7-line `paged_ext_splats` opt-in) into a first-class CLI option.
 
 ## Versioning & Releases
 
@@ -417,3 +427,4 @@ The photogrammetry projects live at:
 - Auto-threshold doesn't work with <10 cameras (use fixed threshold in project.toml)
 - `splat-transform` CLI args may need updating when PlayCanvas updates the tool
 - LichtFeld Studio stdout format not yet verified — run it once and check before trusting the parser
+- **Bespoke `.kfwork/deploy_kf_fehmarn*.py` scripts bypass `publish_scene` -> bypass the new sanitiser (bug-audit #3).** The new `core/config_safety.sanitize_public_viewer_config` only runs inside `publish_scene()`. The bespoke `.kfwork/` deploy scripts call `deploy_to_bunny` directly with a hand-built `viewer-config.json`, so they NEVER hit the sanitiser. Any future bespoke deploy script that constructs `viewer-config.json` from arbitrary input MUST call `sanitize_public_viewer_config()` first, or it can leak `save_backend.secret`/`api_key`/etc. straight to the CDN. If a slug was originally deployed via a bespoke script and is later re-published via `splatpipe publish`, the sanitiser kicks in on the next redeploy — but until then its sanitisation is out-of-band.

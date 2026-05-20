@@ -12,7 +12,7 @@
   <img src="https://img.shields.io/badge/python-3.12+-blue?logo=python&logoColor=white" alt="Python 3.12+">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-0078D4?logo=windows" alt="Windows / Linux">
-  <img src="https://img.shields.io/badge/tests-660%20passed-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-687%20passed-brightgreen" alt="Tests">
 </p>
 
 ---
@@ -140,14 +140,18 @@ splatpipe clean                 # Clean COLMAP data (outliers + KD-tree)
 splatpipe train                 # Train splats at all LOD levels
 splatpipe assemble              # Build LOD streaming output
 splatpipe build-lod             # Prime the Spark .rad cache for a project
-splatpipe build-lod --sh-encoding paged   # Force clamp-free ExtSplats decode (full SH3, no rainbow)
+splatpipe build-lod --sh-encoding {auto,paged,clamped}  # SH decode-path mode (auto inherits; paged = clamp-free ExtSplats; clamped = legacy PackedSplats)
 splatpipe export --mode folder  # Export to local folder (or --mode cdn)
+splatpipe set-start-view TOK    # Apply a viewer-emitted SPV1 start-view token
 splatpipe set-camera-path TOK   # Apply a viewer-emitted SPCP1 camera-path token
 splatpipe publish -p .          # Deploy to a PERMANENT, redeploy-safe slug URL
+splatpipe publish --ply X.ply --slug s [--config base.json]  # Standalone publish (--config = base viewer-config to inherit)
 splatpipe status                # Show project state
 splatpipe run                   # Run full pipeline
+splatpipe serve                 # Local preview server for an assembled scene
 splatpipe web                   # Launch web dashboard (localhost only)
-splatpipe web --unsafe-network  # Launch dashboard on 0.0.0.0 (LAN; no auth, prints warning)
+splatpipe web --host 0.0.0.0    # Bind explicit interface (prints LAN warning for any non-loopback)
+splatpipe web --unsafe-network  # Bind 0.0.0.0 (LAN; no auth, prints warning)
 ```
 
 > **Security:** `splatpipe web` binds to `127.0.0.1` by default. The dashboard has no authentication and exposes filesystem browsing + OS-level open actions, so LAN exposure requires explicit opt-in (`--host <addr>` or `--unsafe-network`).
@@ -184,7 +188,7 @@ MyProject/
 
 ```bash
 pip install -e ".[dev]"     # Install with dev dependencies
-pytest tests/ -v            # 686 collected; 660 passed, 26 skipped (~27s)
+pytest tests/ -v            # 713 collected; 687 passed, 26 skipped (~26s)
 ```
 
 Key design principle: **debug data over fallbacks**. No try/except — every step writes a `_debug.json` with full command, stdout/stderr, file stats, metrics, timing, and environment. When something fails, the debug JSON tells you exactly why.
