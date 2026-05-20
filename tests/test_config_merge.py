@@ -17,10 +17,15 @@ import pytest
 from splatpipe.core.config_merge import ALLOWED_PATCH_KEYS, merge_camera_scope
 
 
-def test_allow_list_is_exactly_the_nine_locked_keys():
+def test_allow_list_is_exactly_the_ten_locked_keys():
+    """Locked set: 9 v1 keys + ``panorama_backdrop`` (spec §3.2 + §5.2).
+
+    ``schema_version`` is INTENTIONALLY excluded -- it is server-managed
+    publish-time, never patched. See ``test_config_merge_panorama.py``."""
     assert ALLOWED_PATCH_KEYS == {
         "start_view", "camera_paths", "clips", "cameras",
         "default_path_id", "intro", "titles3d", "spark_render", "annotations",
+        "panorama_backdrop",
     }
 
 

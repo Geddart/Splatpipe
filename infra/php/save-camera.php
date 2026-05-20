@@ -61,6 +61,7 @@ const ALLOWED_PATCH_KEYS = [
     'titles3d',
     'spark_render',
     'annotations',
+    'panorama_backdrop',
 ];
 
 /* ===== tiny helpers ===================================================== */

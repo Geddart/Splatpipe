@@ -43,6 +43,15 @@ from typing import Any
 #: The §H2 locked allow-list: the *only* keys an untrusted patch may set on
 #: a viewer-config. ``primary_asset`` is deliberately absent — it is
 #: force-kept from the existing config and can never be moved by a patch.
+#:
+#: ``panorama_backdrop`` joined the list per spec §3.2 / §5.2 so the
+#: PanoramaModule (Phase 3) can save panorama edits through the same
+#: shared core. Whole-replace semantics apply (no deep merge, no sub-key
+#: gate -- pure render params).
+#:
+#: ``schema_version`` is INTENTIONALLY excluded -- it is a server-managed
+#: schema-evolution field set at publish time, never patched by an
+#: untrusted editor save.
 ALLOWED_PATCH_KEYS: frozenset[str] = frozenset({
     "start_view",
     "camera_paths",
@@ -53,6 +62,7 @@ ALLOWED_PATCH_KEYS: frozenset[str] = frozenset({
     "titles3d",
     "spark_render",
     "annotations",
+    "panorama_backdrop",
 })
 
 # primary_asset is structurally excluded — NEVER add it here.

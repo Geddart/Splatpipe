@@ -53,6 +53,11 @@ PUBLIC_VIEWER_CONFIG_KEYS: frozenset[str] = frozenset({
     # `<bkey>/scene.rad` value).
     "primary_asset",
 
+    # Schema-evolution pointer (set publish-time; integer literal, no
+    # secret risk -- the viewer reads it to choose its forward-compat shim
+    # per spec §3.1).
+    "schema_version",
+
     # Camera-scope (also the shared `core/config_merge.ALLOWED_PATCH_KEYS`
     # for the editor save path).
     "start_view",
@@ -74,6 +79,9 @@ PUBLIC_VIEWER_CONFIG_KEYS: frozenset[str] = frozenset({
     "splat_budget",
     "probe_views",
     "audio",
+    # Panorama backdrop (spec §3.2 + §5.2): equirect texture URL + rotation
+    # + intensity; pure render params, whole-replace, no sub-key gate (R3).
+    "panorama_backdrop",
 
     # Save plumbing (publish-time only; viewer needs `type`/`endpoint` to
     # wire the Save button -- sub-keys are filtered separately below).
