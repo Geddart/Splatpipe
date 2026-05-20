@@ -1,0 +1,571 @@
+  // ============================================================
+  //  PanoramaModule (Phase 3 -- editor-arc-design #122 §3.2 + §4.5)
+  // ------------------------------------------------------------
+  //  Equirectangular 360 backdrop module. Owns:
+  //    * cfg.panorama_backdrop          (the schema slot)
+  //    * scene.background               (the THREE.Scene equirect texture)
+  //    * scene.backgroundIntensity      (intensity multiplier)
+  //    * scene.backgroundRotation       (Y-axis rotation)
+  //    * the "Backdrop" section of the Scene Settings drawer (17b)
+  //
+  //  CONTRACT (per spec §4.5 + R6 -- modules own their own THREE setup):
+  //    name              'panorama_backdrop'
+  //    stateKey          'panorama_backdrop'
+  //    defaultModes      ['author', 'user', 'embed']  -- shows in ALL modes
+  //                      (the BACKDROP renders everywhere; the EDITOR UI
+  //                      via renderSceneSettings is author-gated via the
+  //                      drawer's HudLayer mode filter, NOT this list).
+  //    mount(...)        sets scene.background from cfg.panorama_backdrop
+  //    unmount()         dispose texture + clear scene.background
+  //    onCfgChange       wholesale cfg replacement (e.g. an undo) -> reload
+  //    getDirtyState     conservative slice-signature diff (mirrors 15a)
+  //    markClean         snapshot current slice as the new clean baseline
+  //    renderSceneSettings(parentEl)
+  //                      populate the drawer's "Backdrop" section
+  //                      (file picker + rotation slider + intensity slider
+  //                      + clear button). Idempotent.
+  //
+  //  WHY DEFAULT-MODES = ALL: the BACKDROP itself is a render feature
+  //  (the equirect texture should show in every viewer mode); the EDITOR
+  //  controls are gated separately by the drawer's HudLayer registration
+  //  (modes:['author'] in 17b). Putting the module's defaultModes at
+  //  ['author'] would WRONGLY prevent enduser/embed mode from displaying
+  //  the configured backdrop -- the backdrop is a PUBLIC scene element.
+  //
+  //  WHY scene.background AND NOT scene.environment: scene.environment
+  //  feeds PBR materials' IBL. Splats are NOT PBR -- they render via the
+  //  baked SH coefficients in evaluateExtSH. Adding to scene.environment
+  //  would be a no-op UI lie (spec §3.3 R7 -- no scene_lights for v1).
+  //
+  //  WHY equirect via THREE.EquirectangularReflectionMapping (NOT
+  //  PMREMGenerator): PMREM is a costly cube-rendering pass that only
+  //  benefits PBR IBL. For a pure background, the equirect mapping is the
+  //  direct path; scene.backgroundRotation/Intensity already work on it
+  //  (THREE.js >=0.150). Saves the PMREM allocation + per-resize re-bake.
+  //
+  //  DRAWER-ATTACH ORDERING (subtle): 15b runs BEFORE 17b in fragment
+  //  lexical order, so when 15b's IIFE calls
+  //  EditorModuleRegistry.register(...), the 'register' event fires
+  //  BEFORE 17b's listener for that event attaches. Unlike the 16
+  //  fragment (multi-lane timeline) which does an explicit catch-up walk
+  //  on already-registered modules, 17b is documented as Phase 2 owned --
+  //  this module must NOT modify 17b to add a catch-up walk. Instead the
+  //  PanoramaModule SELF-ATTACHES to the drawer: in mount() it schedules
+  //  a setTimeout(_attachToDrawer, 0) which fires AFTER every
+  //  synchronous IIFE (including 17b) has finished. _attachToDrawer
+  //  finds the placeholder <details data-section="panorama"> and
+  //  replaces its body with the real controls. Idempotent + safe.
+  //
+  //  GESTURE-END SNAPSHOT PUSH (R8 §4.2): every UI control pushes ONE
+  //  EditHistory snapshot at gesture start (before mutating cfg). The
+  //  file picker pushes on file-select (before the upload+cfg write);
+  //  the sliders push on pointerdown (the gesture-start convention from
+  //  the gizmo TransformControls handling -- NOT per-frame during drag).
+  //
+  //  TEST SURFACE: window.__editor.panoramaModule exposes the module
+  //  instance + a few getters for the harness to assert internal state.
+  // ============================================================
+  (function _pmInit() {
+    if (typeof EditorModuleRegistry === 'undefined') return;
+
+    // Resolve the live cfg object (mirrors 15a / 17a -- a cfg shim or
+    // window.cfg or the IIFE-scoped const all work). One source of truth.
+    function _liveCfg() {
+      try { if (typeof cfg !== 'undefined' && cfg) return cfg; }
+      catch (e) {}
+      try { if (window.cfg) return window.cfg; }
+      catch (e) {}
+      return null;
+    }
+
+    // ---- Module-local state ----
+    let _texture = null;            // current THREE.Texture (LDR equirect JPG/PNG)
+    let _scene = null;              // captured THREE.Scene reference
+    let _isDirty = false;           // gesture-end dirty flag (post-edit)
+    let _cleanSig = null;           // signature of the slice at last markClean
+    let _sectionEl = null;          // <details data-section="panorama"> in the drawer
+    let _sectionBodyEl = null;      // .spcp-scene-settings-section-body inside it
+    let _ddockAttached = false;     // idempotency guard for _attachToDrawer
+
+    function _sig(slice) {
+      try { return JSON.stringify(slice || null); }
+      catch (e) { return ''; }
+    }
+    function _currentSlice() {
+      const c = _liveCfg();
+      if (!c) return null;
+      // null is the canonical "no backdrop" form (cf. _DEFAULTS in 06_cfg).
+      return Object.prototype.hasOwnProperty.call(c, 'panorama_backdrop')
+        ? c.panorama_backdrop : null;
+    }
+
+    function _disposeTexture() {
+      if (_texture) {
+        try { _texture.dispose(); } catch (e) {}
+        _texture = null;
+      }
+    }
+
+    // ---- Apply cfg.panorama_backdrop to the THREE.Scene background.
+    //      Called from mount(), from onCfgChange(), and from every UI
+    //      control that mutates the slice. Idempotent -- a slice with
+    //      the same image_url reuses the cached texture (cheap re-apply).
+    function _loadFromCfg() {
+      if (!_scene) return;
+      const c = _liveCfg();
+      const p = c ? c.panorama_backdrop : null;
+      if (!p || typeof p !== 'object' || !p.image_url) {
+        // No backdrop -- dispose texture + clear scene.background. The
+        // pre-existing clear-colour (renderer.setClearColor in 07) is
+        // what shows through; scene.background = null hands the canvas
+        // back to the renderer's clear colour.
+        _disposeTexture();
+        _scene.background = null;
+        return;
+      }
+      // Live-tweak the intensity + rotation WITHOUT reloading the texture
+      // when only those changed (cheap path -- the texture is the expensive
+      // resource). The cached _texture is keyed off the URL string.
+      const sameUrl = _texture && _texture.userData &&
+                      _texture.userData.__pmUrl === p.image_url;
+      if (sameUrl) {
+        _applyIntensityRotation(p);
+        return;
+      }
+      // New / first-time URL: load the equirect texture via the standard
+      // THREE.TextureLoader. The colorSpace assignment ensures the JPG's
+      // sRGB encoding round-trips correctly through the tone mapper (the
+      // renderer's toneMapping in 07 is wired off cfg.postprocessing).
+      const loader = new THREE.TextureLoader();
+      loader.load(p.image_url, function (tex) {
+        try {
+          tex.mapping = THREE.EquirectangularReflectionMapping;
+          tex.colorSpace = THREE.SRGBColorSpace;
+          tex.userData = tex.userData || {};
+          tex.userData.__pmUrl = p.image_url;
+        } catch (e) {}
+        _disposeTexture();
+        _texture = tex;
+        if (_scene) _scene.background = tex;
+        _applyIntensityRotation(p);
+      }, undefined, function (err) {
+        try {
+          console.warn('[PanoramaModule] failed to load equirect:',
+                       p.image_url, err);
+        } catch (e) {}
+      });
+    }
+
+    function _applyIntensityRotation(p) {
+      if (!_scene) return;
+      const intensity = (p && typeof p.intensity === 'number') ? p.intensity : 1.0;
+      const yDeg = (p && typeof p.rotation_y_deg === 'number')
+        ? p.rotation_y_deg : 0;
+      try { _scene.backgroundIntensity = intensity; } catch (e) {}
+      try {
+        if (_scene.backgroundRotation && _scene.backgroundRotation.set) {
+          _scene.backgroundRotation.set(0, yDeg * Math.PI / 180, 0);
+        } else {
+          // Older THREE -- create a fresh Euler.
+          _scene.backgroundRotation = new THREE.Euler(0, yDeg * Math.PI / 180, 0);
+        }
+      } catch (e) {}
+    }
+
+    // ---- Drawer attachment.
+    //      Finds the placeholder <details data-section="panorama"> built
+    //      by 17b and replaces its body with our real controls. Run via
+    //      setTimeout(0) so 17b's synchronous IIFE has executed by the
+    //      time we look. Idempotent -- the _ddockAttached guard prevents
+    //      double-wiring if mount() runs more than once (it normally
+    //      doesn't, but the registry contract permits it).
+    function _attachToDrawer() {
+      if (_ddockAttached) return;
+      const drawer = document.getElementById('scene-settings-drawer');
+      if (!drawer) return;
+      const sect = drawer.querySelector('details[data-section="panorama"]');
+      if (!sect) return;
+      const body = sect.querySelector('.spcp-scene-settings-section-body');
+      if (!body) return;
+      _sectionEl = sect;
+      _sectionBodyEl = body;
+      _renderControls();
+      _ddockAttached = true;
+    }
+
+    // ---- Render the live controls inside the drawer section's body.
+    //      Called from _attachToDrawer (first time) and from
+    //      onCfgChange (to refresh slider/file-name display after an
+    //      external cfg replacement, e.g. an undo). The DOM is fully
+    //      rebuilt each render -- the section is tiny + the slider state
+    //      is read back from cfg, so a wholesale rebuild keeps the code
+    //      simple + the live state in lockstep with cfg.
+    function _renderControls() {
+      if (!_sectionBodyEl) return;
+      const c = _liveCfg();
+      const p = (c && c.panorama_backdrop) || null;
+      const url = (p && typeof p.image_url === 'string') ? p.image_url : '';
+      const yaw = (p && typeof p.rotation_y_deg === 'number') ? p.rotation_y_deg : 0;
+      const intensity = (p && typeof p.intensity === 'number') ? p.intensity : 1.0;
+
+      _sectionBodyEl.innerHTML = '';
+      _sectionBodyEl.style.color = '#ddd';
+      _sectionBodyEl.style.fontSize = '12px';
+
+      const wrap = document.createElement('div');
+      wrap.className = 'pan-controls';
+      wrap.style.cssText = 'display:flex;flex-direction:column;gap:8px;';
+      _sectionBodyEl.appendChild(wrap);
+
+      // ---- File row -----------------------------------------------------
+      const fileRow = document.createElement('label');
+      fileRow.className = 'pan-row';
+      fileRow.style.cssText =
+        'display:flex;align-items:center;gap:6px;flex-wrap:wrap;';
+      const fileLbl = document.createElement('span');
+      fileLbl.textContent = 'Image';
+      fileLbl.style.cssText = 'min-width:64px;color:#bbb;';
+      fileRow.appendChild(fileLbl);
+      const fileInput = document.createElement('input');
+      fileInput.type = 'file';
+      fileInput.accept = 'image/jpeg,image/png';
+      fileInput.className = 'pan-file';
+      fileInput.style.cssText = 'flex:1;min-width:120px;color:#ddd;';
+      fileRow.appendChild(fileInput);
+      const clearBtn = document.createElement('button');
+      clearBtn.type = 'button';
+      clearBtn.className = 'pan-clear';
+      clearBtn.title = 'Remove panorama';
+      clearBtn.textContent = '×';   // U+00D7 MULTIPLICATION SIGN
+      clearBtn.style.cssText =
+        'background:rgba(255,255,255,0.10);color:#ccc;border:0;' +
+        'border-radius:4px;width:24px;height:24px;cursor:pointer;' +
+        'font-size:14px;line-height:1;';
+      fileRow.appendChild(clearBtn);
+      wrap.appendChild(fileRow);
+
+      // Current-image hint (filename, if any).
+      const urlHint = document.createElement('div');
+      urlHint.className = 'pan-url-hint';
+      urlHint.style.cssText = 'font-size:10px;color:#88a;margin-top:-4px;';
+      urlHint.textContent = url ? ('Current: ' + url) : '(no backdrop)';
+      wrap.appendChild(urlHint);
+
+      // ---- Rotation row -------------------------------------------------
+      const yawRow = document.createElement('label');
+      yawRow.className = 'pan-row';
+      yawRow.style.cssText =
+        'display:flex;align-items:center;gap:6px;';
+      const yawLbl = document.createElement('span');
+      yawLbl.textContent = 'Rotation (°Y)';   // U+00B0 DEGREE SIGN
+      yawLbl.style.cssText = 'min-width:84px;color:#bbb;';
+      yawRow.appendChild(yawLbl);
+      const yawSlider = document.createElement('input');
+      yawSlider.type = 'range';
+      yawSlider.min = '-180';
+      yawSlider.max = '180';
+      yawSlider.step = '1';
+      yawSlider.value = String(yaw);
+      yawSlider.className = 'pan-yaw';
+      yawSlider.style.cssText = 'flex:1;';
+      yawRow.appendChild(yawSlider);
+      const yawVal = document.createElement('span');
+      yawVal.className = 'pan-yaw-val';
+      yawVal.style.cssText = 'min-width:36px;color:#9aa;font-size:11px;' +
+                             'text-align:right;';
+      yawVal.textContent = String(Math.round(yaw)) + '°';
+      yawRow.appendChild(yawVal);
+      wrap.appendChild(yawRow);
+
+      // ---- Intensity row ------------------------------------------------
+      const intRow = document.createElement('label');
+      intRow.className = 'pan-row';
+      intRow.style.cssText =
+        'display:flex;align-items:center;gap:6px;';
+      const intLbl = document.createElement('span');
+      intLbl.textContent = 'Intensity';
+      intLbl.style.cssText = 'min-width:84px;color:#bbb;';
+      intRow.appendChild(intLbl);
+      const intSlider = document.createElement('input');
+      intSlider.type = 'range';
+      intSlider.min = '0';
+      intSlider.max = '3';
+      intSlider.step = '0.05';
+      intSlider.value = String(intensity);
+      intSlider.className = 'pan-int';
+      intSlider.style.cssText = 'flex:1;';
+      intRow.appendChild(intSlider);
+      const intVal = document.createElement('span');
+      intVal.className = 'pan-int-val';
+      intVal.style.cssText = 'min-width:36px;color:#9aa;font-size:11px;' +
+                             'text-align:right;';
+      intVal.textContent = intensity.toFixed(2);
+      intRow.appendChild(intVal);
+      wrap.appendChild(intRow);
+
+      // ---- Tooltip (per spec §4.5) -------------------------------------
+      const tip = document.createElement('div');
+      tip.className = 'pan-tooltip';
+      tip.style.cssText =
+        'font-size:10px;color:#788;margin-top:2px;line-height:1.4;' +
+        'font-style:italic;';
+      tip.textContent =
+        'Backdrop only. Splats are pre-lit from training data — ' +
+        'scene lights have no effect on splat pixels.';
+      wrap.appendChild(tip);
+
+      // ---- Wire handlers ------------------------------------------------
+      // File picker: on file select, snapshot history BEFORE the upload,
+      // POST to ../upload-image (resolves to /projects/<path>/upload-image
+      // when the viewer is served from the dashboard preview), then merge
+      // the returned path into cfg.panorama_backdrop and re-render.
+      fileInput.addEventListener('change', function () {
+        if (!fileInput.files || !fileInput.files.length) return;
+        const file = fileInput.files[0];
+        // Snapshot BEFORE the upload (gesture-start; R8 §4.2).
+        try { EditorModuleRegistry.pushUndo('panorama-upload'); } catch (e) {}
+        const fd = new FormData();
+        fd.append('file', file);
+        let url;
+        try {
+          url = new URL('../upload-image', location.href).toString();
+        } catch (e) {
+          url = '../upload-image';
+        }
+        fetch(url, { method: 'POST', body: fd })
+          .then(function (r) { return r.json().catch(function () { return null; }); })
+          .then(function (data) {
+            if (!data || !data.ok || !data.path) {
+              try {
+                console.warn('[PanoramaModule] upload failed:', data);
+              } catch (e) {}
+              return;
+            }
+            // Merge into cfg.panorama_backdrop (whole-replace shape).
+            const live = _liveCfg();
+            if (!live) return;
+            const prev = live.panorama_backdrop || null;
+            const next = {
+              image_url: data.path,
+              rotation_y_deg: (prev && typeof prev.rotation_y_deg === 'number')
+                ? prev.rotation_y_deg : 0,
+              intensity: (prev && typeof prev.intensity === 'number')
+                ? prev.intensity : 1.0,
+              blend_mode: (prev && typeof prev.blend_mode === 'string')
+                ? prev.blend_mode : 'background',
+              show_in_modes: (prev && Array.isArray(prev.show_in_modes))
+                ? prev.show_in_modes : null,
+            };
+            live.panorama_backdrop = next;
+            _isDirty = true;
+            _loadFromCfg();
+            try {
+              EditorModuleRegistry.notifyCfgChange(
+                'panorama_backdrop', prev, next);
+            } catch (e) {}
+            _renderControls();
+          })
+          .catch(function (err) {
+            try {
+              console.warn('[PanoramaModule] upload error:', err);
+            } catch (e) {}
+          });
+      });
+
+      // Clear button: snapshot, null out cfg.panorama_backdrop, re-apply.
+      clearBtn.addEventListener('click', function () {
+        try { EditorModuleRegistry.pushUndo('panorama-clear'); } catch (e) {}
+        const live = _liveCfg();
+        if (!live) return;
+        const prev = live.panorama_backdrop || null;
+        if (prev === null) return;   // nothing to clear
+        live.panorama_backdrop = null;
+        _isDirty = true;
+        _loadFromCfg();
+        try {
+          EditorModuleRegistry.notifyCfgChange('panorama_backdrop', prev, null);
+        } catch (e) {}
+        _renderControls();
+      });
+
+      // Yaw slider: live-update the visual rotation on every input event,
+      // but only push undo + commit cfg on the gesture START (pointerdown)
+      // and the gesture END (blur). The gesture-START snapshot is R8's
+      // canonical pattern; the END commit is what 17a tracks as the
+      // single-entry undo step (no per-frame snapshots).
+      let _yawDragStart = null;
+      yawSlider.addEventListener('pointerdown', function () {
+        _yawDragStart = parseFloat(yawSlider.value);
+        try { EditorModuleRegistry.pushUndo('panorama-rotate'); } catch (e) {}
+      });
+      yawSlider.addEventListener('input', function () {
+        // Live preview ONLY -- no cfg commit, no undo push per frame.
+        const v = parseFloat(yawSlider.value);
+        yawVal.textContent = String(Math.round(v)) + '°';
+        if (_scene) _applyIntensityRotation({
+          rotation_y_deg: v,
+          intensity: (_liveCfg() && _liveCfg().panorama_backdrop &&
+                      typeof _liveCfg().panorama_backdrop.intensity === 'number')
+            ? _liveCfg().panorama_backdrop.intensity : 1.0,
+        });
+      });
+      function _yawCommit() {
+        const v = parseFloat(yawSlider.value);
+        const live = _liveCfg();
+        if (!live) return;
+        if (!live.panorama_backdrop) {
+          // No backdrop loaded -- the slider is informational only; do
+          // not synthesise a panorama_backdrop block from a stray drag.
+          return;
+        }
+        const prev = live.panorama_backdrop;
+        if (prev.rotation_y_deg === v) return;     // no-op gesture
+        prev.rotation_y_deg = v;
+        _isDirty = true;
+        try {
+          EditorModuleRegistry.notifyCfgChange('panorama_backdrop', prev, prev);
+        } catch (e) {}
+        _yawDragStart = null;
+      }
+      yawSlider.addEventListener('change', _yawCommit);
+      yawSlider.addEventListener('blur', _yawCommit);
+
+      // Intensity slider: same gesture-end pattern as yaw.
+      let _intDragStart = null;
+      intSlider.addEventListener('pointerdown', function () {
+        _intDragStart = parseFloat(intSlider.value);
+        try { EditorModuleRegistry.pushUndo('panorama-intensity'); } catch (e) {}
+      });
+      intSlider.addEventListener('input', function () {
+        const v = parseFloat(intSlider.value);
+        intVal.textContent = v.toFixed(2);
+        if (_scene) _applyIntensityRotation({
+          intensity: v,
+          rotation_y_deg: (_liveCfg() && _liveCfg().panorama_backdrop &&
+                           typeof _liveCfg().panorama_backdrop.rotation_y_deg === 'number')
+            ? _liveCfg().panorama_backdrop.rotation_y_deg : 0,
+        });
+      });
+      function _intCommit() {
+        const v = parseFloat(intSlider.value);
+        const live = _liveCfg();
+        if (!live) return;
+        if (!live.panorama_backdrop) return;
+        const prev = live.panorama_backdrop;
+        if (prev.intensity === v) return;
+        prev.intensity = v;
+        _isDirty = true;
+        try {
+          EditorModuleRegistry.notifyCfgChange('panorama_backdrop', prev, prev);
+        } catch (e) {}
+        _intDragStart = null;
+      }
+      intSlider.addEventListener('change', _intCommit);
+      intSlider.addEventListener('blur', _intCommit);
+    }
+
+    // ---- The module instance ------------------------------------------
+    const panoramaModule = {
+      name: 'panorama_backdrop',
+      stateKey: 'panorama_backdrop',
+      // BACKDROP renders in ALL modes (it's a public scene element).
+      // The EDITOR UI visibility is gated by the drawer's HudLayer
+      // registration in 17b (modes:['author']).
+      defaultModes: ['author', 'user', 'embed'],
+
+      mount: function (overlay, hud, interaction, modes) {
+        // Capture the THREE.Scene reference from the IIFE-scoped `scene`
+        // const set up in 07_setup_three_spark. R6: modules own their
+        // own THREE setup via mount() -- no edit to 07_setup needed.
+        try {
+          if (typeof scene !== 'undefined' && scene) _scene = scene;
+        } catch (e) {}
+        if (!_scene) {
+          // The harness may run this fragment in isolation -- fall back
+          // to window.__sceneview.scene if a future framework exposes it.
+          try {
+            if (window.__sceneview && window.__sceneview.scene) {
+              _scene = window.__sceneview.scene;
+            }
+          } catch (e) {}
+        }
+        // Capture the clean baseline + apply the current cfg.
+        _cleanSig = _sig(_currentSlice());
+        _loadFromCfg();
+        // Self-attach to the Scene Settings drawer once 17b has run.
+        // setTimeout(0) lands AFTER every synchronous IIFE in the page.
+        try { setTimeout(_attachToDrawer, 0); } catch (e) {}
+      },
+
+      unmount: function () {
+        _disposeTexture();
+        if (_scene) {
+          try { _scene.background = null; } catch (e) {}
+        }
+        _scene = null;
+        _cleanSig = null;
+        _ddockAttached = false;
+        _sectionEl = null;
+        _sectionBodyEl = null;
+      },
+
+      onCfgChange: function (prev, next, stateKey) {
+        // Wholesale cfg replacement (e.g. an EditHistory undo, or a save
+        // that re-loaded the saved cfg) -- reload the backdrop + refresh
+        // the drawer controls so the sliders reflect the new state.
+        _loadFromCfg();
+        if (_ddockAttached) _renderControls();
+      },
+
+      getDirtyState: function () {
+        // Two-track signal: an explicit _isDirty flag flipped by every
+        // gesture-end commit, AND a conservative slice-signature diff
+        // for the post-undo / post-reload paths where _isDirty might not
+        // have been touched. Either being true reports dirty.
+        const sigNow = _sig(_currentSlice());
+        const sigDiffers = (_cleanSig !== null && sigNow !== _cleanSig);
+        return {
+          isDirty: !!_isDirty || sigDiffers,
+          patchObject: _currentSlice(),
+        };
+      },
+
+      markClean: function () {
+        _isDirty = false;
+        _cleanSig = _sig(_currentSlice());
+      },
+
+      renderSceneSettings: function (parentEl) {
+        // Called by 17b's 'register' listener WHEN it fires AFTER 17b
+        // has wired its listener. In the current 15b-before-17b
+        // fragment order this code path is the fallback for a future
+        // re-registration; the primary attach path is the
+        // setTimeout(_attachToDrawer, 0) from mount(). We still
+        // implement the hook because the contract documents it.
+        if (!parentEl) return;
+        const sect = parentEl.querySelector
+          ? parentEl.querySelector('details[data-section="panorama"]')
+          : null;
+        if (!sect) return;
+        const body = sect.querySelector('.spcp-scene-settings-section-body');
+        if (!body) return;
+        _sectionEl = sect;
+        _sectionBodyEl = body;
+        _renderControls();
+        _ddockAttached = true;
+      },
+
+      testSurface: {
+        get panoramaModule() { return panoramaModule; },
+        get panoramaTexture() { return _texture; },
+        get panoramaScene() { return _scene; },
+        get panoramaSectionEl() { return _sectionEl; },
+        get panoramaDirty() {
+          return panoramaModule.getDirtyState().isDirty;
+        },
+      },
+    };
+
+    EditorModuleRegistry.register(panoramaModule);
+  })();
+

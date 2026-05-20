@@ -10,6 +10,13 @@
     camera_paths: [],
     default_path_id: null,
     start_view: null,
+    // Equirectangular panorama backdrop (Phase 3 -- PanoramaModule).
+    // null = no backdrop; when set, the shape is
+    //   { image_url, rotation_y_deg, intensity, blend_mode, show_in_modes }
+    // (see 15b_panorama_module.js_tmpl). Wholesale-allow-listed in
+    // core/config_safety.PUBLIC_VIEWER_CONFIG_KEYS so it survives
+    // sanitisation in publish_scene().
+    panorama_backdrop: null,
     spark_render: {
       lod_splat_scale: 1.0,
       lod_render_scale: 1.0,
