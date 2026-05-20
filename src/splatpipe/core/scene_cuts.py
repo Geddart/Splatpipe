@@ -39,6 +39,53 @@ def ordered_clips(clips: list[dict]) -> list[dict]:
     return sorted(clips, key=lambda c: c.get("clip_start", 0.0))
 
 
+def find_clips_referencing_camera(cfg: dict, camera_id: str) -> list[dict]:
+    """Return every clip in *cfg* whose ``camera_id`` matches *camera_id*.
+
+    v2-C Phase 3 -- the in-viewer "Delete camera" kebab refuses to remove
+    a camera still bound to one or more clips in the cut sequence (so the
+    cut timeline never points at a vanished camera id). The JS guard
+    walks ``cfg.clips`` looking for matches; this helper is the SAME walk
+    -- single source of truth, byte-for-byte agreement with the JS port,
+    and the CLI / save-adapter side reuses it to validate incoming
+    delete-camera patches.
+
+    Defensive about an absent / non-list ``clips`` field: the 6 live
+    single-camera scenes carry NO ``cfg.clips`` at all (degenerate single-
+    tour case). Returning ``[]`` for that case means "no references --
+    safe to proceed past this gate" (the last-camera gate is the next
+    check in the delete flow). Mirrors the
+    ``Array.isArray(cfg.clips) ? cfg.clips : []`` pattern ``ClipPlayer``
+    already uses at template.py ~2979 -- structurally identical so the
+    two never disagree.
+
+    Skips malformed entries (``None`` / missing ``camera_id`` / explicit
+    ``None`` camera_id) rather than raising; only clips with a present,
+    equal ``camera_id`` are returned. Preserves input order (NOT
+    ``ordered_clips`` sorted -- the guard's alert reads "referenced by
+    N clips" and doesn't care about ordering; preserving order keeps
+    the helper trivially testable and matches the JS ``Array.prototype
+    .filter`` semantics).
+
+    Pure: input *cfg* is never mutated; the returned list is a new
+    list of references to the existing clip dicts (not deep-copied --
+    the caller never mutates them either).
+    """
+    raw = cfg.get("clips") if isinstance(cfg, dict) else None
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for clip in raw:
+        if not isinstance(clip, dict):
+            continue
+        cid = clip.get("camera_id")
+        if cid is None:
+            continue
+        if cid == camera_id:
+            out.append(clip)
+    return out
+
+
 def validate_clips(cameras: list[dict], clips: list[dict]) -> None:
     """Validate *clips* against the declared *cameras*.
 

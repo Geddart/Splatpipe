@@ -275,6 +275,118 @@ def test_multicamera_rename_round_trips_through_merge():
     assert out["primary_asset"] == "bSPEICHER/scene.rad"
 
 
+def test_multicamera_delete_camera_patch_removes_entry():
+    """v2-C Phase 3 "Delete camera": the in-viewer kebab Delete action
+    removes a camera from BOTH ``cfg.cameras`` AND its ``camera_paths``
+    entry, then Save sends the surviving (N-1 entries) lists as the
+    patch. The UNCHANGED whole-replace semantics of
+    ``merge_camera_scope`` carry that delete through -- the result's
+    ``cameras`` / ``camera_paths`` are EXACTLY the patch's (NOT a
+    deep/append merge that would resurrect the deleted entry; that
+    would be a real regression for delete UX). The security-critical
+    ``primary_asset`` force-keep still holds against a hostile pointer
+    in the SAME patch. Proof the Phase-3 delete flow needs ZERO core
+    change -- same `Patch is the source of truth` contract as Create
+    and Rename."""
+    existing = {
+        "primary_asset": "bSPEICHER/scene.rad",
+        # a 2-camera scene -- the author is about to delete Camera 2
+        "camera_paths": [
+            {"id": "p_orig000001", "name": "Camera 1",
+             "keyframes": [{"t": 0.0, "pos": [0, 0, 0]}]},
+            {"id": "p_orig000002", "name": "Camera 2",
+             "keyframes": [{"t": 0.0, "pos": [1, 1, 1]}]},
+        ],
+        "cameras": [
+            {"id": "p_camorig001", "name": "Camera 1",
+             "path_id": "p_orig000001"},
+            {"id": "p_camorig002", "name": "Camera 2",
+             "path_id": "p_orig000002"},
+        ],
+        "default_path_id": "p_orig000002",   # currently bound to soon-deleted cam
+        "spark_render": {"clip_xy": 3.0},
+    }
+    # The EXACT patch shape the in-viewer _camSelDelete emits after the
+    # user confirms deletion of Camera 2: both cameras + camera_paths
+    # lists shrunk to one entry (the surviving Camera 1), and
+    # default_path_id re-pointed at the surviving camera's path id
+    # (current-camera fallback rule: if the deleted camera was
+    # currently selected, fall back to the FIRST remaining camera).
+    # The hostile primary_asset in the same patch MUST still be
+    # ignored by the force-keep invariant.
+    patch = {
+        "camera_paths": [
+            {"id": "p_orig000001", "name": "Camera 1",
+             "keyframes": [{"t": 0.0, "pos": [0, 0, 0]}]},
+        ],
+        "cameras": [
+            {"id": "p_camorig001", "name": "Camera 1",
+             "path_id": "p_orig000001"},
+        ],
+        "default_path_id": "p_orig000001",
+        "primary_asset": "EVIL/attacker.rad",   # must NEVER apply
+    }
+    out = merge_camera_scope(existing, patch)
+
+    # WHOLE-REPLACE -- the deleted Camera 2 entries are absent from BOTH
+    # lists. A deep/append merge would have left them in, which would
+    # break the delete UX immediately (the dropdown rebuild on Save +
+    # re-load would resurrect the camera).
+    assert out["camera_paths"] == patch["camera_paths"]
+    assert len(out["camera_paths"]) == 1
+    assert out["camera_paths"][0]["id"] == "p_orig000001"
+    assert out["cameras"] == patch["cameras"]
+    assert len(out["cameras"]) == 1
+    assert out["cameras"][0]["id"] == "p_camorig001"
+    # No vestige of the deleted entries anywhere in the merged config
+    for cp in out["camera_paths"]:
+        assert cp["id"] != "p_orig000002"
+    for cam in out["cameras"]:
+        assert cam["id"] != "p_camorig002"
+        assert cam["path_id"] != "p_orig000002"
+    # Current-camera fallback: default_path_id moved to the surviving
+    # camera's path id (EXISTING wire key, whole-replaced).
+    assert out["default_path_id"] == "p_orig000001"
+    # untouched siblings preserved.
+    assert out["spark_render"] == {"clip_xy": 3.0}
+    # LOCKED INVARIANT: pointer is always existing's, never patch's.
+    assert out["primary_asset"] == "bSPEICHER/scene.rad"
+
+
+def test_multicamera_delete_camera_patch_keeps_primary_asset_invariant():
+    """Belt-and-braces: the Phase-3 delete flow must NEVER let a hostile
+    ``primary_asset`` slip into the merged config -- including the
+    scenario where the patch is a 0-camera ``cameras: []`` and a hostile
+    pointer in the same envelope (a malicious editor trying to combine a
+    delete-all-cameras patch with a redirected asset pointer). The
+    locked Bunny invariant (force-keep ``existing.primary_asset``) does
+    NOT depend on a survivor-count check -- the patch can be ANY shape
+    and the pointer still stays the existing one. (The viewer-side
+    last-camera guard prevents the empty-cameras patch from ever
+    reaching Save in practice; this oracle ensures the core stays
+    safe even if a future code path forgets that guard.)"""
+    existing = {
+        "primary_asset": "bSPEICHER/scene.rad",
+        "camera_paths": [
+            {"id": "p1", "name": "Solo", "keyframes": [{"t": 0.0, "pos": [0, 0, 0]}]},
+        ],
+        "cameras": [
+            {"id": "cam1", "name": "Solo", "path_id": "p1"},
+        ],
+    }
+    patch = {
+        "camera_paths": [],
+        "cameras": [],
+        "default_path_id": None,
+        "primary_asset": "EVIL/attacker.rad",   # MUST NEVER apply
+    }
+    out = merge_camera_scope(existing, patch)
+    assert out["camera_paths"] == []
+    assert out["cameras"] == []
+    assert out["default_path_id"] is None
+    assert out["primary_asset"] == "bSPEICHER/scene.rad"
+
+
 def test_existing_without_primary_asset_does_not_synthesize_one():
     """Faithful extraction: set_start_view never *added* primary_asset; if
     the fetched config lacked it, it stayed absent (the older-deploy case).

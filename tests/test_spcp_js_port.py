@@ -389,6 +389,79 @@ _CASES: list[tuple[str, dict]] = [
             "default_path_id": "p_abcdef0123",
         },
     ),
+    # 8. MULTI-CAMERA DELETE (v2-C Phase 3 "Delete camera"): the EXACT
+    #    payload shape _camSelDelete emits after the author confirms a
+    #    delete in the kebab. Starts from a 3-camera scene; the
+    #    "middle" camera (p_mid) has been deleted -- the patch carries
+    #    the surviving 2 (p_first, p_last) in BOTH cfg.camera_paths
+    #    AND cfg.cameras, with default_path_id re-pointed at the
+    #    surviving p_first (current-camera fallback: deleted cam was
+    #    selected -> fall back to FIRST remaining). The deleted entry
+    #    is STRUCTURALLY ABSENT -- NOT a tombstone, NOT a marker, just
+    #    the surviving list. This LOCKS that the UNCHANGED SPCP codec
+    #    round-trips a delete-camera patch byte-identically JS<->Python
+    #    (NO new wire key, NO codec change). Non-vacuous: the payload
+    #    carries a populated FIRST path with a sub-1e-4 keyframe pos
+    #    component (forces the CPython sci-notation branch) AND a
+    #    populated LAST path with an integer-valued fov (forces the
+    #    int-literal branch), so the codec is exercised across the
+    #    surviving entries even after the middle one is gone. A codec
+    #    that mis-serialised the shrunk list (an extra entry slot, a
+    #    null placeholder, or a re-injected deleted id) would fail
+    #    here immediately.
+    (
+        "delete-mid",
+        {
+            "v": 1,
+            "scope": "camera_paths",
+            "camera_paths": [
+                {
+                    "id": "p_first00001",
+                    "name": "Camera 1",
+                    "loop": False,
+                    "interpolation": "catmull",
+                    "smoothness": 1.0,
+                    "play_speed": 1.0,
+                    "keyframes": [
+                        {"t": 0.0, "pos": [0.0, 0.0, 0.0],
+                         "quat": [0, 0, 0, 1], "fov": 60},
+                        {"t": 1.5, "pos": [1.5e-05, -2.0, 3.0],
+                         "quat": [0, 0, 0, 1], "fov": 55},
+                    ],
+                },
+                # NOTE: no "p_mid000001" entry -- the deleted camera is
+                # ABSENT (NOT a null placeholder). The 3-entry list of
+                # the pre-delete state has shrunk to a 2-entry list.
+                {
+                    "id": "p_last00001",
+                    "name": "Camera 3",
+                    "loop": False,
+                    "interpolation": "catmull",
+                    "smoothness": 1.0,
+                    "play_speed": 1.0,
+                    "keyframes": [
+                        {"t": 0.0, "pos": [10.0, 0.0, 0.0],
+                         "quat": [0, 0, 0, 1], "fov": 60},
+                        {"t": 2.0, "pos": [12.0, 0.0, 1.0],
+                         "quat": [0, 0, 0, 1], "fov": 60},
+                    ],
+                },
+            ],
+            "cameras": [
+                {"id": "p_camfirst01", "name": "Camera 1",
+                 "path_id": "p_first00001"},
+                # NOTE: no "p_cammid0001" -- the corresponding virtual
+                # camera entry is ABSENT, in lockstep with the
+                # camera_paths shrink. The two arrays are kept in sync
+                # by the JS _camSelDelete (it mutates BOTH).
+                {"id": "p_camlast01", "name": "Camera 3",
+                 "path_id": "p_last00001"},
+            ],
+            # Current-camera fallback: deleted cam was selected, fall
+            # back to FIRST remaining camera. EXISTING wire key.
+            "default_path_id": "p_first00001",
+        },
+    ),
 ]
 
 

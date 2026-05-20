@@ -516,6 +516,18 @@ _VIEWER_TEMPLATE = """\
                 style="display:block; width:100%; text-align:left;
                        margin:0;"
                 title="Rename the currently-selected camera. Perspective cannot be renamed.">Rename</button>
+        <!-- v2-C Phase 3: AUTHOR-ONLY Delete action. Same role/class/
+             inline-style shape as Rename (single visual language).
+             Click handler in T19-JS closes the popup then calls
+             _camSelDelete(currentId), which double-guards via
+             ModeManager.is('author') (defense-in-depth -- the kebab
+             is already CSS-hidden in usermode/embed via the T12-CSS
+             region's body.usermode/body.embed selectors). NO new CSS
+             needed (reuses .quality-btn). ASCII-only added line. -->
+        <button id="cam-menu-delete" class="quality-btn" role="menuitem"
+                style="display:block; width:100%; text-align:left;
+                       margin:0;"
+                title="Delete the currently-selected camera. Refused if the camera is referenced by any clip in the cut sequence, or if it is the last remaining camera. Perspective cannot be deleted.">Delete</button>
       </div>
       <button id="bench-btn" class="quality-btn"
               title="Run the selected benchmark (dropdown at left). Click again to stop early; downloads a JSON trace (+ contact sheet for probe/rotate).">Bench</button>
@@ -2719,6 +2731,146 @@ _VIEWER_TEMPLATE = """\
     _camSelBuildOptions();
     _camSelReflect(val);
   }}
+  // v2-C Phase 3 -- AUTHOR-ONLY Delete of the currently-selected camera.
+  // Removes the entry from BOTH cfg.cameras AND cfg.camera_paths
+  // (kept-in-sync mutation -- mirrors _camSelRename's dual-walk),
+  // with two guards:
+  //   1. Clip-reference guard: refuses deletion if the camera id is
+  //      bound to any clip in cfg.clips' cut sequence (so the cut
+  //      timeline never points at a vanished id). The JS walk is a
+  //      mirror of core/scene_cuts.py::find_clips_referencing_camera
+  //      (same shape, same defensive isArray gate); the camera id
+  //      checked here is the camsArr entry's `id`, NOT the path_id
+  //      (clips reference cfg.cameras[i].id via camera_id, NOT path
+  //      ids -- the same contract validate_clips enforces).
+  //   2. Last-camera guard: refuses deletion of the LAST remaining
+  //      camera (a scene must always have >=1 camera; auto-fall back
+  //      to Perspective would create a stale-tour-resume edge case).
+  // After mutation, if the deleted camera was currently selected, the
+  // current-camera fallback is the FIRST remaining camera (spec
+  // requirement: predictable visible camera, not Perspective).
+  // _camSelApply(newId) triggers the same overlay-refresh hooks
+  // _camSelRename does NOT need to (rename keeps the same path id) --
+  // delete does need them (the new path id changes the active
+  // trajectory + gizmo + timeline). The defense-in-depth guard uses
+  // ModeManager.is('author') (NOT _EDITOR_AUTHOR -- declared later in
+  // scope at template.py:4454; ModeManager is safe at this scope).
+  function _camSelDelete() {{
+    if (!ModeManager.is('author')) return;
+    if (!_camSel) return;
+    const val = _camSel.value;
+    if (!val || val === _CAM_PERSP) return;
+    // Locate the path entry by id (same lookup _camSelRename does --
+    // the dropdown value is always the path id).
+    const pathIdx = cameraPaths.findIndex(p => p && p.id === val);
+    const camsArr = Array.isArray(cfg.cameras) ? cfg.cameras : null;
+    let camIdx = -1;
+    if (camsArr) {{
+      camIdx = camsArr.findIndex(c => c && c.path_id === val);
+    }}
+    if (pathIdx < 0 && camIdx < 0) return;
+    // Resolve display name + camera id for the alerts/confirm dialog
+    // (the camera id is what clips reference; the name is for the UI).
+    const camId = (camIdx >= 0 && camsArr[camIdx] && camsArr[camIdx].id)
+      ? camsArr[camIdx].id : null;
+    const displayName = (camIdx >= 0 && camsArr[camIdx] && camsArr[camIdx].name)
+      ? camsArr[camIdx].name
+      : ((pathIdx >= 0 && cameraPaths[pathIdx] && cameraPaths[pathIdx].name)
+         ? cameraPaths[pathIdx].name
+         : val);
+    // Guard 1: clip-reference -- JS mirror of
+    // core/scene_cuts.py::find_clips_referencing_camera. Defensive
+    // isArray gate (the 6 live single-camera scenes carry NO cfg.clips,
+    // so this is an empty-list walk -> 0 refs -> safe to proceed past
+    // this gate). If the camera has no `id` in cfg.cameras (path-only
+    // camera, no virtual-camera entry), it cannot be referenced by a
+    // clip (clips need a camera_id pointing at cfg.cameras[i].id) ->
+    // skip the walk.
+    if (camId) {{
+      const rawClips = Array.isArray(cfg.clips) ? cfg.clips : [];
+      const refs = [];
+      for (const clip of rawClips) {{
+        if (!clip || typeof clip !== 'object') continue;
+        const cid = clip.camera_id;
+        if (cid === null || cid === undefined) continue;
+        if (cid === camId) refs.push(clip);
+      }}
+      if (refs.length > 0) {{
+        try {{
+          alert('Cannot delete "' + displayName + '" -- it\\'s referenced by '
+                + refs.length + ' clip(s) in the cut sequence. '
+                + 'Remove those clips first.');
+        }} catch (e) {{}}
+        return;
+      }}
+    }}
+    // Guard 2: last-camera. The remaining-count is taken AFTER hypothetical
+    // removal: if the post-delete camera count drops to 0, refuse. The
+    // "camera count" is the number of dropdown entries (UNION of
+    // cfg.cameras + raw cameraPaths via _camSelCameras), NOT cfg.cameras
+    // alone (a path-only camera still counts as a dropdown entry). This
+    // matches what the user actually sees in the #camera-select dropdown.
+    const remainingCount = _camSelCameras().length - 1;
+    if (remainingCount <= 0) {{
+      try {{
+        alert('At least one camera must exist. '
+              + 'Add another camera before deleting this one.');
+      }} catch (e) {{}}
+      return;
+    }}
+    // Confirm. ASCII-only message (the apostrophe in "cannot" is fine
+    // -- this is JS string content, not the .py source). The
+    // confirmation reads the displayName (the rename-aware label).
+    let proceed = false;
+    try {{
+      proceed = window.confirm('Delete "' + displayName
+                               + '"? This cannot be undone.');
+    }} catch (e) {{ proceed = false; }}
+    if (!proceed) return;
+    // ---- Mutation -----------------------------------------------------
+    // Remove from cfg.camera_paths / cameraPaths. We splice the live
+    // array (the same reference cfg.camera_paths aliases -- preserved by
+    // _camSelCreate / _camSelRename's defensive re-alias below). The
+    // alternative (rebuild via .filter) would BREAK the alias and lose
+    // any future mutation; splice keeps it stable.
+    if (pathIdx >= 0) {{
+      cameraPaths.splice(pathIdx, 1);
+    }}
+    if (camIdx >= 0 && camsArr) {{
+      camsArr.splice(camIdx, 1);
+    }}
+    // Defensive re-alias (same pattern _camSelCreate / _camSelRename
+    // already do, harmless if they were already the same reference).
+    cfg.camera_paths = cameraPaths;
+    // If the deleted camera was the saved default, re-point at the
+    // FIRST remaining camera's path id (current-camera fallback rule).
+    if (cfg.default_path_id === val) {{
+      const firstRemain = (cameraPaths[0] && cameraPaths[0].id) || null;
+      cfg.default_path_id = firstRemain;
+    }}
+    // ---- UI refresh ---------------------------------------------------
+    // Rebuild the dropdown so the deleted entry is gone, then bind to
+    // the FIRST remaining camera. _camSelApply's author branch fires
+    // _trajForceRebuild() + window.__editor.gzDetach() + window.__editor
+    // .tlRedraw() (the same hooks the v2-C P2 rename refine relies on
+    // -- consistent stale-overlay refresh after a binding change). For
+    // the create flow this hop-back is "use the newly created path id";
+    // for delete it is "use the first remaining path id" -- the same
+    // _camSelApply path, no new rebind logic.
+    _camSelBuildOptions();
+    const nextPathId = (cameraPaths[0] && cameraPaths[0].id) || null;
+    _camSelSyncing = true;
+    if (_camSel) {{
+      try {{ _camSel.value = nextPathId || _CAM_PERSP; }} catch (e) {{}}
+    }}
+    _camSelSyncing = false;
+    // Bind via the EXISTING apply path so the trajectory/gizmo/timeline
+    // rebuild against the new active camera (overlay-refresh hooks
+    // fire). If the post-delete state has no cameras at all (defended
+    // by guard 2, but belt-and-braces here), _camSelApply on the
+    // Perspective sentinel just stops any player and clears overlays.
+    _camSelApply(nextPathId || _CAM_PERSP);
+  }}
   function _camSelInit() {{
     if (!_camSel) return;
     // Build the camera options after the Perspective sentinel
@@ -2768,6 +2920,8 @@ _VIEWER_TEMPLATE = """\
     const _camMenuBtn = document.getElementById('cam-menu-btn');
     const _camMenuPop = document.getElementById('cam-menu-popup');
     const _camMenuRen = document.getElementById('cam-menu-rename');
+    // v2-C Phase 3: Delete menu item -- mirrors _camMenuRen.
+    const _camMenuDel = document.getElementById('cam-menu-delete');
     let _camMenuOutside = null;
     let _camMenuEsc = null;
     function _camMenuClose() {{
@@ -2833,6 +2987,18 @@ _VIEWER_TEMPLATE = """\
       _camMenuRen.addEventListener('click', () => {{
         _camMenuClose();
         _camSelRename();
+      }});
+    }}
+    // v2-C Phase 3: Delete handler -- closes the popup first (so the
+    // alert/confirm dialogs that may open are not obscured by it),
+    // then runs the guarded delete flow. _camSelDelete double-guards
+    // via ModeManager.is('author') so a devtools click in usermode is
+    // a no-op (defense-in-depth -- the kebab itself is CSS-hidden in
+    // user/embed via the T12-CSS region).
+    if (_camMenuDel) {{
+      _camMenuDel.addEventListener('click', () => {{
+        _camMenuClose();
+        _camSelDelete();
       }});
     }}
   }}
