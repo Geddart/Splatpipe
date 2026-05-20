@@ -14,6 +14,34 @@
 
 ---
 
+## Spec addenda 2026-05-20 — user authoring feedback round 1
+
+After testing the UX-5 band-aid commit (`491faa8`), the user reported
+three timeline-UX gaps via voice 2026-05-20 17:09 (verbatim):
+
+> "It is better, but I can still not scrub the timeline further than it
+> looks like one and a half seconds after the last keyframe. Also there
+> is no total time setting, which there should be. And the buttons to
+> skip between keyframes. Please weave that into the plan you are
+> already building."
+
+These three items are folded into the v1 design as additive contracts —
+no breaking schema change, no breaking module-contract change:
+
+1. **Timeline total-duration decoupled from last-keyframe** — new
+   optional `PathDict.total_duration_s: number | null` schema field.
+   See §3.7 + §4.1.
+2. **Total-time editor control** — number input + auto toggle in the
+   transport row (`_tlBarRow`). See §4.1.
+3. **Prev/Next-keyframe skip buttons + hotkeys** — `|◀` / `▶|`
+   buttons in `_tlBarRow`; `Ctrl+Left` / `Ctrl+Right` hotkeys (no
+   undo entry — navigation, not edit). See §4.1 + §6.5 hotkey table.
+
+All three are CameraPathModule-scope and ship in Phase 1 alongside the
+EditHistory contract. They are listed in the plan under §Phase 1 steps.
+
+---
+
 ## 0. Goal + non-goals
 
 ### Goal — v1 ("cinematic shell complete")
@@ -326,6 +354,49 @@ viewers receiving a v1-shape config ignore unknown keys; newer viewers
 receiving a pre-v1 config fall back to legacy defaults. R5 verified this
 is structurally safe: the rollout is purely additive.
 
+### 3.7 `PathDict.total_duration_s` — timeline scrub range (addendum 2026-05-20)
+
+`core/path_io.py:PathDict` gains a new optional field:
+
+```python
+class PathDict(TypedDict, total=False):
+    # ... existing fields ...
+    total_duration_s: float | None    # author-declared total duration in
+                                      # seconds; null/absent => derive from
+                                      # last keyframe (see below)
+```
+
+The timeline scrub range in the editor (and the playhead's max-time when
+`loop=False`) is derived as:
+
+```text
+if path.total_duration_s is not None and path.total_duration_s > 0:
+    range = [0, path.total_duration_s]
+else:
+    range = [0, max(last_kf.t, 10.0)]   # 10.0 fallback gives empty-path
+                                         # UX a sensible default scrub range
+```
+
+**Why:** today the timeline ceiling is tied to `last_kf.t`, which forces
+the user to record keyframes in chronological order — they cannot
+"reserve" the t=15-30s slot of a 30s path while still iterating on the
+opening shot. Decoupling unblocks the natural workflow: declare the
+total length first, then drop keyframes anywhere along it.
+
+**Backwards-compat:** absent / null behaves identically to today's
+behaviour (range = `[0, last_kf.t]`, fallback `10.0` for empty paths).
+Older viewers that don't read the field continue to derive the range
+from `last_kf.t`. No allow-list change is needed: `camera_paths` is
+already in `ALLOWED_PATCH_KEYS` and merges with whole-replace semantics
+— the new field rides inside the existing key.
+
+**Patch shape:** the SPCP1 token wrapping the `camera_paths` array
+carries `total_duration_s` per path, like any other path-scope field.
+`core/scene_cuts.py` validation accepts the new field (no-op).
+
+Editor-side ownership: **CameraPathModule** (§4.1 — the editor surface
+that authors this value).
+
 ---
 
 ## 4. Editor modules (per R6 contract)
@@ -345,9 +416,43 @@ observable (NOT direct cross-imports).
   the new contract; behaviour preserved byte-for-byte (output-pin
   invariant from the #118 modularization).
 - **Timeline lane**: existing horizontal scrubber + yellow diamonds.
+  The scrub-range ceiling is derived from `total_duration_s` (when set)
+  or falls back to `max(last_kf.t, 10.0)` (see §3.7).
 - **Overlay group**: existing trajectory ribbon + per-keyframe gizmo.
 - **`beginGesture("kf-drag")`** at the start of a diamond drag;
   `endGesture()` at mouseup → ONE undo entry per drag (R8 §4.2).
+
+#### 4.1.1 Transport-row controls (addendum 2026-05-20)
+
+The `_tlBarRow` transport row hosts the existing play/pause + scrub
+controls. v1 adds three additional controls per the user's authoring
+feedback (see top-of-spec addenda block):
+
+| Control | Visual | Behaviour |
+|---|---|---|
+| Total-time input | `[ 30 ] s total` (number input + unit label) | When **auto** is OFF, the number is editable and writes to `path.total_duration_s`. When **auto** is ON, the input is read-only and displays `max(last_kf.t, 10.0)`. |
+| Auto toggle | small button next to the input (`auto` / `manual`) | Toggles `path.total_duration_s` between `null` (auto) and the entered number (manual). Default = `auto` for new paths and for any path without the field (back-compat). |
+| `|◀` Prev-keyframe | left-pointing skip glyph | Jumps the playhead to the largest `kf.t` strictly LESS THAN the current playhead time. If no such kf exists, jumps to `t=0`. |
+| `▶|` Next-keyframe | right-pointing skip glyph | Jumps the playhead to the smallest `kf.t` strictly GREATER THAN the current playhead time. If no such kf exists, jumps to `total_duration_s` (or `last_kf.t` when no total is set). |
+
+**Sorted-time correctness.** The keyframes array is not guaranteed
+chronologically ordered (the editor permits dragging a diamond past its
+neighbours); prev/next must consult the **sorted-by-`t` view** as the
+source of truth, NOT the raw array order. The existing
+`16_editor_timeline.js_tmpl` already maintains a sorted-t cache for the
+diamond render; the skip buttons reuse it.
+
+**Undo policy (R8 §4.2 carry-over).**
+- Total-time input change → ONE EditHistory snapshot on commit
+  (`onBlur` or Enter — NEVER per keystroke; matches the gesture-start
+  principle, where the gesture here is "value-change-finalised").
+- Auto toggle change → ONE EditHistory snapshot on click.
+- Prev/Next-keyframe skip → NO EditHistory snapshot (navigation, not
+  edit; the playhead position itself is not part of the persisted cfg).
+
+**Hotkeys.** `Ctrl+Left` / `Ctrl+Right` are wired in `InteractionManager`
+to the same prev/next handlers. macOS uses `event.metaKey || event.ctrlKey`
+(same convention as the existing undo/redo hotkeys, §6.5).
 
 ### 4.2 `AnnotationModule` (refactor + add authoring)
 
@@ -700,6 +805,24 @@ undo state — by design, matches the "no auto-save" decision.
   (alternate). `Cmd+Z` / `Cmd+Y` / `Cmd+Shift+Z` on macOS via the same
   `event.metaKey || event.ctrlKey` check.
 - **Toast/HUD** on undo: brief "Undid: <label>" overlay (existing HudLayer).
+
+#### 6.5.1 Editor hotkey table (consolidated)
+
+The full editor hotkey table after the 2026-05-20 addenda:
+
+| Combo | Owner | Action | Undo entry? |
+|---|---|---|---|
+| `Ctrl+Z` / `Cmd+Z` | InteractionManager → EditHistory | Undo last gesture | n/a |
+| `Ctrl+Y` / `Cmd+Y` | InteractionManager → EditHistory | Redo | n/a |
+| `Ctrl+Shift+Z` / `Cmd+Shift+Z` | InteractionManager → EditHistory | Redo (alternate) | n/a |
+| `Ctrl+Left` / `Cmd+Left` | InteractionManager → CameraPathModule | Jump playhead to previous keyframe (sorted-t) | No (navigation) |
+| `Ctrl+Right` / `Cmd+Right` | InteractionManager → CameraPathModule | Jump playhead to next keyframe (sorted-t) | No (navigation) |
+| `Space` | InteractionManager → master playhead | Play / Pause | No |
+| `N` | InteractionManager → snap toggle | Toggle snap on/off (R1 pattern 5) | No |
+
+Hotkeys are wired centrally in `InteractionManager` and dispatched to
+module-owned handlers. The modifier convention (`event.metaKey ||
+event.ctrlKey`) is the same on every binding for Win/Mac parity.
 
 ### 6.6 New fragment
 
@@ -1120,6 +1243,19 @@ See §7.3.
    simultaneously with the first editor rollout?
 8. **Cloudflare Worker backend** — skip in v1 (per non-goals §0)? The
    stub in `save_backends/cloudflare.py` stays; no rollout activity.
+
+### 11.A Resolved by addendum 2026-05-20
+
+These questions were raised by the user's verbatim voice 2026-05-20
+17:09 and are CLOSED by the §Spec addenda block (top of spec) + §3.7 +
+§4.1.1 + §6.5.1:
+
+- **Timeline scrub ceiling beyond last keyframe** — resolved via the
+  new optional `PathDict.total_duration_s` field (§3.7) and the
+  total-time + auto-toggle transport controls (§4.1.1).
+- **Prev/Next-keyframe skip affordance** — resolved via the `|◀` /
+  `▶|` transport buttons + `Ctrl+Left` / `Ctrl+Right` hotkeys
+  (§4.1.1 + §6.5.1).
 
 ---
 

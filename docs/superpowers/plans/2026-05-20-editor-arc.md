@@ -35,11 +35,21 @@ verification" hard rules).
 
 ## Phase 1 — Foundation (EditorModule contract + EditHistory + module refactor)
 
-**Goal:** No new user-visible features. The existing 9 fragments using
+**Goal:** No new user-visible features beyond the 2026-05-20 addenda
+trio (timeline total-duration decoupling + total-time input/auto +
+prev/next keyframe buttons & hotkeys). The existing 9 fragments using
 the SceneView scaffold are refactored onto the new `EditorModule`
 contract; the EditHistory ring buffer is added; Ctrl+Z/Y work for
 the 3 refactored modules. All 7 deployed scenes still render
 byte-identical (output-pin invariant from #118 modularization).
+
+> **Addendum 2026-05-20 — user authoring feedback round 1.** Steps
+> 1.7a / 1.7b / 1.7c carry the three timeline-UX additions surfaced
+> by the user's voice 2026-05-20 17:09 after testing the UX-5
+> band-aid commit (`491faa8`). They are Phase-1-scoped because they
+> are CameraPathModule additions and ship alongside the EditHistory
+> contract that handles their undo semantics. See spec §3.7 + §4.1.1
+> + §6.5.1.
 
 Sub-skills needed: `superpowers:test-driven-development`,
 `superpowers:verification-before-completion`.
@@ -77,6 +87,40 @@ Sub-skills needed: `superpowers:test-driven-development`,
       `stateKey: ["camera_paths", "default_path_id", "start_view"]`.
       Wire `beginGesture("kf-drag")` at diamond-drag start +
       `endGesture()` at mouseup.
+- [ ] **1.7a Add `PathDict.total_duration_s` schema field
+      (addendum 2026-05-20; spec §3.7).** Edit
+      `src/splatpipe/core/path_io.py:PathDict` to add
+      `total_duration_s: float | None` (optional, default-absent).
+      Update `new_path()` to NOT set it (back-compat: absent = auto).
+      Add a small validator-style helper
+      (`path_io.py:effective_duration(path)`) returning the derived
+      scrub-range ceiling per the §3.7 rule. Update
+      `tests/test_path_io.py` (new test or extension) to cover the
+      auto / manual / fallback branches.
+- [ ] **1.7b Total-time input + auto toggle in `_tlBarRow`
+      (addendum 2026-05-20; spec §4.1.1).** Edit
+      `03_body_chrome.html_tmpl` to add the number-input + unit-label
+      (`[ NN ] s total`) and the small `auto` / `manual` toggle button
+      in the transport row. Edit `16_editor_timeline.js_tmpl` (and/or
+      the CameraPathModule glue from 1.7) so the scrub-range ceiling
+      reads `effective_duration(path)`; on commit (`onBlur` / Enter)
+      the input writes `path.total_duration_s` AND pushes ONE
+      EditHistory snapshot. Auto-toggle click writes `null` (auto) or
+      the current input value (manual) and ALSO pushes ONE snapshot.
+      Style block in `02b_styles_editor.css_tmpl`.
+- [ ] **1.7c Prev/Next-keyframe skip buttons + hotkeys
+      (addendum 2026-05-20; spec §4.1.1 + §6.5.1).** Edit
+      `03_body_chrome.html_tmpl` to add the `|◀` / `▶|` buttons in
+      `_tlBarRow` adjacent to play/pause. Wire to CameraPathModule
+      handlers that compute the sorted-by-`t` keyframe view and jump
+      the playhead to the strict-less-than / strict-greater-than
+      neighbour (fallbacks: `t=0` / `total_duration_s` per §4.1.1).
+      Wire `Ctrl+Left` / `Ctrl+Right` (with `event.metaKey ||
+      event.ctrlKey` for Mac parity) in `InteractionManager`. These
+      do NOT push undo entries (navigation, not edit). Add a small
+      Playwright probe in the contract test (1.12) confirming the
+      window-exposed CameraPathModule has `jumpPrevKf()` /
+      `jumpNextKf()` methods that move `window.__playhead.time`.
 - [ ] **1.8 Refactor AnnotationModule (render-only stub).** The viewer-
       side annotation render path (in `06_cfg.js_tmpl` or
       `07_setup_three_spark.js_tmpl` — verify with Grep before editing)
@@ -104,15 +148,25 @@ Sub-skills needed: `superpowers:test-driven-development`,
       of the 7 deployed slugs in `enduser` mode + `embed` mode + cold
       `?author=1`. Confirm pixel-identical (or at-least visually
       indistinguishable) to pre-Phase-1 screenshots; confirm Ctrl+Z
-      works after a drag on `kf-fehmarn`.
+      works after a drag on `kf-fehmarn`. Additionally (addendum
+      2026-05-20): on `kf-fehmarn ?author=1` confirm the scrub bar can
+      be dragged past `last_kf.t` when `total_duration_s` is set
+      manually (e.g. 30 s); confirm `Ctrl+Left` / `Ctrl+Right` jump
+      between recorded keyframes; confirm auto-toggle round-trips
+      between `null` and the entered value without breaking the scrub
+      range.
 - [ ] **1.15 Commit + push.** Commit message starts
       `feat(editor): phase 1 — EditorModule contract + EditHistory`.
 
 ### Output
 
-A green test suite (~715 tests if pytest was 713). All 7 deployed
-scenes render byte-identical. Ctrl+Z works on a camera-path keyframe
-drag in kf-fehmarn. No new user-visible features. The contract +
+A green test suite (~715-717 tests if pytest was 713). All 7 deployed
+scenes render byte-identical (modulo the transport-row additions
+from 1.7a-c). Ctrl+Z works on a camera-path keyframe drag in
+kf-fehmarn. Only user-visible additions are the 2026-05-20 addenda
+trio (total-time input + auto toggle + prev/next keyframe buttons +
+`Ctrl+Left` / `Ctrl+Right` hotkeys); they unblock the
+"author-needs-to-scrub-past-last-kf" workflow. The contract +
 history are the platform every subsequent phase builds on.
 
 ---
@@ -545,7 +599,7 @@ shipped.
 | Phase | New tests | Cumulative test count (approx; baseline 713) |
 |---|---:|---:|
 | Baseline | — | 713 |
-| Phase 1 | +2 (history, contract) | 715 |
+| Phase 1 | +2 (history, contract) + extension of `test_path_io.py` for `total_duration_s` (addendum 2026-05-20) | ~715-717 |
 | Phase 2 | +3 (img upload, pano schema, pub schema_version) | 718 |
 | Phase 3 | 0 (rollout, not code) | 718 |
 | Phase 4 | +1 (annotation editor) | 719 |
