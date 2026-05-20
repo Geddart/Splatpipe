@@ -9,7 +9,7 @@ CLI-first Gaussian splatting pipeline. Takes COLMAP data through: auto-clean →
 ```bash
 cd H:\001_ProjectCache\1000_Coding\Splatpipe
 pip install -e ".[dev]"
-pytest tests/ -v                    # Run tests (593 collected; 567 passed, 26 skipped clean, ~25s)
+pytest tests/ -v                    # Run tests (666 collected; 639 passed, 26 skipped, 1 byte-lock failure clean, ~25s)
 splatpipe --help                    # CLI commands
 splatpipe web                       # Launch dashboard
 ```
@@ -44,7 +44,7 @@ splatpipe/                    # repo root
       deploy_cmd.py           # splatpipe export --mode folder|cdn
       serve_cmd.py            # splatpipe serve [--port 8080]
       run_cmd.py              # splatpipe run (full pipeline)
-      web_cmd.py              # splatpipe web [--port 8000]
+      web_cmd.py              # splatpipe web [--port 8000] (default host 127.0.0.1; --host/--unsafe-network for LAN)
       status_cmd.py           # splatpipe status
       path_cmd.py             # splatpipe path-import + path-import-colmap (v0.6+)
       build_lod_cmd.py        # splatpipe build-lod (Spark .rad cache prime, v0.6+)
@@ -144,6 +144,7 @@ splatpipe/                    # repo root
     test_php_save_oracle.py        # PHP save adapter cross-language merge oracle (v0.8+)
     test_cloudflare_save_oracle.py # Cloudflare Worker save cross-language merge oracle (v0.8+)
     test_publish_config_sanitize.py # Public viewer-config sanitiser + publish_scene secret-leak regression (bug-audit #3; v0.8+)
+    test_web_cmd_security.py  # `splatpipe web` default-loopback + --unsafe-network opt-in (bug-audit #5; v0.8+)
     manual/                   # Browser harnesses (not collected): keyframe-editor.html, pc-compare.html, etc.
 ```
 
@@ -367,7 +368,7 @@ Key config sections: `[tools]`, `[colmap_clean]`, `[postshot]` (profile, gpu, ma
 ## Tests
 
 ```bash
-pytest tests/ -v              # 593 collected (567 passed, 26 skipped clean-committed)
+pytest tests/ -v              # 666 collected (639 passed, 26 skipped, 1 byte-lock failure)
 pytest tests/ -k colmap       # Just COLMAP tests
 pytest tests/ -k integration  # End-to-end with tiny data
 pytest tests/ -k trainers     # Trainer abstraction tests

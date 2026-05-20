@@ -144,8 +144,11 @@ splatpipe set-camera-path TOK   # Apply a viewer-emitted SPCP1 camera-path token
 splatpipe publish -p .          # Deploy to a PERMANENT, redeploy-safe slug URL
 splatpipe status                # Show project state
 splatpipe run                   # Run full pipeline
-splatpipe web                   # Launch web dashboard
+splatpipe web                   # Launch web dashboard (localhost only)
+splatpipe web --unsafe-network  # Launch dashboard on 0.0.0.0 (LAN; no auth, prints warning)
 ```
+
+> **Security:** `splatpipe web` binds to `127.0.0.1` by default. The dashboard has no authentication and exposes filesystem browsing + OS-level open actions, so LAN exposure requires explicit opt-in (`--host <addr>` or `--unsafe-network`).
 
 ## Requirements
 
