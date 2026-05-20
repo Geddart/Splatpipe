@@ -2203,6 +2203,18 @@ _VIEWER_TEMPLATE = """\
   let _hidAt = 0;
 
   const hud = document.getElementById('path-hud');
+  // UX-3 (2026-05-20): paused-at-scrub state. Set by the scrub input
+  // handler (instead of the old advancing-_t0 hack); read by the
+  // _trajLayer.update() per-frame rebase below (T16-TRAJ region) so
+  // the tick() player block samples _pausedAt every frame and the
+  // camera holds at the scrubbed frame. Cleared by startPath /
+  // stopPath. _pausedAtPlayer is an identity discriminator: if a
+  // bench/clip launcher swaps _player to a DIFFERENT object the
+  // rebase becomes a no-op (no clobber of bench _t0). Region-
+  // interior to T19-JS -- declared INSIDE the START anchor below so
+  // the byte-lock remainder is byte-IDENTICAL (recipe 2c).
+  let _pausedAt = null;
+  let _pausedAtPlayer = null;
   const selEl = document.getElementById('path-select');
   const playBtn = document.getElementById('path-play');
   const stopBtn = document.getElementById('path-stop');
@@ -2586,6 +2598,49 @@ _VIEWER_TEMPLATE = """\
       try {{
         if (window.__editor && typeof window.__editor.tlRedraw ===
             'function') {{ window.__editor.tlRedraw(); }}
+      }} catch (e) {{}}
+      // UX-2 (2026-05-20): snap the viewport pose to the newly-bound
+      // path's current scrub frame so the author SEES where the
+      // camera lives. A6 (scrub-release-no-autoplay) is about NOT
+      // auto-RESUMING after a scrub release -- an EXPLICIT dropdown
+      // bind is a fresh selection where the user expects the camera
+      // to TELEPORT-PREVIEW. We sample the pose at the current scrub
+      // frac (0 if no prior scrub), write camera + orbit-target, and
+      // do NOT touch _player/_t0/_pausedAt -- so subsequent Play /
+      // scrub behaviour is unchanged. If a prior scrub left the
+      // player paused on a DIFFERENT path we stopPath() first so the
+      // stale player does not keep advancing past the snapped pose.
+      try {{
+        const apPath = cameraPaths.find(x => x && x.id === val);
+        if (apPath) {{
+          const pv = buildPlayer(apPath);
+          if (pv && pv.duration > 0) {{
+            const tFrac = scrubEl
+              ? Math.max(0, Math.min(1,
+                  (parseFloat(scrubEl.value) || 0) / 1000))
+              : 0;
+            const tSnap = tFrac * pv.duration;
+            const s = sampleAt(pv, tSnap);
+            if (s && s.pos) {{
+              if (_player && _activePathId && _activePathId !== val) {{
+                try {{ stopPath(); }} catch (e) {{}}
+              }}
+              camera.position.set(s.pos[0], s.pos[1], s.pos[2]);
+              camera.quaternion.set(s.quat[0], s.quat[1], s.quat[2], s.quat[3]);
+              if (typeof s.fov === 'number' && camera.isPerspectiveCamera) {{
+                camera.fov = s.fov;
+                camera.updateProjectionMatrix();
+              }}
+              if (controls && controls.target) {{
+                const _fwd = new THREE.Vector3(0, 0, -1)
+                  .applyQuaternion(camera.quaternion);
+                controls.target.copy(camera.position)
+                  .addScaledVector(_fwd, 5);
+                controls.update();
+              }}
+            }}
+          }}
+        }}
       }} catch (e) {{}}
     }}
   }}
@@ -3014,9 +3069,24 @@ _VIEWER_TEMPLATE = """\
   function startPath(pathId) {{
     const p = cameraPaths.find(x => x.id === pathId);
     if (!p) return;
+    // UX-3 (2026-05-20): RESUME from _pausedAt when Play is pressed
+    // while the player was scrub-paused on THIS path; else fresh
+    // start at t=0 (the original behaviour). The discriminator is
+    // the prior _activePathId AND _pausedAtPlayer object identity --
+    // a bench/clip launcher in between would have swapped _player so
+    // _pausedAtPlayer !== <whatever bench set> and we naturally fall
+    // back to the fresh-start branch. Read BEFORE buildPlayer so we
+    // do not pick up the freshly-built player as the discriminator.
+    const _resumeT = (_pausedAt !== null && _activePathId === pathId &&
+      _pausedAtPlayer === _player) ? _pausedAt : null;
     _player = buildPlayer(p);
     if (!_player) {{ alert('Path needs at least 2 keyframes.'); return; }}
-    _t0 = performance.now();
+    // Clear paused state (we are starting/resuming playback now).
+    _pausedAt = null; _pausedAtPlayer = null;
+    const _sp = _player.playSpeed || 1.0;
+    _t0 = _resumeT !== null
+      ? performance.now() - (_resumeT / _sp) * 1000
+      : performance.now();
     _activePathId = pathId;
     controls.enabled = false;
     // Route the existing camera-ownership through InteractionManager
@@ -3034,6 +3104,10 @@ _VIEWER_TEMPLATE = """\
   }}
   function stopPath() {{
     _player = null; _activePathId = null; _lastTriggeredAnnotation = null;
+    // UX-3 (2026-05-20): clear paused-scrub state; this is the ONLY
+    // explicit teardown path (besides startPath's clear) so a stale
+    // _pausedAt never survives across a real stop.
+    _pausedAt = null; _pausedAtPlayer = null;
     controls.enabled = true;
     InteractionManager.releasePointer('player');
     markerObjs.forEach(m => m.el.querySelector('.ann-dot').classList.remove('path-active'));
@@ -3053,6 +3127,17 @@ _VIEWER_TEMPLATE = """\
     }}
     const t = (parseFloat(scrubEl.value) / 1000) * _player.duration;
     _t0 = performance.now() - (t / (_player.playSpeed || 1.0)) * 1000;
+    // UX-3 (2026-05-20): PAUSE at scrub time. The _trajLayer.update()
+    // per-frame rebase below (T16-TRAJ region) re-pins _t0 every
+    // frame so the tick() player block samples ~_pausedAt instead of
+    // advancing freely (the old behaviour where releasing the scrub
+    // mid-drag left the camera auto-playing). _activePathId is set so
+    // a subsequent Play press resumes from this paused frame.
+    // _pausedAtPlayer is the identity discriminator -- a bench/clip
+    // launcher that reassigns _player makes the rebase a no-op.
+    _pausedAt = t;
+    _pausedAtPlayer = _player;
+    if (selEl && selEl.value) _activePathId = selEl.value;
     _pathIconSync();   // A1: scrub sets _player directly -> keep glyph in sync
   }});
   // Pause (don't teleport) the path player when the tab is backgrounded.
@@ -4727,9 +4812,19 @@ _VIEWER_TEMPLATE = """\
   // large path made every dot a fat orange blob that merged into
   // one solid orange band when framed from far back). Near-white,
   // modest opacity, thin.
-  const _TRAJ_TICK_PX = 2.2;          // fixed point size, in px
+  // UX-4 (2026-05-20): bumped 2.2 -> 3.5 px (still ≤4.0 -- the
+  // test_motion_ticks_are_tiny_white_and_line_has_gradient cap). The
+  // user reported the ticks "gone" from the live editor: at 2.2 px
+  // with sizeAttenuation:false a tick rasterises to ~2 device pixels
+  // on a non-Retina display and ~4 device px on Retina, but transparency
+  // + alpha blending against the gradient line at the SAME renderOrder
+  // (11) makes them visually disappear into the line. 3.5 px gives ~7
+  // device px on Retina; the renderOrder bump (11 -> 13, see _trajRebuild
+  // below) draws the ticks AFTER the line so transparent blending no
+  // longer hides them. _TRAJ_DOT_STEPS (240) is unchanged.
+  const _TRAJ_TICK_PX = 3.5;          // fixed point size, in px
   const _TRAJ_TICK_COL = 0xeaf0f6;    // near-white (cool, not pure)
-  const _TRAJ_TICK_OPACITY = 0.7;     // delicate, not a hard mass
+  const _TRAJ_TICK_OPACITY = 0.85;    // bumped from 0.7 -- visible w/o solid
   // Motion LINE gradient: a THIN polyline (LineBasicMaterial
   // linewidth is 1 on most platforms -- that is the desired look,
   // never faked thick) with a SUBTLE per-vertex colour ramp along
@@ -4923,6 +5018,26 @@ _VIEWER_TEMPLATE = """\
     // camera; never in cfg). Region-interior to T16-TRAJ (the
     // byte-lock proves this guard moves nothing outside it).
     const _cs = document.getElementById('camera-select');
+    // UX-1 (2026-05-20): in AUTHOR mode the Perspective sentinel is
+    // only a CAMERA-CONTROL state (free-fly OrbitControls), NOT a
+    // "hide the editor overlay" state -- the user expects the
+    // trajectory / frusta / bottom-timeline to STAY visible while
+    // they free-fly to inspect a keyframe. Fall back to the
+    // last-bound real path (selEl mirrors the last non-Perspective
+    // dropdown value -- _camSelApply binds selEl but leaves it ALONE
+    // on the sentinel), else cfg.default_path_id, else the first
+    // camera. Using _CAM_PERSP (not the raw sentinel string)
+    // preserves the FIVE-spot literal count the T20-CAMSEL-DOM
+    // byte-lock harness asserts. End-user / embed still hide as
+    // before (the original guard literal below is preserved verbatim
+    // so the byte-lock discriminator stays).
+    if (_cs && _cs.value === _CAM_PERSP && ModeManager.is('author')) {{
+      const fb = (selEl && selEl.value && selEl.value !== _CAM_PERSP)
+        ? selEl.value : (cfg.default_path_id || null);
+      let pf = fb ? cameraPaths.find(x => x && x.id === fb) : null;
+      if (!pf && cameraPaths.length) pf = cameraPaths[0];
+      return pf || null;
+    }}
     if (_cs && _cs.value === '__perspective__') return null;
     // The dropdown's current value is the authored active path
     // (set to cfg.default_path_id at init, else the first option).
@@ -5165,7 +5280,14 @@ _VIEWER_TEMPLATE = """\
           sizeAttenuation: false, opacity: _TRAJ_TICK_OPACITY }});
         m.depthTest = false; m.depthWrite = false; m.transparent = true;
         _trajDots = new THREE.Points(g, m);
-        _trajDots.renderOrder = 11;
+        // UX-4 (2026-05-20): bumped from 11 -> 13 so the ticks draw
+        // AFTER the gradient line + frusta (both at 11) and the
+        // active-key ring sprite (at 12). With same renderOrder +
+        // transparent + depthTest off three's transparent-sort is
+        // unstable and the dots were getting blended UNDER the line
+        // -- 13 puts them definitively on top. (Tangent handles are
+        // also at 13 but they are sparse and never overlap a tick.)
+        _trajDots.renderOrder = 13;
         _trajGroup.add(_trajDots);
       }}
     }}
@@ -5301,6 +5423,25 @@ _VIEWER_TEMPLATE = """\
     node: _trajGroup,
     update() {{
       if (!ModeManager.is('author')) return;
+      // UX-3 (2026-05-20): per-frame _t0 rebase that PINS the player
+      // at _pausedAt so a scrub-release leaves the camera frozen at
+      // the released frame. The tick() player block (OUTSIDE every
+      // excised region; cannot be modified) reads
+      // `(performance.now() - _t0)/1000 * sp` and writes the camera;
+      // by rebasing _t0 to make that expression yield _pausedAt at
+      // each frame's "now", the per-frame advance is ~one frame
+      // (16 ms at 60fps) ahead of _pausedAt instead of growing
+      // unboundedly -- imperceptible "hold" instead of auto-play.
+      // Gated on the _pausedAtPlayer identity discriminator so a
+      // bench/clip launcher that swaps _player to a NEW object turns
+      // the rebase into a no-op (the bench's own _t0 stays). Runs
+      // only in author mode (this layer's modes=['author']); end-user
+      // / embed never reach here, so the bench paths the 6 live
+      // scenes use are untouched. No new rAF.
+      if (_player && _pausedAt !== null && _pausedAtPlayer === _player) {{
+        const _sp = _player.playSpeed || 1.0;
+        _t0 = performance.now() - (_pausedAt / _sp) * 1000;
+      }}
       // A7: lazily load the anti-aliased fat-line addon (region-
       // interior dynamic import; failure-safe). Kicked off here off
       // the EXISTING per-frame tick -- NO new rAF. _fatEnsure()
@@ -5961,6 +6102,18 @@ _VIEWER_TEMPLATE = """\
         const np = buildPlayer(p);
         if (np) {{
           _player = np;
+          // UX-3 (2026-05-20): keep the paused-scrub identity
+          // discriminator alive across an in-place player rebuild.
+          // Without this the next _trajLayer.update() rebase tick
+          // sees _pausedAtPlayer !== _player (stale reference to the
+          // pre-edit player), the rebase becomes a no-op, and a kf
+          // edit while the user was scrub-paused would silently
+          // resume playback. Clamp _pausedAt to the new duration too
+          // (the edit may have shortened the path).
+          if (_pausedAt !== null) {{
+            _pausedAtPlayer = np;
+            _pausedAt = Math.max(0, Math.min(_pausedAt, np.duration || 0));
+          }}
           const sp = np.playSpeed || 1.0;
           const ht = Math.max(0, Math.min(held, np.duration));
           _t0 = performance.now() - (ht / sp) * 1000;
@@ -6140,24 +6293,23 @@ _VIEWER_TEMPLATE = """\
       if (_tlDragMode === 'box') {{
         // Marquee finished; keep whatever fell inside it.
       }}
-      // A6: releasing a ruler-band scrub drag must NOT leave the path
-      // auto-playing. _tlScrubToTime dispatched a real #path-scrub
-      // 'input' which set _player + _t0 (in the past); with no paused
-      // state a non-null _player IS playing (the render loop keeps
-      // advancing _t0). Pause it via the EXISTING stopPath() so
-      // _player === null and the render loop freezes the camera at the
-      // last scrubbed pose; _tlPlayheadT() already falls back to
-      // scrubEl when !_player so the playhead stays put. Confined to
-      // the 'play'/scrub branch (the other drag modes never touched
-      // _player). NOTE: read the flag BEFORE the reset below clears it.
-      const _wasScrub = (_tlDragMode === 'play') || _tlScrubbing;
+      // UX-3 (2026-05-20): no longer stopPath() on scrub release. The
+      // A6 stopPath() call here (the previous fix) set _player=null
+      // which RE-ENABLED OrbitControls; the very next tick() ran
+      // `if (!_player) controls.update();` which clobbered the camera
+      // from the STALE pre-scrub spherical -- the "jumps back to
+      // Perspective" symptom B. The scrub input handler now sets
+      // _pausedAt + _pausedAtPlayer; the _trajLayer.update() per-
+      // frame rebase above re-pins _t0 so the tick() player block
+      // samples ~_pausedAt every frame and the camera holds at the
+      // released pose. _player stays alive so `if (!_player)
+      // controls.update()` is gated off -- no clobber. To exit pause:
+      // press Play (startPath resumes from _pausedAt), Stop, or
+      // Perspective in the camera dropdown (both stopPath).
       _tlDragMode = '';
       _tlDragKf = -1;
       _tlScrubbing = false;
       _tlScaleBase = null;
-      if (_wasScrub && _player) {{
-        try {{ stopPath(); }} catch (e) {{}}
-      }}
       _tlDraw();
     }}
     _tlLane.addEventListener('pointerdown', _tlOnDown);

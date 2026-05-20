@@ -2197,6 +2197,132 @@ def test_real_gizmo_handle_drag_wiring_present_and_author_tour_suppressed():
 
 
 # --------------------------------------------------------------------------
+# 2026-05-20 author-mode UX batch (UX-1 / UX-3 / UX-4)
+# --------------------------------------------------------------------------
+# The user reported four bugs in the live ?author=1 editor on the deployed
+# kf-fehmarn scene. All four fixes land STRICTLY INSIDE the existing
+# excised regions (T16-TRAJ / T19-JS) so the byte-lock remainder pin
+# (_PRE_TASK20_REMAINDER_LEN = 151172) is UNCHANGED (recipe 2c). Each
+# fix gets a structural marker assertion here; the visible behaviour is
+# verified end-to-end via Playwright on a deployed real-pixel slug
+# (the manual harness in tests/manual/). NEGATIVE-CONTROLLED against the
+# committed pre-fix HEAD (5190301) -- the same markers are ABSENT there.
+_AUTHOR_UX_2026_05_20_MARKERS = (
+    # UX-1: _trajActivePath AUTHOR-mode fallback (Perspective stays visible)
+    "_cs.value === _CAM_PERSP && ModeManager.is('author')",
+    # UX-2: _camSelApply author-branch pose snap on bind
+    "// UX-2 (2026-05-20): snap the viewport pose to the newly-bound",
+    # UX-3: _pausedAt state machine
+    "let _pausedAt = null;",
+    "let _pausedAtPlayer = null;",
+    "_pausedAtPlayer === _player",
+    # UX-4: tick px bumped + renderOrder bump
+    "_TRAJ_TICK_PX = 3.5",
+    "_trajDots.renderOrder = 13",
+)
+
+
+def test_2026_05_20_author_ux_markers_present_and_negative_controlled():
+    """The four author-mode UX fixes user-reported via Telegram on
+    2026-05-20 must each leave a structural marker in the rendered
+    HTML. NEGATIVE-CONTROLLED against the pre-fix HEAD (5190301) --
+    every marker is ABSENT there, so this test provably FAILS against
+    the pre-fix code (a genuine discriminator). All four fixes are
+    region-interior to T16-TRAJ / T19-JS (the byte-lock test above
+    independently proves the remainder pin is unchanged)."""
+    html = html_for("HarnessScene")
+    for mk in _AUTHOR_UX_2026_05_20_MARKERS:
+        assert mk in html, f"2026-05-20 UX marker missing: {mk!r}"
+
+    # UX-1 invariant: _trajActivePath now has TWO Perspective checks --
+    # the AUTHOR-mode fallback FIRST (via _CAM_PERSP const, no new raw
+    # literal so the FIVE-spot count below stays) then the original
+    # end-user/embed guard literal AFTER (preserved verbatim for the
+    # byte-lock discriminator). Order matters: the author fallback
+    # must run BEFORE the end-user return-null.
+    fn_i = html.index("function _trajActivePath()")
+    author_i = html.index(
+        "_cs.value === _CAM_PERSP && ModeManager.is('author')", fn_i)
+    enduser_i = html.index(
+        "if (_cs && _cs.value === '__perspective__') return null;", fn_i)
+    assert author_i < enduser_i, (
+        "UX-1: author-mode Perspective fallback must precede the "
+        "end-user return-null guard"
+    )
+    # The "__perspective__" literal count must STILL be 5 -- using
+    # _CAM_PERSP (not the raw string) in the new fallback keeps the
+    # T20-CAMSEL-DOM invariant. The comment "the sentinel" must NOT
+    # have re-introduced the literal.
+    assert html.count("__perspective__") == 5
+
+    # UX-3 invariant: the per-frame _t0 rebase MUST live inside
+    # _trajLayer.update() (so end-user / embed / clip-mode never reach
+    # it -- the layer's modes=['author'] gate). Structural: between
+    # "_trajLayer = {" and the next "OverlayScene.register" call.
+    layer_i = html.index("const _trajLayer = {")
+    register_i = html.index("OverlayScene.register(_trajLayer)", layer_i)
+    rebase_i = html.find(
+        "if (_player && _pausedAt !== null && _pausedAtPlayer === _player)",
+        layer_i, register_i)
+    assert rebase_i > 0, (
+        "UX-3: per-frame _t0 rebase missing from _trajLayer.update()"
+    )
+
+    # UX-3 invariant: _tlOnUp must NOT call stopPath any more (the
+    # previous A6 fix; replaced by the _pausedAt rebase). The exact
+    # pre-fix construct was `try {{ stopPath(); }} catch (e) {{}}`
+    # inside a `if (_wasScrub && _player) {{` block -- search for the
+    # gated call form (the comment that references stopPath() is fine).
+    onup_i = html.index("function _tlOnUp() {")
+    onup_end = html.index("_tlLane.addEventListener('pointerdown'", onup_i)
+    body = html[onup_i:onup_end]
+    assert "if (_wasScrub && _player)" not in body, (
+        "UX-3: _tlOnUp must no longer carry the A6 `if (_wasScrub && "
+        "_player) { stopPath(); }` block (replaced by the _pausedAt + "
+        "_trajLayer.update() rebase)"
+    )
+    assert "_wasScrub" not in body, (
+        "UX-3: _tlOnUp must no longer declare _wasScrub (the A6 flag)"
+    )
+
+    # UX-4 invariant: bumped tick px is the active constant the
+    # PointsMaterial reads (assert the construction line uses the bumped
+    # variable + size, not a hard-coded 2.2).
+    assert (
+        "color: _TRAJ_TICK_COL, size: _TRAJ_TICK_PX," in html
+    ), "UX-4: PointsMaterial must still read _TRAJ_TICK_PX (not a literal)"
+
+    # (NEGATIVE CONTROL) the committed pre-fix HEAD (5190301) -- the
+    # SAME markers are ABSENT there.
+    pre = _git_blob_module(
+        "5190301:src/splatpipe/viewers/spark/template.py")
+    pre_html = pre.html_for("HarnessScene")
+    for mk in _AUTHOR_UX_2026_05_20_MARKERS:
+        assert mk not in pre_html, (
+            f"negative control FAILED: 2026-05-20 UX marker {mk!r} "
+            "unexpectedly already in the pre-fix 5190301 template "
+            "(the test would not discriminate the fix)"
+        )
+    # The pre-fix _trajActivePath has the ORIGINAL single guard only --
+    # no author-mode fallback line.
+    pre_fn_i = pre_html.index("function _trajActivePath()")
+    pre_fn_end = pre_html.index("function _trajKfSig", pre_fn_i)
+    assert "ModeManager.is('author')" not in pre_html[pre_fn_i:pre_fn_end], (
+        "negative control FAILED: pre-fix 5190301 _trajActivePath "
+        "unexpectedly already branches on author mode"
+    )
+    # Pre-fix _tlOnUp DID carry the A6 `if (_wasScrub && _player) {{
+    # stopPath(); }}` block this UX-3 fix replaces.
+    pre_onup_i = pre_html.index("function _tlOnUp() {")
+    pre_onup_end = pre_html.index(
+        "_tlLane.addEventListener('pointerdown'", pre_onup_i)
+    assert "if (_wasScrub && _player)" in pre_html[pre_onup_i:pre_onup_end], (
+        "negative control FAILED: pre-fix 5190301 _tlOnUp unexpectedly "
+        "lacks the A6 `if (_wasScrub && _player) { stopPath(); }` block"
+    )
+
+
+# --------------------------------------------------------------------------
 # (b) explicit kwargs are baked through verbatim
 # --------------------------------------------------------------------------
 
