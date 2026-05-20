@@ -1365,6 +1365,159 @@ async def upload_audio(request: Request, project_path: str):
     return JSONResponse({"ok": True, "path": f"assets/audio/{safe_name}"})
 
 
+# Allow-listed image extensions for the upload-image route.
+# Matched case-insensitively against ``Path(name).suffix``.
+# Panorama backdrop assets (Phase 3 prep for the camera-keyframe editor's
+# PanoramaModule): only common web-deliverable LDR formats. ``.hdr`` /
+# ``.exr`` (HDR) and ``.webp`` are deliberately excluded per R7's 4K
+# equirectangular JPG size guidance -- favour deny-by-default.
+_IMAGE_UPLOAD_ALLOWED_EXTS = {".jpg", ".jpeg", ".png"}
+# Defense-in-depth size cap for image uploads. 5 MiB is well above any
+# realistic 4K equirectangular JPG (typically 2-4 MB) and bounds mobile
+# load to a reasonable budget.
+_IMAGE_UPLOAD_MAX_BYTES = 5 * 1024 * 1024
+
+
+@router.post("/{project_path:path}/upload-image")
+async def upload_image(request: Request, project_path: str):
+    """Upload a panorama backdrop image to the project's assets/panorama/ folder.
+
+    Hardened mirror of the #107 ``/upload-audio`` route:
+
+    * Strip path components via ``Path(name).name`` and reject any change.
+    * Reject empty / ``.`` / ``..`` / dotfile names.
+    * Allow-list image extensions (``.jpg`` / ``.jpeg`` / ``.png``,
+      case-insensitive). HDR formats (``.hdr`` / ``.exr``) and ``.webp``
+      are excluded per R7.
+    * Cap the upload at 5 MiB (Content-Length pre-check + streaming
+      guard so a lying header cannot bypass it).
+    * Defense-in-depth: resolve the destination and confirm it lives
+      inside the project's ``assets/panorama`` directory via the shared
+      ``core/path_safety.ensure_contained`` helper (audit #6 chokepoint).
+    * Collision policy: reject existing names with 409. Panorama is
+      one-per-scene; re-upload must be explicit.
+    """
+    form = await request.form()
+    upload = form.get("file")
+    if not upload or not hasattr(upload, "filename"):
+        return JSONResponse({"ok": False, "error": "No file uploaded"}, status_code=400)
+
+    raw_name = upload.filename or ""
+
+    # --- Filename sanitisation ----------------------------------------------
+    # Path(name).name on Windows still resolves backslashes as separators,
+    # but not on POSIX; normalise both first so the rejection is OS-uniform.
+    if "/" in raw_name or "\\" in raw_name:
+        return JSONResponse(
+            {"ok": False, "error": "Filename must not contain path separators"},
+            status_code=400,
+        )
+    # Drive-letter prefix like ``C:foo`` -- Path.name keeps only ``foo`` on
+    # POSIX but the COLON itself is a hard-no for a destination filename on
+    # Windows; reject it everywhere for parity.
+    if ":" in raw_name:
+        return JSONResponse(
+            {"ok": False, "error": "Filename must not contain path separators"},
+            status_code=400,
+        )
+    safe_name = Path(raw_name).name
+    if safe_name != raw_name:
+        # ``Path(name).name`` removed something -- a separator, a drive
+        # prefix, etc. Per the audit, reject rather than try to recover.
+        return JSONResponse(
+            {"ok": False, "error": "Filename was rewritten by sanitiser"},
+            status_code=400,
+        )
+    if not safe_name or safe_name in (".", "..") or safe_name.startswith("."):
+        return JSONResponse(
+            {"ok": False, "error": "Filename must not be empty or a dotfile"},
+            status_code=400,
+        )
+
+    # --- Extension allow-list -----------------------------------------------
+    if Path(safe_name).suffix.lower() not in _IMAGE_UPLOAD_ALLOWED_EXTS:
+        return JSONResponse(
+            {"ok": False, "error": "Unsupported image file extension"},
+            status_code=400,
+        )
+
+    # --- Size cap (upfront) -------------------------------------------------
+    cl_header = request.headers.get("content-length")
+    if cl_header is not None:
+        try:
+            if int(cl_header) > _IMAGE_UPLOAD_MAX_BYTES:
+                return JSONResponse(
+                    {"ok": False, "error": "Image file is too large"},
+                    status_code=413,
+                )
+        except ValueError:
+            # Malformed Content-Length -- fall through to the streaming guard.
+            pass
+
+    proj = Project(Path(project_path))
+    panorama_dir = proj.root / "assets" / "panorama"
+    panorama_dir.mkdir(parents=True, exist_ok=True)
+    dest = panorama_dir / safe_name
+
+    # --- Defense-in-depth containment check ---------------------------------
+    # Require ``dest`` to live INSIDE ``panorama_dir`` after resolution.
+    # Uses the shared ``ensure_contained`` helper (audit #6) so the
+    # sibling-prefix attack vector is closed identically here and in every
+    # other containment callsite in the project. The earlier filename
+    # sanitiser already rejects path separators; this is the second line.
+    try:
+        ensure_contained(dest, panorama_dir)
+    except PathContainmentError:
+        return JSONResponse(
+            {"ok": False, "error": "Resolved destination is outside the panorama directory"},
+            status_code=400,
+        )
+
+    # --- Collision handling --------------------------------------------------
+    # Panorama is one-per-scene; reject re-upload of the same name with 409
+    # so a user must explicitly delete + re-upload rather than silently
+    # clobbering a deliberate backdrop.
+    if dest.exists():
+        return JSONResponse(
+            {"ok": False, "error": f"File already exists: {safe_name}"},
+            status_code=409,
+        )
+
+    # --- Streaming read with size guard --------------------------------------
+    # Defensive against a missing/lying Content-Length: read in chunks and
+    # abort if the total exceeds the cap, without ever fully materialising
+    # the body in memory beyond the cap.
+    written = 0
+    try:
+        with open(dest, "wb") as fh:
+            while True:
+                chunk = await upload.read(64 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > _IMAGE_UPLOAD_MAX_BYTES:
+                    fh.close()
+                    try:
+                        dest.unlink()
+                    except OSError:
+                        pass
+                    return JSONResponse(
+                        {"ok": False, "error": "Image file is too large"},
+                        status_code=413,
+                    )
+                fh.write(chunk)
+    except Exception:
+        # Best-effort cleanup of any partial write.
+        try:
+            if dest.exists():
+                dest.unlink()
+        except OSError:
+            pass
+        raise
+
+    return JSONResponse({"ok": True, "path": f"assets/panorama/{safe_name}"})
+
+
 # --- Export settings ---
 
 @router.post("/{project_path:path}/update-export-mode")
