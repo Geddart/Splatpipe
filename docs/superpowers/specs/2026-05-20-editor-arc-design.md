@@ -37,8 +37,10 @@ no breaking schema change, no breaking module-contract change:
    buttons in `_tlBarRow`; `Ctrl+Left` / `Ctrl+Right` hotkeys (no
    undo entry — navigation, not edit). See §4.1 + §6.5 hotkey table.
 
-All three are CameraPathModule-scope and ship in Phase 1 alongside the
-EditHistory contract. They are listed in the plan under §Phase 1 steps.
+All three are CameraPathModule-scope and ship in Phase 2 (Foundation)
+alongside the EditHistory contract — note Phase 2 in the post-reorder
+plan ordering (per Q7 / §11.7); the pre-reorder plan called this
+Phase 1. They are listed in the plan under §Phase 2 steps.
 
 ---
 
@@ -85,6 +87,11 @@ A single in-viewer editor across all 8 deployed scenes that
 - **Cloudflare Worker backend rollout** — `php` is the locked first
   backend (geddart.de); Cloudflare adapter exists as a stub
   (`save_backends/cloudflare.py`) but is not rolled out in this spec.
+  Locked-skip rationale (Q8 / §11.8): PHP at Strato is sufficient
+  for our scale (single author + 8 scenes + small JSON writes).
+  Cloudflare Workers would add complexity (different runtime, KV/D1
+  instead of filesystem) without clear benefit for our authoring
+  write path. The stub stays as a future option.
 
 ---
 
@@ -168,6 +175,12 @@ class EditorModule {
   get timelineLane() { return null; }  // { height: px, render(canvas, range) }
   get overlayGroup() { return null; }  // THREE.Object3D added to OverlayScene
   get testSurface() { return null; }   // window.__editor.<name> for Playwright
+
+  // Optional Scene Settings panel section (see §12)
+  renderSceneSettings(parentEl) {}     // append a labelled section under the
+                                       //   right-side Scene Settings drawer;
+                                       //   no-op if the module has no
+                                       //   scene-level controls
 
   // Optional undo hooks (for modules that want to suppress snapshots
   // during ongoing gestures — e.g. dragging a keyframe diamond)
@@ -454,26 +467,98 @@ diamond render; the skip buttons reuse it.
 to the same prev/next handlers. macOS uses `event.metaKey || event.ctrlKey`
 (same convention as the existing undo/redo hotkeys, §6.5).
 
-### 4.2 `AnnotationModule` (refactor + add authoring)
+### 4.2 `AnnotationModule` (refactor + add authoring — EXPANDED per Q6)
 
 - **`stateKey`**: `annotations`.
 - **`defaultModes`**: `["author"]` for editing; `["enduser","embed"]`
   for render (read-only).
 - **Existing surface**: render-side only (annotation dots + labels).
-- **New in v1**:
-  - Click-in-3D to place a new annotation at the world position under
-    the cursor (raycast against the splat-bound proxy or a depth
-    sample).
-  - Double-click an existing dot to edit the text inline.
-  - Drag the dot in the OverlayScene to reposition (`beginGesture("ann-move")`).
-  - Kebab menu → "Delete".
-  - Timeline lane: `t_in..t_out` bars per annotation (shown on a
-    dedicated row in the multi-lane timeline; see §4.10).
-- **Schema** (existing, unchanged):
-  ```jsonc
-  { "id": "...", "pos": [x,y,z], "text": "...",
-    "t_in": 0, "t_out": 5, "color": "#fff" }
-  ```
+
+#### Expanded scope (Q6, 2026-05-20)
+
+The original v1 sketch had simple `{id, pos, text, t_in, t_out, color}`
+annotations rendered as static labels. The user expanded the scope:
+annotations are **BOTH** timeline-animatable AND distance-based
+interactive (see §11.6 for the verbatim decision).
+
+Behavioural contract:
+
+1. A small dot is **always visible** in 3D world space at `pos`
+   while `playhead.time ∈ [t_in, t_out]` (fading in/out across
+   `fade_ms`).
+2. When `camera.distance(pos) < unfold_radius_m`, the dot unfolds
+   into a full title + text + (optional) media panel.
+3. Clicking the dot manually toggles the unfold (overrides distance
+   check until camera moves away again).
+4. Outside the `[t_in, t_out]` window the annotation is fully hidden
+   (no dot, no panel) — they cinematically appear and disappear.
+
+#### Schema (replaces the legacy `{pos,text,t_in,t_out,color}` sketch)
+
+```jsonc
+{
+  "annotations": [
+    {
+      "id": "ann_001",
+      "kind": "dot_unfold",         // "dot_unfold" (default) | "title3d_overlay"
+      "label": "1",                 // small label inside the dot (e.g. "1", "i", "A")
+      "title": "Detail view",       // unfolded-panel title
+      "text": "Body copy here.",    // unfolded-panel body
+      "pos": [x, y, z],             // world position
+      "unfold_radius_m": 5.0,       // distance threshold; default 5 m
+      "t_in": 0.0,                  // timeline-visible window start (seconds)
+      "t_out": 999.0,               // timeline-visible window end (seconds; 999 = always)
+      "fade_ms": 300,               // fade-in/out duration
+      "media_url": null,            // optional image/video shown when unfolded
+      "billboard": true             // always-face-camera
+    }
+  ]
+}
+```
+
+**Back-compat:** legacy entries with no `kind` field upgrade to
+`"dot_unfold"` at read time (additive — the renderer fills defaults
+for any missing field). The 2 default modes `dot_unfold` and
+`title3d_overlay` cover today's combined "dot + panel" and
+"persistent 3D label" use cases.
+
+#### Authoring entrypoints (in author mode)
+
+- "+ Add Annotation" button in `author-root` → click-in-3D mode
+  (next 3D click captures the world position + opens an inline
+  text input).
+- Double-click an existing dot → opens the title/text editor pinned
+  at the dot's screen position.
+- Drag the dot in the OverlayScene → reposition
+  (`beginGesture("ann-move")`).
+- Kebab menu → "Delete" / "Set radius" / "Set media URL" /
+  "Set t_in..t_out".
+- Timeline lane: `t_in..t_out` bars per annotation (a dedicated row
+  in the multi-lane timeline; see §4.10).
+- Scene Settings panel (§12) hosts the full per-annotation list +
+  controls for the non-timeline fields (radius / title / media-url
+  / fade-ms / kind).
+
+#### Renderer
+
+- Distance check runs in the per-frame update loop (cheap — ≤16
+  annotations per scene; one Euclidean distance per — negligible
+  perf cost).
+- Fade respects the master playhead: `opacity = smoothstep(t_in,
+  t_in + fade_ms/1000, time) - smoothstep(t_out - fade_ms/1000,
+  t_out, time)`.
+- Dot renders in OverlayScene as a sprite + canvas-texture for the
+  `label` glyph; unfold panel is a DOM overlay anchored via
+  `worldToScreen(pos)` per frame.
+
+#### Why this lives in one module (not two)
+
+Both `dot_unfold` and `title3d_overlay` annotations share the same
+state slot (`cfg.annotations`), the same per-frame timeline gate,
+the same click-to-place authoring affordance, and the same Scene
+Settings section. Splitting into two modules would duplicate the
+gate logic + the timeline lane + the section without gaining
+anything. The `kind` field is the discriminator.
 
 ### 4.3 `CutsModule` (refactor existing ClipPlayer into edit-time)
 
@@ -628,9 +713,17 @@ registry.register(new IntroModule());
 window.__editorRegistry = registry;        // test surface
 ```
 
-Order matters only for visual stacking (timeline lane order) and the
-order they observe `onCfgChange`. CameraPathModule first because the
-master playhead is its tick source; everything else subscribes downstream.
+Order matters for:
+
+1. **Visual stacking** — timeline lane order (top-to-bottom in §4.10)
+   mirrors registration order.
+2. **`onCfgChange` propagation** — modules observe in registration
+   order; CameraPathModule first because the master playhead is its
+   tick source.
+3. **Scene Settings drawer section order** — `renderSceneSettings`
+   is called in registration order (see §12.2). The order above
+   produces the user-facing section order: Backdrop → Post-FX →
+   Annotations → Audio → Intro → Start View.
 
 ### 4.10 Multi-lane bottom-timeline (R6)
 
@@ -833,7 +926,8 @@ convention for fragments inserted between numbered slots without
 renumbering the whole stack.
 
 The `template_parts/__init__.py` fragment-list is updated to include
-the new file (Phase 1 task).
+the new file (Phase 2 task in the post-reorder plan; pre-reorder
+Phase 1).
 
 ---
 
@@ -965,37 +1059,100 @@ analyses both concluded the merge granularity is right for splatpipe's
 multi-tab-or-CLI concurrency surface (which is one author, not real-time
 multi-author).
 
-### 7.8 Token UX (R4 §5)
+### 7.8 Token UX (R4 §5, fragment param name locked per Q5)
 
-Per R4: URL fragment, `<slug>/index.html#author=<secret>`. Reasons (R5 §7.3):
+URL fragment format (locked per Q5 / §11.5):
+
+```
+https://splatpipe-cdn.b-cdn.net/<slug>/?author=1#token=<secret>
+```
+
+Reasons (R5 §7.3):
 
 - The fragment never leaves the browser (no server request includes it).
 - Closing the tab drops it (matches the per-tab security boundary).
 - Bookmarkable per-scene.
 - No localStorage indirection.
 
-Per-scene secrets are generated at backend-rollout time + stored in the
-author's password manager (Phase 3 in the plan). The fragment is what
-the author bookmarks; the secret IS the fragment.
+Per-scene secrets are generated at backend-rollout time by the new
+**`splatpipe init-php-auth --scene <slug>`** CLI (see §7.9) and stored
+in the author's password manager. The fragment is what the author
+bookmarks; the secret IS the fragment.
+
+**JS-side name:** the fragment parser function is `_gzReadAuthToken()`
+(renamed from the prior `_gzAuthorSecret()` per Q5; reads from
+`#token=` instead of `#author=`).
+
+### 7.9 `splatpipe init-php-auth` CLI command (NEW per Q4)
+
+New CLI subcommand introduced in Phase 1 alongside the PHP backend
+rollout. One command per scene; the user runs it ONCE per scene and
+bookmarks the printed URL.
+
+**Usage:**
+
+```text
+splatpipe init-php-auth --scene <slug> [--regenerate]
+```
+
+**Behaviour:**
+
+1. Generates a 32-hex-char random token via `secrets.token_hex(16)`
+   (128-bit entropy; effectively un-bruteforceable for the PHP
+   write surface).
+2. Computes `sha256(token).hexdigest()` (lowercase hex).
+3. Stages a server-side write of the hex hash to
+   `scenes/<slug>/.author-token` via SFTP (creds in
+   `002_geddart_relaunch/.env`; same path the live PHP adapter
+   reads at `infra/php/save-camera.php:181-196`).
+4. Prints the **raw** token to the operator's console with the
+   ready-to-copy bookmark URL:
+
+   ```text
+   Scene: fehmarn
+   Author token: 5a4f3c8d9e2b1a7c... (32 hex chars)
+   Bookmark URL:  https://splatpipe-cdn.b-cdn.net/fehmarn/?author=1#token=5a4f3c8d...
+   Stored on server as: sha256 hash in scenes/fehmarn/.author-token (raw token never at rest).
+   ```
+
+**Rationale (Q4 trade-off):**
+
+- The PHP endpoint already supports hash-or-raw via `hash_equals()`
+  (see `infra/php/save-camera.php:181-196`) so no PHP change is
+  required.
+- Storing the sha256 hash server-side means a server compromise
+  does NOT leak usable tokens (attacker can't replay).
+- The operator only sees the raw token ONCE, at command-run time,
+  with the bookmark pre-formatted for password-manager storage.
+- `--regenerate` rotates the token (overwrites the server-side
+  hash + prints the new bookmark) — kept narrow to avoid casual
+  rotation mistakes.
+
+**Out-of-scope:** the command does NOT verify the live PHP endpoint
+is reachable, does NOT push the bookmark anywhere, and does NOT
+record the token in any repo file. Failure modes (SFTP creds
+missing / write fails) surface as plain Python exceptions; the
+caller addresses the underlying creds.
 
 ---
 
 ## 8. Multi-scene rollout (R5)
 
-### 8.1 Per-scene cadence (R5 §2)
+### 8.1 Per-scene cadence (R5 §2, post-consolidation per Q1)
 
-NOT an atomic 8-scene batch. Order:
+NOT an atomic 8-scene batch. Order (locked per Q1 — `kf-fehmarn`
+consolidated into the canonical `fehmarn` slug in Phase 0; the lead
+scene is now `fehmarn` itself):
 
-1. **`kf-fehmarn`** — first; already exercises camera_paths +
-   paged_ext_splats; lead scene.
-2. **`fehmarn`** — alias slug consolidation (R5 §1.1 + open question
-   §11.1).
-3. **`ibug`** — large scene; stress-test chunked LOD streaming.
-4. **`speicher`** — has `clip_xy=3.0` override; verifies per-scene
+1. **`fehmarn`** — first (post-Phase-0 consolidation); already
+   exercises camera_paths + paged_ext_splats; lead scene; site URL
+   `geddart.de/scans/fehmarn` already points at this slug.
+2. **`ibug`** — large scene; stress-test chunked LOD streaming.
+3. **`speicher`** — has `clip_xy=3.0` override; verifies per-scene
    overrides survive rollout.
-5. **`polygraf`** + **`polygraf-east`** + **`fabrik`** — standard
+4. **`polygraf`** + **`polygraf-east`** + **`fabrik`** — standard
    single-camera scenes.
-6. **`stettiner`** + **`methtrailer`** — last in line (less critical).
+5. **`stettiner`** + **`methtrailer`** — last in line (less critical).
 
 Each scene's rollout is one `splatpipe publish` invocation + a
 post-deploy verify cycle (R5 §4).
@@ -1012,7 +1169,7 @@ The rollout adds:
 ALL of these are no-ops to an older viewer. Backwards-compat is
 structurally safe (R5 §4.1).
 
-### 8.3 `.kfwork/deploy_kf_fehmarn*.py` retirement (R5 §3)
+### 8.3 `.kfwork/deploy_kf_fehmarn*.py` retirement (R5 §3, executed in Phase 0)
 
 The 5 bespoke scripts at
 `.kfwork/deploy_kf_fehmarn{_<sha>}.py` bypass `publish_scene()` and
@@ -1023,24 +1180,37 @@ therefore bypass:
 - the `bkey` rotation;
 - the save-backend plumbing.
 
-**Retirement:** on the first `splatpipe publish` of `kf-fehmarn` under
-this rollout, the 5 scripts become obsolete. `git rm` them + the
-`.kfwork/stage_kf_fehmarn*/` dirs. Document the retirement in CLAUDE.md
-"Known Limitations / TODO" (already noted there).
+**Retirement (executed in Phase 0 per Q1).** During the
+`kf-fehmarn` → `fehmarn` slug-consolidation publish, the 5 scripts
+become obsolete. `git rm` them + the `.kfwork/stage_kf_fehmarn*/`
+dirs. Document the retirement in CLAUDE.md "Known Limitations /
+TODO" (already noted there).
 
-### 8.4 Save backend switch DECOUPLED (R5 §6)
+### 8.4 Save backend switch FIRST, editor features SECOND (Q7 — reordered)
 
-The save-backend switch (`cli` → `php`) is its own phase, AFTER the
-editor + schema rollout completes for all 8 scenes. Rationale: bundling
-multiplies the failure surface (editor regressions + backend config
-bugs simultaneously). 3-phase cadence (R5 §6.2 + R4 §1):
+**Decision (Q7):** The save-backend switch (`cli` → `php`) runs
+BEFORE the rest of the editor module rollout, not after. The original
+R5 §6 cadence put the backend behind two editor phases; the user
+chose to validate the save round-trip first (Phase 1) so that every
+subsequent editor feature lands on a proven save path.
 
-- **Phase 1 (rollout):** all 8 scenes shipped with the new editor
-  schema; `save_mode="cli"`.
-- **Phase 2:** geddart.de PHP backend live + tested end-to-end against
-  ONE scene (kf-fehmarn).
-- **Phase 3:** per-scene config flip from `cli` to `http`, one scene at
-  a time; each flip is a tiny `project.toml` edit + `splatpipe publish`.
+New cadence (executed across plan phases 0-10):
+
+- **Phase 0:** Slug consolidation `kf-fehmarn` → `fehmarn`;
+  `.kfwork/` retirement (this section §8.3); all 8 scenes still
+  carry `save_mode="cli"` at this point.
+- **Phase 1:** PHP backend infra (`splatpipe init-php-auth` CLI +
+  per-scene `.author-token` provisioning) + `fehmarn` flips to
+  `save_mode="http"` + live-verify Save POST round-trips end-to-end.
+- **Phases 2-8:** Editor module roll-out (Foundation + 6 modules);
+  every new feature lands on the proven save path.
+- **Phase 9:** Per-scene authoring for the 7 scenes beyond `fehmarn`;
+  per-scene config flip from `cli` to `http` happens here (one
+  scene at a time, after assets land + paths are authored).
+
+The 7 other scenes keep `save_mode="cli"` (token-paste relay) all
+the way through Phase 8; the per-scene HTTP flip is the last task
+before Phase 10 release.
 
 ### 8.5 Asset pipeline per scene (R5 §8)
 
@@ -1075,12 +1245,17 @@ Unchanged from existing publish flow:
 
 | Path | Purpose |
 |---|---|
+| `src/splatpipe/cli/init_php_auth_cmd.py` | new `splatpipe init-php-auth --scene <slug>` CLI: generate token + sha256 + SFTP-push to `scenes/<slug>/.author-token` + print bookmark URL (per §7.9) |
 | `src/splatpipe/viewers/spark/template_parts/17a_edit_history.js_tmpl` | EditHistory ring buffer + Ctrl+Z/Y wiring (~60 lines per R8) |
 | `src/splatpipe/viewers/spark/template_parts/04a_editor_module.js_tmpl` | EditorModule ABC + EditorModuleRegistry (~150 lines per R6) |
+| `src/splatpipe/viewers/spark/template_parts/18a_scene_settings.js_tmpl` | Scene Settings HudLayer panel scaffold + cog-icon toggle + sessionStorage persistence (~80 lines per §12) |
 | `src/splatpipe/web/routes/upload_image.py` | new `POST /upload-image` route (panorama uploads; mirrors audio_upload pattern) |
 | `tests/test_image_upload_security.py` | path-traversal tests for `/upload-image` (mirror `test_audio_upload_security.py`) |
 | `tests/test_edit_history.py` | EditHistory ring buffer behaviour (Node-driven, mirrors `test_spcp_js_port.py` pattern) |
-| `tests/test_editor_module_contract.py` | every concrete EditorModule satisfies the ABC shape via Playwright `window.__editor.<name>` probe |
+| `tests/test_editor_module_contract.py` | every concrete EditorModule satisfies the ABC shape via Playwright `window.__editor.<name>` probe (incl. optional `renderSceneSettings` hook) |
+| `tests/test_init_php_auth_cli.py` | `splatpipe init-php-auth` CLI: token randomness + sha256 correctness + printed-bookmark format (SFTP push mocked) |
+| `tests/test_scene_settings_panel.py` | Scene Settings drawer: cog-toggle, section order matches registration order, sessionStorage persistence (Playwright) |
+| `tests/test_annotations_schema_q6.py` | expanded annotation schema: `kind` defaults to `dot_unfold`, `unfold_radius_m` default 5.0, distance-trigger eval correctness |
 | `tests/test_panorama_backdrop_schema.py` | sanitiser + merge accept the new keys; older configs without the keys still pass |
 | `tests/test_publish_schema_version.py` | `splatpipe publish` writes `schema_version: 1` into every output cfg |
 
@@ -1088,24 +1263,25 @@ Unchanged from existing publish flow:
 
 | Path | Modification |
 |---|---|
+| `src/splatpipe/cli/main.py` | register the new `init-php-auth` Typer subcommand from `init_php_auth_cmd.py` |
 | `src/splatpipe/core/config_safety.py` | append `"panorama_backdrop"` + `"schema_version"` to `PUBLIC_VIEWER_CONFIG_KEYS` |
 | `src/splatpipe/core/config_merge.py` | append `"panorama_backdrop"` + `"postprocessing"` + `"audio"` to `ALLOWED_PATCH_KEYS` |
 | `src/splatpipe/steps/publish.py` | write `schema_version: 1` + empty `panorama_backdrop` defaults into the staged cfg in `publish_scene()` |
-| `src/splatpipe/viewers/spark/template_parts/__init__.py` | register the 2 new fragments in the load order |
-| `src/splatpipe/viewers/spark/template_parts/05_framework.js_tmpl` | instantiate `EditorModuleRegistry` in SceneView; wire `__editHistory` exposure |
+| `src/splatpipe/viewers/spark/template_parts/__init__.py` | register the 3 new fragments (`04a_editor_module`, `17a_edit_history`, `18a_scene_settings`) in the load order |
+| `src/splatpipe/viewers/spark/template_parts/05_framework.js_tmpl` | instantiate `EditorModuleRegistry` + Scene Settings panel in SceneView; wire `__editHistory` + `__sceneSettings` exposure; rename `_gzAuthorSecret()` → `_gzReadAuthToken()` and read `#token=` per §7.8 |
 | `src/splatpipe/viewers/spark/template_parts/15_editor_trajectory.js_tmpl` | refactor onto EditorModule contract (CameraPathModule) — behaviour preserved |
 | `src/splatpipe/viewers/spark/template_parts/16_editor_timeline.js_tmpl` | add multi-lane rendering for cuts/audio/annotations/titles lanes |
 | `src/splatpipe/viewers/spark/template_parts/17_editor_gizmo.js_tmpl` | wire gizmo handles to `beginGesture()` / `endGesture()` |
 | `src/splatpipe/viewers/spark/template_parts/11_clip_player.js_tmpl` | refactor onto contract; add author-mode editing surface (CutsModule) |
 | `src/splatpipe/viewers/spark/template_parts/07_setup_three_spark.js_tmpl` | panorama equirect → PMREMGenerator → `scene.background`; honour `panorama_backdrop.intensity` |
-| `src/splatpipe/viewers/spark/template_parts/03_body_chrome.html_tmpl` | add author-root panels for each new module (collapsible accordion) |
-| `src/splatpipe/viewers/spark/template_parts/02b_styles_editor.css_tmpl` | styles for new module panels + multi-lane timeline |
-| `src/splatpipe/viewers/spark/assembler.py` | output-pin update post-Phase-1 (modularization invariant) |
+| `src/splatpipe/viewers/spark/template_parts/03_body_chrome.html_tmpl` | add author-root panels for each new module (collapsible accordion); add Scene Settings cog-icon toggle |
+| `src/splatpipe/viewers/spark/template_parts/02b_styles_editor.css_tmpl` | styles for new module panels + multi-lane timeline + Scene Settings drawer |
+| `src/splatpipe/viewers/spark/assembler.py` | output-pin update post-Phase-2 (modularization invariant) |
 | `src/splatpipe/web/app.py` | mount `upload_image` route |
 | `tests/test_config_merge.py` | extend allow-list coverage to the 3 new patch keys |
 | `tests/test_publish_config_sanitize.py` | extend allow-list coverage to the 2 new public keys |
-| `tests/test_html_for_save_mode.py` | output-pin re-baseline (Phase 1) |
-| `CLAUDE.md` | document the new EditorModule contract + EditHistory + the .kfwork retirement |
+| `tests/test_html_for_save_mode.py` | output-pin re-baseline (Phase 2) |
+| `CLAUDE.md` | document the new EditorModule contract + EditHistory + Scene Settings panel + the .kfwork retirement + `splatpipe init-php-auth` |
 | `CHANGELOG.md` | per-phase entries (see plan) |
 
 ### 9.3 Files NOT changing in v1
@@ -1120,7 +1296,10 @@ Unchanged from existing publish flow:
 - `src/splatpipe/save_backends/cloudflare.py` — exists as a stub; not
   rolled out in v1.
 - `infra/php/save-camera.php` — already implemented + tested; the new
-  patch keys flow through unchanged.
+  patch keys flow through unchanged. NOTE: hash-or-raw token
+  acceptance is already implemented (`hash_equals()` branch at
+  `infra/php/save-camera.php:181-196`); the `splatpipe init-php-auth`
+  CLI (§7.9) writes the sha256 hash side and stays compatible.
 
 ---
 
@@ -1206,49 +1385,216 @@ See §7.3.
 
 ---
 
-## 11. Open questions [USER-CONFIRM]
+## 11. Locked decisions 2026-05-20
 
-1. **`fehmarn` slug consolidation** — the current site shows "fehmarn"
-   but CDN slug is "kf-fehmarn"; are these intended to be the same
-   scene, or distinct (older vs newer build)? If same: which slug
-   wins; do we redirect `<cdn>/fehmarn` → `<cdn>/kf-fehmarn` (Bunny
-   redirect rule)? (R5 §10 Q5)
-2. **Panorama asset provenance per scene** — for each of the 8
-   scenes, is the backdrop:
-   (a) drone/raw imagery available;
-   (b) phone 360° on-location capture needed;
-   (c) AI-synthesised equirect; or
-   (d) stock HDRI? The asset pipeline (§8.5) takes ~30 min for (a),
-   ~2 hours for (b/c). Confirm per scene. (R5 §10 Q1)
-3. **Audio asset provenance per scene** — same question for tracks:
-   user-supplied per scene, ambient stock loop, or no audio in v1 for
-   any scene that doesn't have a track yet? (Default recommended: no
-   audio unless author provides; R5 §10 Q6)
-4. **PHP save backend secret storage** — Phase 3 needs per-scene
-   `.author-token` files on geddart.de. Store as raw secret or
-   sha256(secret)? (R5 §7.1 default: sha256 hex on the server, raw in
-   the URL fragment. Confirm.)
-5. **Author session bookmark format** — `<slug>/index.html?author=1#author=<secret>`
-   per R4. Confirm the fragment param name (`#author=` vs `#token=`)
-   — R4 uses `#author=`; R5 uses `#token=`. Pick one and freeze.
-6. **Cuts UX visual** — timeline lane shows clips as per-camera
-   coloured blocks (§4.3). Confirm: clip "trigger annotations across
-   cut boundaries" semantics — does an annotation `t_out=10s` survive
-   into the next clip if the clip ends at `t=8s` (current ClipPlayer
-   behaviour) or is it clipped to the clip end (proposed v1 behaviour)?
-7. **Phase ordering** — R5 proposes editor + schema rollout first
-   (Phases 1-2), then backend switch (Phase 3). The plan in
-   `docs/superpowers/plans/2026-05-20-editor-arc.md` follows this.
-   Confirm OK — or does the user want PHP backend live for kf-fehmarn
-   simultaneously with the first editor rollout?
-8. **Cloudflare Worker backend** — skip in v1 (per non-goals §0)? The
-   stub in `save_backends/cloudflare.py` stays; no rollout activity.
+All 8 open questions resolved by the user via voice 2026-05-20 17:38 +
+17:39. Reproduced here as the authoritative decision log; downstream
+phase steps in
+[docs/superpowers/plans/2026-05-20-editor-arc.md](../plans/2026-05-20-editor-arc.md)
+implement them.
 
-### 11.A Resolved by addendum 2026-05-20
+### 11.1 Q1 — fehmarn slug consolidation — LOCKED
+
+**Decision:** Consolidate `kf-fehmarn` → `fehmarn`. All 8 scenes use
+ONE canonical slug each (no `kf-` prefix); `kf-fehmarn` was just a
+test case. The keyframe-editor work is no longer a "test branch"; it
+ships under each scene's canonical slug.
+
+**Concrete actions (Phase 0, new — see plan):**
+
+- Re-deploy current `kf-fehmarn` viewer-config + index to `fehmarn/`
+  slug via `splatpipe publish` (NOT via the bespoke `.kfwork/`
+  scripts).
+- Update `002_geddart_relaunch/src/data/scans/fehmarn.ts`
+  `splatUrl` from `kf-fehmarn/index.html` → `fehmarn/index.html`.
+- Surgical purge of old `kf-fehmarn/*` cached entries (Bunny edge).
+- Retire the 5 `.kfwork/deploy_kf_fehmarn*.py` bespoke scripts
+  (`git rm`) — they bypass `sanitize_public_viewer_config` AND
+  hardcode stale build-subfolder names. Bonus security cleanup
+  per the R5 finding (bug-audit #3 carryover).
+- Backwards-compat: leave the `kf-fehmarn/` Bunny folder as-is for
+  a transition period; visitors hitting the old URL get a working
+  scene (the `.rad` set is shared with `fehmarn/` already via the
+  cross-slug pointer; only the `index.html` stays old until the
+  surgical purge completes).
+
+### 11.2 Q2 — Panorama asset provenance per scene — LOCKED
+
+**Decision:** Mixed sources. User has shot panoramas for some scenes;
+others may be AI-generated. **Schema + editor do NOT constrain the
+source** — any LDR JPG that fits §5.2 is accepted.
+
+For scenes where no panorama is ready: a generic placeholder sky JPG
+OR `panorama_backdrop.url = null` (existing default behaviour —
+solid `background.color` shows). **Don't block earlier phases on
+panorama assets** — Phase 9 (per-scene authoring) is where the
+authoring actually happens.
+
+### 11.3 Q3 — Audio asset provenance per scene — LOCKED
+
+**Decision:** Build the AudioModule capacity in Phase 7 (was Phase 6
+in the old ordering); user provides assets later. Default each scene
+to `audio: []` (empty array — no audio). The editor lets the user
+upload + configure tracks when assets become available.
+
+### 11.4 Q4 — PHP save backend secret storage — LOCKED (safe AND convenient)
+
+**Decision:** Server-side store **sha256 hash** of the bearer token
+in `scenes/<slug>/.author-token`. The file is htaccess-denied; the
+raw token never lives at rest on the server. The PHP endpoint
+already accepts hash-or-raw via `hash_equals()`
+(see `infra/php/save-camera.php:181-196`) so no PHP change is
+required.
+
+**Convenience layer: new CLI command `splatpipe init-php-auth`.**
+
+```text
+splatpipe init-php-auth --scene <slug>
+```
+
+Behaviour:
+
+1. Generates a 32-hex-char random token via
+   `secrets.token_hex(16)`.
+2. Computes the lowercase-hex sha256 of the raw token.
+3. Stages a server-side write to
+   `scenes/<slug>/.author-token` (SFTP push using the
+   `002_geddart_relaunch/.env` creds discovered in the
+   `geddart_de_strato_stack` memory).
+4. Prints the **raw** token to the operator's console with the
+   bookmark URL ready to copy:
+
+   ```
+   Scene: fehmarn
+   Author token: 5a4f3c8d9e2b1a7c... (32 hex chars)
+   Bookmark URL:  https://splatpipe-cdn.b-cdn.net/fehmarn/?author=1#token=5a4f3c8d...
+   Stored on server as: sha256 hash in scenes/fehmarn/.author-token (raw token never at rest).
+   ```
+
+The user runs this ONCE per scene → stores the bookmark in their
+password manager → never deals with raw tokens again.
+
+The `splatpipe init-php-auth` command spec is part of Phase 1 (PHP
+backend infra) — see plan.
+
+### 11.5 Q5 — Author URL fragment param name — LOCKED (`#token=`)
+
+**Decision:** Rename `#author=<secret>` → `#token=<secret>`.
+Rationale: `#author=` visually clashes with the existing `?author=1`
+mode flag (mode toggle vs secret payload); `#token=` is unambiguous.
+
+Final bookmark format:
+
+```
+https://splatpipe-cdn.b-cdn.net/<slug>/?author=1#token=<your-secret>
+```
+
+**Spec rename:** `_gzAuthorSecret()` → `_gzReadAuthToken()` in the
+JS-side fragment parser. Code change deferred to execution; this
+section records the new name as the contract.
+
+### 11.6 Q6 — Cuts annotation-trigger semantics — LOCKED + EXPANDED
+
+User asked annotations to be BOTH:
+
+1. **Timeline-animatable** — per-annotation `t_in` / `t_out` fade
+   in/out with the playhead, AND
+2. **Distance-based interactive** — a small dot always visible in 3D
+   world space; when the camera enters `unfold_radius_m` OR the user
+   clicks the dot → it unfolds into the full title + text content.
+
+This is BIGGER than the original AnnotationModule scope in §4.2 but
+the user explicitly asked for it. The §4.2 schema below is updated.
+
+#### Updated annotation schema (replaces the v1 sketch in §4.2)
+
+```jsonc
+{
+  "annotations": [
+    {
+      "id": "ann_001",
+      "kind": "dot_unfold",
+      "label": "1",
+      "title": "Detail view",
+      "text": "Body copy here.",
+      "pos": [x, y, z],
+      "unfold_radius_m": 5.0,
+      "t_in": 0.0,
+      "t_out": 999.0,
+      "fade_ms": 300,
+      "media_url": null,
+      "billboard": true
+    }
+  ]
+}
+```
+
+- `kind: "dot_unfold"` is the new default. Legacy entries with no
+  `kind` field upgrade to this at read time (additive back-compat).
+- `kind: "title3d_overlay"` is the alternative: a persistent 3D text
+  overlay (for scene labels), no unfold UI.
+- `unfold_radius_m`: distance threshold; when
+  `camera.distance(annotation.pos) < radius`, the dot expands into
+  the full content panel. Default 5 m.
+- `t_in` / `t_out` / `fade_ms`: timeline-animatable visibility
+  window (annotation invisible outside this range; respects current
+  cinematic playback).
+- `media_url`: optional image/video URL shown in the unfolded panel.
+- Click to manually toggle unfold (overrides distance check).
+
+#### Editor UI consequences
+
+- AnnotationModule's timeline lane shows `t_in..t_out` as a
+  horizontal bar per annotation (unchanged from the original
+  §4.2 design).
+- Scene Settings panel (see §12) gains a per-annotation editor
+  section: position, radius, title, text, media-url, fade-ms.
+- Click-in-3D to place a new dot at the world position under the
+  cursor (unchanged from §4.2).
+- Distance check runs in the per-frame update loop (cheap — ≤16
+  annotations per scene; one Euclidean distance per).
+
+### 11.7 Q7 — Phase ordering — LOCKED (backend FIRST, editor SECOND)
+
+**Decision:** Backend switch FIRST (test Save round-trips end-to-end)
+THEN editor features. The old ordering put backend rollout at Phase 3
+behind two editor phases; the user wants the save-path proven before
+piling more authoring surface on top.
+
+**New phase order (see plan for full step-lists):**
+
+| # | Phase | Old # |
+|---|---|---|
+| 0 | Housekeeping — `kf-fehmarn` → `fehmarn` slug consolidation + retire `.kfwork` bespoke scripts | n/a (new) |
+| 1 | PHP backend infra + `splatpipe init-php-auth` CLI + switch `fehmarn` to `save_mode=http` + live-verify round-trips | 3 |
+| 2 | Foundation — EditorModule contract + EditHistory + CameraPathModule refactor + 3 timeline addenda + Scene Settings HudLayer scaffold | 1 |
+| 3 | PanoramaModule | 2 (part) |
+| 4 | PostFXModule | 2 (part) |
+| 5 | AnnotationModule (expanded scope per Q6) | 4 |
+| 6 | CutsModule | 5 |
+| 7 | AudioModule | 6 |
+| 8 | TitlesModule | 7 |
+| 9 | Per-scene authoring (7 remaining scenes beyond fehmarn) | 8 |
+| 10 | v0.8.0 polish + release | 9 |
+
+### 11.8 Q8 — Cloudflare Worker backend — LOCKED (skip in v1)
+
+**Decision:** Skip Cloudflare Worker rollout in v1. PHP at Strato is
+sufficient for our scale (single author + 8 scenes + small JSON
+writes). Cloudflare Workers would add complexity (different runtime,
+KV/D1 instead of filesystem) without clear benefit for our authoring
+write path.
+
+**Status:** The CF Python adapter at `save_backends/cloudflare.py`
+stays as a config-only stub for the future. No rollout activity in
+this spec. (Reinforces the existing non-goal in §0.)
+
+### 11.9 Resolved by addendum 2026-05-20 (earlier voice 17:09)
 
 These questions were raised by the user's verbatim voice 2026-05-20
-17:09 and are CLOSED by the §Spec addenda block (top of spec) + §3.7 +
-§4.1.1 + §6.5.1:
+17:09 (BEFORE the 17:38 + 17:39 voices that locked Q1-Q8 above) and
+are CLOSED by the §Spec addenda block (top of spec) + §3.7 + §4.1.1
++ §6.5.1:
 
 - **Timeline scrub ceiling beyond last keyframe** — resolved via the
   new optional `PathDict.total_duration_s` field (§3.7) and the
@@ -1259,7 +1605,101 @@ These questions were raised by the user's verbatim voice 2026-05-20
 
 ---
 
-## 12. Provenance
+## 12. Scene Settings panel (addendum 2026-05-20 voice 17:39)
+
+The user asked for "a scene settings thingy where we can set audio."
+This is a broader concept than per-module panels — a SINGLE right-side
+author drawer that consolidates every module's non-timeline controls
+in one place. This section formalises the concept; downstream phases
+(2 + 3 + 4 + 5 + 7 + 8) populate sections into it.
+
+### 12.1 Design
+
+- **One HudLayer panel** registered by `EditorModuleRegistry` at init
+  time in author mode only. The panel is a child of `author-root`
+  (existing DOM container in `03_body_chrome.html_tmpl`).
+- **Layout:** vertical stack of labelled sections, one per module
+  that has scene-level controls. Each section is a collapsible
+  accordion item (`<details>` element with a styled `<summary>`).
+- **Section ownership:** every module contributes via the new optional
+  `renderSceneSettings(parentEl)` hook on the `EditorModule`
+  contract (added in §2.2). Modules with no scene-level controls
+  (e.g. the existing `IntroModule` if its config is trivial) simply
+  return without appending — the section is omitted.
+- **Toggle UI:** a settings-cog icon in the editor header (parallel
+  to the existing `H` key for the bench HUD) opens / closes the
+  drawer. Default = closed.
+- **Persistence of the panel's open state:** sessionStorage key
+  `spcp:scene-settings:open` (UI preference; NOT part of the
+  edit state — does NOT trigger EditHistory).
+
+### 12.2 Section order (registration order)
+
+| Icon | Section | Module | Phase introduced |
+|---|---|---|---|
+| Backdrop | Panorama (URL + rotation + intensity) | PanoramaModule | 3 |
+| Post-FX | Tonemap + exposure | PostFXModule | 4 |
+| Annotations | List of annotations + per-item full editor (kind / radius / title / text / media-url / fade-ms / t_in / t_out / pos) | AnnotationModule | 5 |
+| Audio | Track list + per-track full editor (volume / loop / kind / pos / t_in / t_out) | AudioModule | 7 |
+| Intro | Intro type + duration | IntroModule | 2 (cosmetic; existing schema) |
+| Start View | "Save current camera as start view" button | CameraPathModule | 2 |
+
+The order is the same as the registration order in
+`EditorModuleRegistry` (see §4.9); insertion order matters for the
+user's eye-flow but not for behaviour.
+
+### 12.3 `renderSceneSettings(parentEl)` hook contract
+
+```js
+class FooModule extends EditorModule {
+  renderSceneSettings(parentEl) {
+    const section = document.createElement('details');
+    section.className = 'spcp-scene-settings-section';
+    section.open = false;
+    const summary = document.createElement('summary');
+    summary.textContent = 'Foo';
+    section.appendChild(summary);
+    // ... append the module's controls into section ...
+    parentEl.appendChild(section);
+  }
+}
+```
+
+- Returns nothing (void).
+- Modules are responsible for their own DOM cleanup — `unmount()`
+  removes their section from `parentEl`.
+- Controls inside the section wire to the same gesture/undo path
+  as the rest of the module (a slider in this drawer pushes ONE
+  EditHistory snapshot per value-change-finalised; same as the
+  total-time input in §4.1.1).
+
+### 12.4 Why a single panel (not N per-module panels)
+
+- **Discoverability** — the user asked for one Scene Settings entry
+  point ("a scene settings thingy"); a fragmented N-panel design
+  hides modules behind their own toggles.
+- **Visual grouping** — non-timeline controls belong in a vertical
+  drawer (long-form lists for annotations / audio tracks);
+  timeline controls already have their dedicated multi-lane row
+  (§4.10).
+- **Author mode footprint** — one drawer is easier to hide-on-mode-
+  switch than N floating panels (PageDown / Esc semantics stay
+  simple).
+
+### 12.5 Out-of-scope in v1
+
+- **Per-user customisation of section order** — fixed registration
+  order.
+- **Tabs / search inside the drawer** — flat list; the 6 sections
+  fit on a 1024-px-wide display without scrolling for typical
+  scene populations.
+- **Drag-to-reorder annotations / audio tracks across sections** —
+  per-section reorder is allowed (Phase 5 / 7 implement it); cross-
+  section reorder makes no sense (annotations ≠ audio tracks).
+
+---
+
+## 13. Provenance
 
 This spec is a synthesis of 8 parallel research reports
 (`R1_external_ux_refs.md` through `R8_undo_redo.md`) under
