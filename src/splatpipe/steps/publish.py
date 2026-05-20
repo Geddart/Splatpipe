@@ -45,6 +45,7 @@ from urllib.request import Request, urlopen
 from ..core.config_safety import sanitize_public_viewer_config
 from ..core.constants import STEP_PUBLISH
 from ..core.events import ProgressEvent, StepResult
+from ..core.sh_encoding import ShEncoding
 from ..deploy_targets import get_deploy_target
 from ..viewers.spark.build_lod import BuildLodError, build
 from ..viewers.spark.template import html_for
@@ -117,6 +118,7 @@ def publish_scene(
     on_build_line: Callable[[str], None] | None = None,
     deploy_target: str = "bunny",
     deploy_dest: Path | None = None,
+    sh_encoding: ShEncoding = ShEncoding.auto,
 ) -> Generator[ProgressEvent, None, StepResult]:
     """Build/stage a scene and deploy it to its permanent slug.
 
@@ -131,6 +133,15 @@ def publish_scene(
     identical). ``"folder"`` copies the staged output to ``deploy_dest``.
     The bunny path is unchanged: the same ``deploy_to_bunny(..., purge=
     False)``, the same edge-rule assertion, the same selective purge.
+
+    ``sh_encoding`` (default :attr:`ShEncoding.auto`) selects the Spark
+    viewer's SH decode path -- ``auto`` preserves whatever
+    ``spark_render.paged_ext_splats`` value the inherited
+    ``base_config`` / ``live_slug`` viewer-config already carried;
+    ``paged`` forces the clamp-free ExtSplats path; ``clamped`` forces
+    the legacy PackedSplats path. The choice is also threaded to the
+    ``build-lod`` cache key, so re-publishing with a different mode
+    cannot silently serve a stale cache entry.
     """
     if bool(ply) == bool(rad_dir):
         return StepResult(step=STEP_PUBLISH, success=False,
@@ -214,6 +225,7 @@ def publish_scene(
         try:
             manifest = build(
                 ply, quality=True, chunked=True, cluster_sh=True,
+                sh_encoding=sh_encoding,
                 extra_flags=xf, on_progress=_build_cb,
                 spark_repo=spark_repo,
             )
@@ -268,6 +280,15 @@ def publish_scene(
             cfg.setdefault("spark_render", {})["move_speed_mult"] = move_speed_mult
         if splat_budget is not None:
             cfg["splat_budget"] = splat_budget
+        # sh_encoding -> spark_render.paged_ext_splats (viewer-side decode
+        # path toggle). ``auto`` preserves any inherited value (the
+        # ``None`` return path); explicit ``paged`` / ``clamped`` force
+        # the flag. The +7 template stray (now formalized into HEAD via
+        # the same commit) reads exactly this key.
+        _inherited = (cfg.get("spark_render", {}) or {}).get("paged_ext_splats")
+        _resolved = sh_encoding.resolve_paged_ext_splats(_inherited)
+        if _resolved is not None:
+            cfg.setdefault("spark_render", {})["paged_ext_splats"] = _resolved
         cfg["primary_asset"] = f"{bkey}/scene.rad"
         (stage / "viewer-config.json").write_text(
             json.dumps(cfg, indent=2), encoding="utf-8")

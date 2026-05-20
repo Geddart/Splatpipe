@@ -7,6 +7,7 @@ from rich.console import Console
 
 from ..core.constants import FOLDER_REVIEW
 from ..core.project import Project
+from ..core.sh_encoding import ShEncoding
 from ..viewers.spark.build_lod import BuildLodError, build, verify_toolchain
 
 console = Console()
@@ -30,6 +31,15 @@ def build_lod_cmd(
         help="Vector-quantise SH into a <=64K codebook (pipeline default; "
              "~60%% smaller .rad, needs the patched Spark fork the viewer "
              "pins by default). --no-cluster-sh = larger, stock-Spark-compatible.",
+    ),
+    sh_encoding: ShEncoding = typer.Option(
+        ShEncoding.auto, "--sh-encoding",
+        help="SH decode-path mode in the Spark viewer. "
+             "'auto' (default) inherits any per-scene paged_ext_splats already set; "
+             "'paged' forces the clamp-free ExtSplats path (full SH3 quality, no +/-1 rainbow clip); "
+             "'clamped' forces the legacy +/-1 PackedSplats path. "
+             "The choice is part of the cache key so re-running with a different mode rebuilds.",
+        case_sensitive=False,
     ),
     spark_repo: Path = typer.Option(
         None, "--spark-repo",
@@ -73,6 +83,7 @@ def build_lod_cmd(
     console.print(f"  Algorithm : {'quick (tiny-lod)' if quick else 'quality (bhatt-lod)'}")
     console.print(f"  Output    : {'chunked (manifest + .radc)' if chunked else 'single .rad'}")
     console.print(f"  SH codebook: {'cluster-sh (<=64K, needs patched fork)' if cluster_sh else 'off (stock-compatible)'}")
+    console.print(f"  SH encoding: {sh_encoding.value}")
 
     try:
         rad_path = build(
@@ -80,6 +91,7 @@ def build_lod_cmd(
             quality=not quick,
             chunked=chunked,
             cluster_sh=cluster_sh,
+            sh_encoding=sh_encoding,
             on_progress=lambda line: console.print(f"  [dim]{line}[/dim]"),
             spark_repo=spark_repo,
         )

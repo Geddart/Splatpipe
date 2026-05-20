@@ -95,7 +95,64 @@ from splatpipe.viewers.spark.template import html_for
 # compared -- never relaxed); the Task-18 gizmo/SPCP surface is
 # asserted present-in-full-html then gone-after-the-T16-TRAJ-excision
 # (hard proof it is wholly inside that region, not leaking).
-# --- Moving baseline (Task 20 -- v2-C Phase 1) ---------------------------
+# --- Moving baseline (post-Task-20 SH-encoding formalization) -----------
+# The bug-audit batch identified the long-running uncommitted
+# ``pagedExtSplats`` template stray (the 7-line clamp-free SH decode-
+# path opt-in at template.py:1237-1243 reading
+# ``spark_render.paged_ext_splats``) as both (a) a real first-class
+# pipeline feature (kf-fehmarn + Fehmarn are live with it) and (b) the
+# byte-lock-failure cause in the dirty tree. The task #106 commit
+# absorbs the +7 lines into HEAD via this DELIBERATE byte-lock re-pin
+# (regen recipe 2b: a deliberate change to NON-excised, END-USER-
+# rendered HTML -- the SAME class as v2-A's A1 #path-mini and v2-C's
+# #camera-select markup re-pins), AND adds the missing CLI/build/
+# publish surface to make it first-class:
+#
+#   * ``splatpipe build-lod --sh-encoding {auto,paged,clamped}`` -- a
+#     typed Typer Enum option (``core/sh_encoding.ShEncoding``) so a
+#     typo fails LOUDLY at the CLI boundary instead of silently
+#     publishing a wrong viewer-config.
+#   * ``viewers/spark/build_lod.build(sh_encoding=...)`` -- threaded
+#     into the cache key with a literal ``e<char>`` marker (``ea`` for
+#     auto, ``ep`` for paged, ``ec`` for clamped) so re-running with a
+#     different mode cannot silently serve a stale entry. The marker
+#     prefix ``e`` is chosen so the encoding char never collides with
+#     the existing chunked-``c`` / cluster-sh-``s`` flag chars.
+#   * ``steps/publish.publish_scene(sh_encoding=...)`` -- threaded to
+#     the staged viewer-config: ``auto`` preserves any inherited
+#     ``spark_render.paged_ext_splats`` (the case the 6 live scenes
+#     redeploy through unchanged); ``paged`` forces True; ``clamped``
+#     forces False.
+#
+# The +7-line template delta itself is OUTSIDE every existing
+# byte-lock region (it lives in the main viewer options block, AFTER
+# the T16-TRAJ region's END). It is the ONLY thing that moves the
+# remainder pin (~+481 bytes -- the +7 lines of comment + the
+# ``if (sr.paged_ext_splats === true) sparkOpts.pagedExtSplats =
+# true;`` runtime guard, including their trailing newlines). The
+# CLI / build_lod.py / publish.py / sh_encoding.py changes are all
+# PYTHON and do NOT touch the JS template (so the byte-lock remains
+# the right tool to guard them -- it only protects template HTML
+# bytes). NOTHING here touches the SPCP encoder (``_encodeSpcp`` /
+# ``_spcpNum``), ``_PATCH_KEYS``, ``core/config_merge``, or the
+# scene_editor.html spline. Every prior task's region is STILL
+# excised with its ORIGINAL anchors (contract preserved -- the
+# excision only ever NARROWS what is compared, never relaxed); the
+# Task-8 SAVE_* contract + BOTH Task-10 blocks live OUTSIDE all
+# FOURTEEN regions and stay asserted-surviving (NOT relaxed).
+_PRE_TASK20_REMAINDER_LEN = 151172
+_PRE_TASK20_REMAINDER_SHA = (
+    "bca79294bedf8a31b01615bb6c5a7bb5382b7848fcd7f9ea55c11405ce5e3d94"
+)
+# Full ``HEAD`` (committed post-task-20 SH-encoding) baseline
+# fingerprint (documentation / cross-check; the remainder pin above is
+# what the assertion uses).
+_PRE_TASK20_FULL_LEN = 458679
+_PRE_TASK20_FULL_SHA = (
+    "4d159096d4e8e891df023662102f921539b37b0011c462095100293e37084fab"
+)
+
+# --- Prior moving-baseline note (Task 20 -- v2-C Phase 1, kept for provenance) ---
 # v2-C Phase 1 adds the top-bar "Camera" dropdown (#camera-select):
 # Perspective (free-fly) + every animated/scene camera, switching
 # between free-fly and an animated camera's bind (author) / playback
@@ -153,8 +210,10 @@ from splatpipe.viewers.spark.template import html_for
 # T16-TRAJ excision (hard proof they are wholly inside those existing
 # regions and leak NOTHING outside them); Task 8's SAVE_* and BOTH
 # Task-10 blocks stay asserted-surviving (NOT relaxed).
-_PRE_TASK20_REMAINDER_LEN = 150691
-_PRE_TASK20_REMAINDER_SHA = (
+# (Renamed to ``_PRE_TASK20VC_*`` to avoid shadowing the
+# post-task-20 SH-encoding pin above -- this is now PROVENANCE-only.)
+_PRE_TASK20VC_REMAINDER_LEN = 150691
+_PRE_TASK20VC_REMAINDER_SHA = (
     "b9864077ced9110af8ee932e35127b37a0275095c3ef97b6f80746252b1c356a"
 )
 # Full ``HEAD`` (committed v2-C Phase 1) baseline fingerprint
@@ -164,8 +223,8 @@ _PRE_TASK20_REMAINDER_SHA = (
 # subprocess (NEVER a PowerShell ``>`` / pipe -- per the Windows CRLF
 # foot-gun above; the committed template is LF-only and this lock is
 # CRLF-sensitive by design).
-_PRE_TASK20_FULL_LEN = 428381
-_PRE_TASK20_FULL_SHA = (
+_PRE_TASK20VC_FULL_LEN = 428381
+_PRE_TASK20VC_FULL_SHA = (
     "1a2c11ca0b0c0090a71a5607d0fade99a1ffd27c055e719aa4b564c10d817948"
 )
 
@@ -1684,56 +1743,52 @@ def test_defaults_are_regression_safe_existing_scenes_byte_identical():
     assert "_hidAt" in stripped                           # Task 10 survives
     assert "visibilitychange" in stripped                 # Task 10 survives
 
-    # Byte-for-byte identical to the ``013ca7c`` committed template with
-    # the SAME FOURTEEN regions excised -> NO unintended drift anywhere
-    # outside the deliberate Task-8/10/11/12/13/14/15/16/17/18/19/20
-    # changes (FAILS loudly if e.g. a stray uncommitted block elsewhere
-    # in the template leaked in -- this is exactly how the unstaged
-    # strays are kept out of each commit; the pagedExtSplats stray,
-    # OUTSIDE all FOURTEEN regions, makes this FAIL in the dirty tree BY
-    # DESIGN -> the guard still bites). Task 20 (v2-C Phase 1) is a
-    # DELIBERATE re-pin: like v2-A it changes NON-excised, END-USER-
-    # rendered HTML (the #camera-select <select> markup), so the
-    # remainder pin DELIBERATELY ADVANCES here
-    # (``_PRE_TASK20_REMAINDER_*`` != the Task-19 pin) -- a DOCUMENTED
-    # re-pin, the byte-lock's charter being to catch UNINTENDED drift,
-    # NOT to freeze an intentional end-user change. The ONLY pin-moving
-    # delta is the #camera-select markup, wholly bounded by the ONE NEW
-    # region T20-CAMSEL-DOM. EVERYTHING ELSE in v2-C Phase 1 -- the
-    # #camera-select JS wiring (``_CAM_PERSP`` / ``_camSel*`` /
-    # ``_camSelInit`` + the region-interior ``_camSelReflect`` call in
-    # the EXISTING ``startPath``) and the ``_trajActivePath()``
-    # Perspective guard -- is PURE recipe-2c: the wiring lands STRICTLY
-    # INSIDE the EXISTING Task-19 T19-JS region (the whole #path-*
-    # wiring block, which already contained startPath/stopPath) and the
-    # guard STRICTLY INSIDE the EXISTING Task-16 T16-TRAJ region, so
-    # those regions' excisions merely span LARGER blocks and contribute
-    # ZERO to the remainder delta. A changed remainder BEYOND the
-    # #camera-select-markup re-pin would mean something LEAKED (e.g. a
-    # _camSel* line escaped T19-JS, or the _trajActivePath guard
-    # escaped T16-TRAJ). NOT a regression for the 6 live single-camera
-    # scenes: #camera-select reuses ``class="quality-btn"`` (no new
-    # CSS), is embed-hidden via the EXISTING #quality-buttons embed
-    # strip, and "Perspective" is a non-persisted sentinel never
-    # written to cfg / the SPCP patch (so a single-path scene still
-    # auto-binds its sole camera exactly as before). The Task-8
-    # SAVE_* contract + BOTH Task-10 blocks (``let _hidAt = 0;`` ABOVE
-    # T19-JS's START, the visibilitychange handler BELOW its END) live
+    # Byte-for-byte identical to the post-task-20 SH-encoding committed
+    # template with the SAME FOURTEEN regions excised -> NO unintended
+    # drift anywhere outside the deliberate
+    # Task-8/10/11/12/13/14/15/16/17/18/19/20 + SH-encoding-formalization
+    # changes. The post-task-20 SH-encoding commit (task #106) is a
+    # DELIBERATE re-pin: it folds the previously-uncommitted +7-line
+    # ``pagedExtSplats`` template stray (the clamp-free SH decode-path
+    # opt-in reading ``spark_render.paged_ext_splats`` at template.py:
+    # 1237-1243) INTO HEAD as part of formalizing it via the typed
+    # ``splatpipe build-lod --sh-encoding {auto,paged,clamped}`` CLI
+    # surface. The +7 lines are END-USER-rendered viewer JS, OUTSIDE
+    # every existing byte-lock region (they live in the main viewer-
+    # options block, AFTER the T16-TRAJ region's END), so the remainder
+    # pin advances by the +7 lines' length (~+481 bytes). NO new region
+    # is needed: the formalization is recipe-2b (additive bytes outside
+    # all existing regions, the same class as v2-A's A1 and v2-C's
+    # #camera-select markup re-pins). EVERYTHING ELSE in the
+    # SH-encoding task -- ``core/sh_encoding.ShEncoding``,
+    # ``cli/build_lod_cmd.py --sh-encoding``, ``viewers/spark/build_lod.
+    # build(sh_encoding=...) + cache key``, ``steps/publish.publish_
+    # scene(sh_encoding=...)`` -- is PYTHON and does NOT touch the JS
+    # template, so the byte-lock remains the right tool to guard them
+    # (it only protects template HTML bytes; the Python surface is
+    # under the new tests/test_sh_encoding_cli.py + tests/test_build_
+    # lod_cache_key.py + tests/test_publish_sh_encoding.py). A changed
+    # remainder BEYOND the +7-line re-pin would mean something else
+    # LEAKED (e.g. an unintended whitespace touch elsewhere in the
+    # template). NOT a regression for the 6 live single-camera scenes
+    # OR the kf-fehmarn / Fehmarn scenes: the +7 lines were already
+    # running there for weeks (the stray was the SOURCE PLY of those
+    # live scenes' clamp-free SH rendering); this task just MAKES IT
+    # COMMITTED. The Task-8 SAVE_* contract + BOTH Task-10 blocks live
     # OUTSIDE all FOURTEEN regions, survive the excision and are
     # asserted-present (re-pinned just above -- never relaxed); the
-    # shared ``three/addons/`` importmap mapping likewise survives
-    # (v2-C Phase 1 added NO importmap entry / NO SPCP-encoder /
-    # _PATCH_KEYS / core change).
+    # shared ``three/addons/`` importmap mapping likewise survives (the
+    # SH-encoding task added NO importmap entry / NO SPCP-encoder /
+    # _PATCH_KEYS / core change beyond the new ``sh_encoding.py``
+    # module which is Python, not template HTML).
     assert len(stripped) == _PRE_TASK20_REMAINDER_LEN, (
         f"length drift: {len(stripped)} != {_PRE_TASK20_REMAINDER_LEN} "
         "(an UNINTENDED change leaked OUTSIDE the FOURTEEN deliberate "
-        "regions -- e.g. a _camSel* wiring line escaped the EXISTING "
-        "Task-19 T19-JS region the 2c recipe requires it to stay "
-        "inside, the _trajActivePath Perspective guard escaped the "
-        "EXISTING Task-16 T16-TRAJ region, the #camera-select markup "
-        "escaped the new T20-CAMSEL-DOM region, or a NEW importmap "
-        "entry was added instead of reusing the existing three/addons/ "
-        "mapping via a dynamic import)"
+        "regions -- e.g. an unrelated whitespace touch elsewhere in the "
+        "template, an importmap entry that should have reused the "
+        "existing three/addons/ mapping, or the +7 ``pagedExtSplats`` "
+        "lines this task formalized into HEAD were moved/edited to "
+        "produce a different byte count than the deliberate re-pin)"
     )
     assert (
         hashlib.sha256(stripped.encode()).hexdigest()

@@ -1234,6 +1234,13 @@ _VIEWER_TEMPLATE = """\
   if (typeof sr.lod_splat_scale === 'number') sparkOpts.lodSplatScale = sr.lod_splat_scale;
   if (typeof sr.lod_render_scale === 'number') sparkOpts.lodRenderScale = sr.lod_render_scale;
   if (typeof sr.clip_xy === 'number' && sr.clip_xy > 0) sparkOpts.clipXY = sr.clip_xy;
+  // Clamp-free SH streaming: route paged .rad decode through ExtSplats
+  // (encode_ext_rgb shared-exponent, no +/-shN_max clip) instead of the
+  // default PackedSplats path. Per-scene opt-in via spark_render
+  // .paged_ext_splats; OFF by default so existing cluster-sh scenes are
+  // untouched. Required for F16-SH .rad (e.g. Fehmarn) to render full
+  // view-dependent SH without the +/-1 "rainbow" clamp.
+  if (sr.paged_ext_splats === true) sparkOpts.pagedExtSplats = true;
   // ---- Detail-lever URL overrides (A/B tuning; same spirit as ?budget=) ----
   // SparkRenderer opts: ?lodRenderScale=N ?lodSplatScale=N ?lodInflate=0|1
   //   ?focalAdjustment=N ?blurAmount=N ?preBlurAmount=N ?maxStdDev=N

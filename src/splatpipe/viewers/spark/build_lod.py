@@ -31,6 +31,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from ...core.sh_encoding import ShEncoding
+
 # Default location for the user's Spark clone. Override with SPARK_REPO env var.
 DEFAULT_SPARK_REPO_HINTS = (
     Path("H:/001_ProjectCache/1000_Coding/spark"),
@@ -128,6 +130,7 @@ def build(
     quality: bool = True,
     chunked: bool = True,
     cluster_sh: bool = True,
+    sh_encoding: ShEncoding = ShEncoding.auto,
     extra_flags: list[str] | None = None,
     on_progress: Callable[[str], None] | None = None,
     spark_repo: Path | None = None,
@@ -154,10 +157,19 @@ def build(
     on every cluster-sh chunk. Pass ``cluster_sh=False`` only to produce a
     stock-Spark-compatible build (larger, no fork needed).
 
+    ``sh_encoding`` (default :attr:`ShEncoding.auto`) selects the Spark
+    viewer's SH decode path. The choice is a VIEWER-SIDE toggle (both
+    decode paths share the same ``.rad`` bytes), but it's encoded into
+    the cache key with a distinct ``e<char>`` marker so a re-run with a
+    different mode never silently serves a stale entry. The marker char
+    is the mode's :attr:`ShEncoding.cache_flag` (``a``/``p``/``c``),
+    prefixed by a literal ``e`` so it never collides with the existing
+    chunked-``c`` / cluster-sh-``s`` flag chars.
+
     Idempotent: re-runs are cache hits (constant-time) when the input file's
     mtime + size + sha256 are unchanged. The flag set (quality / chunked /
-    cluster_sh / extra_flags) is part of the cache key, so changing a flag
-    correctly rebuilds rather than serving a stale asset.
+    cluster_sh / sh_encoding / extra_flags) is part of the cache key, so
+    changing a flag correctly rebuilds rather than serving a stale asset.
     """
     input_ply = Path(input_ply).resolve()
     if not input_ply.is_file():
@@ -170,6 +182,10 @@ def build(
         flag_str += "c"
     if cluster_sh:
         flag_str += "s"
+    # SH-encoding marker. Always appended (no escape hatch) so each of the
+    # three modes occupies a distinct cache namespace; literal ``e`` prefix
+    # so the encoding char never collides with the chunked-``c`` flag.
+    flag_str += "e" + sh_encoding.cache_flag
     if extra_flags:
         flag_str += "+" + ",".join(sorted(extra_flags))
 

@@ -12,7 +12,7 @@
   <img src="https://img.shields.io/badge/python-3.12+-blue?logo=python&logoColor=white" alt="Python 3.12+">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-0078D4?logo=windows" alt="Windows / Linux">
-  <img src="https://img.shields.io/badge/tests-567%20passed-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-660%20passed-brightgreen" alt="Tests">
 </p>
 
 ---
@@ -139,6 +139,8 @@ splatpipe init <colmap_dir>     # Create project from COLMAP data
 splatpipe clean                 # Clean COLMAP data (outliers + KD-tree)
 splatpipe train                 # Train splats at all LOD levels
 splatpipe assemble              # Build LOD streaming output
+splatpipe build-lod             # Prime the Spark .rad cache for a project
+splatpipe build-lod --sh-encoding paged   # Force clamp-free ExtSplats decode (full SH3, no rainbow)
 splatpipe export --mode folder  # Export to local folder (or --mode cdn)
 splatpipe set-camera-path TOK   # Apply a viewer-emitted SPCP1 camera-path token
 splatpipe publish -p .          # Deploy to a PERMANENT, redeploy-safe slug URL
@@ -182,7 +184,7 @@ MyProject/
 
 ```bash
 pip install -e ".[dev]"     # Install with dev dependencies
-pytest tests/ -v            # 593 collected; 567 passed, 26 skipped (~25s)
+pytest tests/ -v            # 686 collected; 660 passed, 26 skipped (~27s)
 ```
 
 Key design principle: **debug data over fallbacks**. No try/except — every step writes a `_debug.json` with full command, stdout/stderr, file stats, metrics, timing, and environment. When something fails, the debug JSON tells you exactly why.
