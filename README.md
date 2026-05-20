@@ -144,6 +144,7 @@ splatpipe build-lod --sh-encoding {auto,paged,clamped}  # SH decode-path mode (a
 splatpipe export --mode folder  # Export to local folder (or --mode cdn)
 splatpipe set-start-view TOK    # Apply a viewer-emitted SPV1 start-view token
 splatpipe set-camera-path TOK   # Apply a viewer-emitted SPCP1 camera-path token
+splatpipe init-php-auth --scene <slug>  # Provision per-scene PHP-save bearer token (#token=<token> fragment); SFTP-uploads sha256 hash only
 splatpipe publish -p .          # Deploy to a PERMANENT, redeploy-safe slug URL
 splatpipe publish --ply X.ply --slug s [--config base.json]  # Standalone publish (--config = base viewer-config to inherit)
 splatpipe status                # Show project state

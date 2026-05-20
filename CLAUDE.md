@@ -9,7 +9,7 @@ CLI-first Gaussian splatting pipeline. Takes COLMAP data through: auto-clean →
 ```bash
 cd H:\001_ProjectCache\1000_Coding\Splatpipe
 pip install -e ".[dev]"
-pytest tests/ -v                    # Run tests (721 collected; 695 passed, 26 skipped clean, ~28s)
+pytest tests/ -v                    # Run tests (819 collected; ~787 passed, 26 skipped, ~30s; #122 Phase 1 added 29 init-php-auth tests)
 splatpipe --help                    # CLI commands
 splatpipe web                       # Launch dashboard
 ```
@@ -51,6 +51,7 @@ splatpipe/                    # repo root
       set_start_view_cmd.py   # splatpipe set-start-view (apply SPV1 token → viewer-config.json)
       set_camera_path_cmd.py  # splatpipe set-camera-path (apply viewer-emitted SPCP1 token; decode+merge+deploy relay; v0.8+)
       publish_cmd.py          # splatpipe publish (build/stage → permanent Bunny slug, redeploy-safe; v0.7+)
+      init_php_auth_cmd.py    # splatpipe init-php-auth (per-scene PHP-save bearer token: gen 32-hex + sha256 + SFTP-upload hash; v0.8+ #122 Phase 1)
     core/                     # Project, config, constants, events
       project.py              # Project class: folder scaffold, state.json CRUD, _migrate_state()
       config.py               # TOML config loader (defaults + per-project merge)
@@ -168,6 +169,7 @@ splatpipe/                    # repo root
     test_set_camera_path.py   # splatpipe set-camera-path CLI (decode+merge+deploy relay; v0.8+)
     test_deploy_targets.py    # DeployTarget abstraction + bunny/folder targets (v0.8+)
     test_save_backends.py     # SaveBackend abstraction + cli/php/cloudflare backends (v0.8+)
+    test_init_php_auth_cli.py # splatpipe init-php-auth CLI (token gen + sha256 + SFTP-push; 29 tests, SFTP mocked; #122 Phase 1)
     test_html_for_save_mode.py     # Generated viewer save_mode/save_endpoint plumbing + NEGATIVE-CONTROL author-mode UX/gizmo/overlay tests (v0.8+)
     test_html_for_output_pin.py    # Output-pin byte-lock: html_for() len+SHA-256 for 6 corpus fixtures + UTF-8 LF fragment sanity (modularization-safe replacement for the retired excised-region source-level lock; T6 of #118)
     test_php_save_oracle.py        # PHP save adapter cross-language merge oracle (v0.8+)
@@ -406,7 +408,7 @@ Key config sections: `[tools]`, `[colmap_clean]`, `[postshot]` (profile, gpu, ma
 ## Tests
 
 ```bash
-pytest tests/ -v              # 721 collected (695 passed, 26 skipped)
+pytest tests/ -v              # 819 collected (~787 passed, 26 skipped; #122 Phase 1 added 29 init-php-auth tests)
 pytest tests/ -k colmap       # Just COLMAP tests
 pytest tests/ -k integration  # End-to-end with tiny data
 pytest tests/ -k trainers     # Trainer abstraction tests
