@@ -1,0 +1,805 @@
+  // ============================================================
+  //  TitlesModule (Phase 8 -- editor-arc-design #122 §4.7)
+  // ------------------------------------------------------------
+  //  3D-world-space title labels with timeline-animatable
+  //  appearance: a billboard CSS2D label per `cfg.titles3d[i]` that
+  //  shows in EVERY mode (author/user/embed) and fades in/out
+  //  across `[t_in, t_out]` with `fade_ms` smoothstep edges.
+  //
+  //  `titles3d` has lived in `core/config_safety.PUBLIC_VIEWER_CONFIG_KEYS`
+  //  + `core/config_merge.ALLOWED_PATCH_KEYS` for the whole Phase 2
+  //  rollout; the gizmo's legacy `_PATCH_KEYS` walk has been bouncing
+  //  it through every save unchanged. Phase 8 ships BOTH the renderer
+  //  (the CSS2D billboard built from `cfg.titles3d`) AND the
+  //  editor (Scene Settings drawer section + timeline lane).
+  //
+  //  CONTRACT (per spec §4.7 + the Phase-2A EditorModule shape):
+  //    name              'titles3d'
+  //    stateKey          'titles3d'
+  //    defaultModes      ['author', 'user', 'embed']  -- titles render
+  //                      in EVERY mode (the labels are a public scene
+  //                      element); the EDITOR UI is gated separately by
+  //                      the Scene Settings drawer's HudLayer in 17b.
+  //    mount/unmount     build/teardown CSS2DObject billboard labels +
+  //                      register an OverlayScene tick layer (active in
+  //                      all modes)
+  //    getDirtyState     {isDirty, patchObject} -- conservative; dirty
+  //                      when the current cfg.titles3d slice differs
+  //                      from the last clean baseline (JSON-stringify
+  //                      diff vs the baseline, mirrors 15a/15c)
+  //    markClean         snapshots the current slice as the new clean
+  //                      baseline (called by the Save dispatcher)
+  //    onCfgChange       wholesale cfg replacement (an EditHistory undo)
+  //                      -- rebuilds DOM if the titles3d slice changed
+  //    timelineLane      {rows:1, label:'titles',
+  //                       render(ctx, x, y, w, h, t)} -- contributes
+  //                      thin white bars at [t_in..t_out] to the
+  //                      Phase-2D multi-lane bottom-timeline
+  //    renderSceneSettings(parentEl)  -- appends the Titles section to
+  //                      the Scene Settings drawer (titles3d is NOT in
+  //                      17b's `_SS_PLACEHOLDER_ORDER` -- mirrors the
+  //                      Phase-6 CutsModule pattern: CREATE a fresh
+  //                      section + append it, the 17b placeholder set
+  //                      stays focused on the Phase 2/3/4/5/7 sections)
+  //
+  //  RENDERER CHOICE -- CSS2D over CSS3D:
+  //    Spec §4.7 lists either CSS3DObject or "sprite + canvas-texture
+  //    as fallback". v1 ships the CSS2D path because:
+  //      * Billboard semantics are built into CSS2DObject (always
+  //        faces the camera); spec §4.7 (and `titles3d.billboard`
+  //        defaults to `true`) wants exactly that.
+  //      * The existing `css2d` CSS2DRenderer (from 08_input) is
+  //        ALREADY rendering each frame via `css2d.render(scene,
+  //        camera)` in 18_frame_loop -- no second renderer / no
+  //        additional rAF / no dynamic-import dance / no edit to the
+  //        contested 07_setup_three_spark fragment.
+  //      * AnnotationModule (15c) proved the pattern for dot markers;
+  //        TitlesModule reuses the same proven pipeline.
+  //    `billboard:false` (a flat 3D-rotated CSS3DObject per `quat`) is
+  //    documented as a future extension; for v1 the editor only
+  //    surfaces `billboard:true`.
+  //
+  //  TITLE SCHEMA (mirrors `core/scene_cuts.py` docstring -- Phase 6
+  //  scope, formalised in the spec §4.7 + §3.X.titles3d):
+  //    {
+  //      id?:        string  (auto-generated `t3d_<hex>` if missing)
+  //      text:       string  (display copy; textContent -- never innerHTML)
+  //      pos:        [x, y, z] world position (THREE units)
+  //      quat?:      [x, y, z, w] rotation (RESERVED -- v1 ignores when
+  //                          billboard=true; non-billboard is future)
+  //      billboard:  boolean (default true; v1 supports true only)
+  //      size:       number  (font-size in pixels; default 24)
+  //      color:      string  (CSS color; default '#fff')
+  //      t_in:       number  (timeline-visible window start, seconds; 0)
+  //      t_out:      number  (timeline-visible window end, seconds; 999)
+  //      fade_ms:    number  (fade-in/out duration; default 300)
+  //    }
+  //  Legacy entries with missing fields are filled at READ time via
+  //  `_upgradeTitle` (additive -- never mutates the input). The Python
+  //  side has no `core/path_io.TITLE_DEFAULTS` constant yet (titles3d
+  //  was unrendered before this phase); the defaults here are the
+  //  source of truth + match the spec example. A future Python-side
+  //  TITLE_DEFAULTS constant can be cross-checked against this list
+  //  via a Node round-trip test, the same way 15c does for annotations.
+  //
+  //  TEST SURFACE: window.__editor.titles exposes (functions, NOT
+  //  getters -- sidesteps the Object.assign getter-freeze pattern
+  //  documented in 16_editor_timeline / 15d):
+  //    { titlesGet, titlesModuleDirty, titlesCount, titlesIds,
+  //      titlesGetById, titlesObj3DById, titlesElById, titlesIsVisible,
+  //      titlesForceTick, titlesLane, titlesSectionEl, titlesAddAt,
+  //      titlesDelete, titlesRender, _upgradeTitle, _timelineOpacity,
+  //      _TITLE_DEFAULTS }
+  // ============================================================
+  (function _titlesInit() {
+    if (typeof EditorModuleRegistry === 'undefined') return;
+    if (typeof THREE === 'undefined') return;
+
+    // ---- Live cfg + slice helpers (mirror 15a/15c -- one source of
+    //      truth). The module OWNS `cfg.titles3d` once it registers;
+    //      no other module should read or write the slice.
+    function _liveCfg() {
+      try { if (typeof cfg !== 'undefined' && cfg) return cfg; }
+      catch (e) {}
+      try { if (window.cfg) return window.cfg; }
+      catch (e) {}
+      return null;
+    }
+    function _slice() {
+      const c = _liveCfg();
+      if (!c) return [];
+      return Array.isArray(c.titles3d) ? c.titles3d : [];
+    }
+    function _sig(slice) {
+      try { return JSON.stringify(slice || []); }
+      catch (e) { return ''; }
+    }
+
+    // ---- TITLE_DEFAULTS -- the JS-side source of truth for missing
+    //      fields. A future Python-side `core/path_io.TITLE_DEFAULTS`
+    //      would mirror this list; for v1 the JS side is authoritative
+    //      (titles3d was rendered-out before this phase, so no Python
+    //      schema lock existed). Drift between this list and a future
+    //      Python constant is caught at review-time by a Node round-trip
+    //      test (mirrors 15c's annotation-defaults parity check).
+    const TITLE_DEFAULTS = {
+      text: '',
+      pos: [0, 0, 0],
+      billboard: true,
+      size: 24,
+      color: '#ffffff',
+      t_in: 0.0,
+      t_out: 999.0,
+      fade_ms: 300,
+    };
+
+    // ---- Per-title id generator. Mirrors `core/path_io._new_annotation_id`
+    //      (4 random bytes -> 8 hex chars) -- same collision space, same
+    //      crypto fallback (Math.random when window.crypto is shimmed
+    //      away in a Node test rig).
+    function _newTitleId() {
+      try {
+        const a = new Uint8Array(4);
+        (window.crypto || window.msCrypto).getRandomValues(a);
+        let s = '';
+        for (let i = 0; i < a.length; i++) {
+          const h = a[i].toString(16);
+          s += (h.length < 2) ? ('0' + h) : h;
+        }
+        return 't3d_' + s;
+      } catch (e) {
+        const r = Math.floor(Math.random() * 0xffffffff).toString(16);
+        return 't3d_' + ('00000000' + r).slice(-8);
+      }
+    }
+
+    // ---- Legacy-tolerant read: a `cfg.titles3d` entry from a hand-
+    //      written JSON (or a future schema-evolution shim) may be
+    //      missing some fields. Fill in the defaults at READ time so
+    //      the renderer never branches on undefined. Input is NEVER
+    //      mutated; the output is a fresh shallow copy + defaults.
+    function _upgradeTitle(t) {
+      const out = Object.assign({}, t || {});
+      if (typeof out.id !== 'string' || !out.id) out.id = _newTitleId();
+      for (const k in TITLE_DEFAULTS) {
+        if (!Object.prototype.hasOwnProperty.call(out, k) ||
+            out[k] === undefined) {
+          out[k] = TITLE_DEFAULTS[k];
+        }
+      }
+      return out;
+    }
+
+    // ---- Per-frame playhead time. Reads the master playhead from
+    //      09_playback_spline's IIFE-scope `_player` + `_t0` (same
+    //      closure-block as this fragment). When no playback is
+    //      active, time defaults to 0 -- which falls inside the
+    //      default [0..999] window so a Phase-8-authored title stays
+    //      visible at boot. Mirrors `15c::_playheadTime` exactly so
+    //      annotations + titles share ONE playhead semantics.
+    function _playheadTime() {
+      try {
+        if (typeof _player !== 'undefined' && _player) {
+          const sp = _player.playSpeed || 1.0;
+          let tn = ((performance.now() - _t0) / 1000) * sp;
+          if (_player.loop && _player.duration > 0 &&
+              tn > _player.duration) {
+            tn = tn % _player.duration;
+          }
+          return Math.max(0, tn);
+        }
+      } catch (e) {}
+      return 0;
+    }
+
+    // ---- Smoothstep + timeline opacity (byte-identical to 15c's
+    //      versions; documented twice so each module is self-
+    //      contained for a future refactor where one of them is
+    //      relocated). opacity = smoothstep(t_in, t_in+fade_s, t)
+    //      - smoothstep(t_out-fade_s, t_out, t); outside the window
+    //      opacity = 0 (title fully hidden).
+    function _smoothstep(a, b, x) {
+      if (b <= a) return x >= b ? 1 : 0;
+      const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
+      return t * t * (3 - 2 * t);
+    }
+    function _timelineOpacity(t3d, tNow) {
+      const tIn = (typeof t3d.t_in === 'number') ? t3d.t_in : 0.0;
+      const tOut = (typeof t3d.t_out === 'number') ? t3d.t_out : 999.0;
+      const fadeS = Math.max(0, t3d.fade_ms || 0) / 1000;
+      if (tNow < tIn - 1e-6 || tNow > tOut + 1e-6) return 0;
+      const fadeInEnd = Math.min(tIn + fadeS, (tIn + tOut) * 0.5);
+      const fadeOutStart = Math.max(tOut - fadeS, (tIn + tOut) * 0.5);
+      const rise = (fadeS > 0)
+        ? _smoothstep(tIn, fadeInEnd, tNow) : (tNow >= tIn ? 1 : 0);
+      const fall = (fadeS > 0)
+        ? _smoothstep(fadeOutStart, tOut, tNow) : (tNow >= tOut ? 1 : 0);
+      return Math.max(0, Math.min(1, rise - fall));
+    }
+
+    // ---- Per-title render-state record. One per upgraded entry.
+    //      `obj3d` is the CSS2DObject parented under the THREE.Scene
+    //      from 07_setup_three_spark (which the existing
+    //      `css2d.render(scene, camera)` call in 18_frame_loop
+    //      auto-renders each frame -- no second renderer, no second
+    //      DOM container, no second rAF).
+    const _titleStates = [];   // [{t3d, el, obj3d, lastOpacity}]
+
+    // ---- Build a single label DOM element. Style is inline (small
+    //      module-local surface; no new CSS region). textContent is
+    //      assigned (NEVER innerHTML) so a hand-authored
+    //      `cfg.titles3d[i].text` cannot inject markup.
+    function _buildTitleEl(t3d) {
+      const el = document.createElement('div');
+      el.className = 'spcp-title3d';
+      el.dataset.titleId = t3d.id;
+      el.textContent = (t3d.text || '').toString();
+      const sz = (typeof t3d.size === 'number' && t3d.size > 0)
+        ? t3d.size : 24;
+      const col = (typeof t3d.color === 'string' && t3d.color)
+        ? t3d.color : '#ffffff';
+      el.style.cssText =
+        'color:' + col + ';font-size:' + sz + 'px;' +
+        'font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;' +
+        'font-weight:600;letter-spacing:0.02em;' +
+        'text-shadow:0 1px 3px rgba(0,0,0,0.85),0 0 8px rgba(0,0,0,0.55);' +
+        'white-space:nowrap;pointer-events:none;user-select:none;' +
+        'opacity:1;transition:opacity 80ms linear;';
+      return el;
+    }
+
+    // ---- Tear down a single state record. The CSS2DObject's
+    //      DOM element is removed via `removeFromParent` (which
+    //      detaches the DOM element via CSS2DRenderer's internal
+    //      tracking) + a safety belt that walks parentNode for the
+    //      DOM element itself in case the renderer's tracking is
+    //      stale.
+    function _disposeState(s) {
+      if (!s) return;
+      try {
+        if (s.obj3d && s.obj3d.parent) {
+          s.obj3d.parent.remove(s.obj3d);
+        }
+      } catch (e) {}
+      try {
+        if (s.el && s.el.parentNode) {
+          s.el.parentNode.removeChild(s.el);
+        }
+      } catch (e) {}
+    }
+    function _disposeAll() {
+      while (_titleStates.length) {
+        _disposeState(_titleStates.pop());
+      }
+    }
+
+    // ---- Build all titles from the live cfg. Reuses CSS2DObject
+    //      (imported in 04_js_prologue) for the billboard. Reuses
+    //      the `scene` reference (IIFE-scope const in 07_setup_three_spark).
+    function _buildFromCfg() {
+      const raw = _slice();
+      for (const r of raw) {
+        const t3d = _upgradeTitle(r);
+        // v1: only billboard=true is supported. A non-billboard
+        // CSS3D path is deferred (the spec lists it as a future
+        // extension; a single-billboard scene is the 8-deployed-
+        // scenes baseline).
+        if (t3d.billboard === false) continue;
+        const el = _buildTitleEl(t3d);
+        let obj3d = null;
+        try {
+          obj3d = new CSS2DObject(el);
+          if (Array.isArray(t3d.pos) && t3d.pos.length >= 3) {
+            obj3d.position.fromArray(t3d.pos);
+          }
+          if (typeof scene !== 'undefined' && scene) scene.add(obj3d);
+        } catch (e) {}
+        _titleStates.push({
+          t3d: t3d,
+          el: el,
+          obj3d: obj3d,
+          lastOpacity: 1,
+        });
+      }
+    }
+
+    // ---- Per-frame tick. ONE timeline-opacity lookup per title.
+    //      Outside the [t_in, t_out] window the label is fully
+    //      hidden (visibility:hidden + opacity:0) so the cinematic
+    //      "appear/disappear at keyframe" effect is exact.
+    function _titlesTick(_t) {
+      const tNow = _playheadTime();
+      for (const s of _titleStates) {
+        if (!s.el) continue;
+        const opacity = _timelineOpacity(s.t3d, tNow);
+        s.lastOpacity = opacity;
+        s.el.style.opacity = String(opacity);
+        if (opacity <= 0) {
+          s.el.style.visibility = 'hidden';
+        } else {
+          s.el.style.visibility = '';
+        }
+      }
+    }
+
+    // ---- Conservative dirty tracking (mirrors 15a/15c). The save
+    //      dispatcher reads getDirtyState; the patchObject is the
+    //      raw cfg.titles3d slice (a registered slot WINS over the
+    //      legacy _PATCH_KEYS walk in 17_editor_gizmo per Phase 2B).
+    let _cleanSig = null;
+
+    // ---- Scene Settings drawer section. titles3d is NOT in 17b's
+    //      `_SS_PLACEHOLDER_ORDER` (the six pre-listed placeholders
+    //      cover Phase 3/4/5/7/2 sections); Phase 8 CREATES a fresh
+    //      section + appends it. Mirrors the Phase-6 CutsModule
+    //      pattern exactly so the Phase 2D drawer's section-creation
+    //      path is consistent across modules.
+    let _ssSection = null;
+    let _ssListEl = null;
+    function _ssRenderList() {
+      if (!_ssListEl) return;
+      _ssListEl.innerHTML = '';
+      const states = _titleStates.slice();
+      if (states.length === 0) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'color:#888;font-style:italic;' +
+          'padding:8px 0;';
+        empty.textContent = 'No 3D titles. Use "+ Add title" to ' +
+          'place one at the camera target.';
+        _ssListEl.appendChild(empty);
+        return;
+      }
+      for (let i = 0; i < states.length; i++) {
+        const s = states[i];
+        const t3d = s.t3d;
+        const row = document.createElement('details');
+        row.className = 'spcp-title-row';
+        row.dataset.titleId = t3d.id;
+        row.style.cssText = 'background:rgba(255,255,255,0.04);' +
+          'border-radius:5px;padding:5px 8px;margin-bottom:4px;' +
+          'border:1px solid rgba(255,255,255,0.06);';
+        const sm = document.createElement('summary');
+        const lbl = (t3d.text || '').toString().slice(0, 32);
+        sm.textContent = (i + 1) + '. ' + (lbl || '(untitled)');
+        sm.style.cssText = 'cursor:pointer;color:#ddd;font-size:11px;' +
+          'list-style:none;';
+        row.appendChild(sm);
+        const body = document.createElement('div');
+        body.style.cssText = 'padding:6px 0 4px 0;font-size:10px;' +
+          'color:#aaa;display:flex;flex-direction:column;gap:6px;';
+        // Text input (commit on change/Enter; never per-keystroke
+        // so the EditHistory snapshot is ONE per gesture per
+        // R8 §4.2).
+        const textWrap = document.createElement('label');
+        textWrap.style.cssText = 'display:flex;flex-direction:column;' +
+          'gap:2px;';
+        const textLbl = document.createElement('span');
+        textLbl.textContent = 'text';
+        textLbl.style.cssText = 'font-size:9px;color:#888;';
+        textWrap.appendChild(textLbl);
+        const textIn = document.createElement('input');
+        textIn.type = 'text';
+        textIn.value = t3d.text || '';
+        textIn.dataset.field = 'text';
+        textIn.style.cssText = 'background:#222;color:#ddd;border:1px ' +
+          'solid #444;font-size:11px;padding:3px 5px;width:100%;' +
+          'box-sizing:border-box;';
+        textIn.addEventListener('change', () => {
+          _pushUndo('title-text');
+          t3d.text = textIn.value;
+          if (s.el) s.el.textContent = t3d.text;
+          _writeBack();
+        });
+        textIn.addEventListener('keydown', (ev) => {
+          if (ev.key === 'Enter') { ev.preventDefault(); textIn.blur(); }
+        });
+        textWrap.appendChild(textIn);
+        body.appendChild(textWrap);
+        // Position summary (read-only -- drag-in-3D placement is
+        // Phase 9 -- the +Add button places at orbit target which
+        // is an explicit gesture so its value is exact).
+        const posLine = document.createElement('div');
+        const px = (t3d.pos && t3d.pos[0] !== undefined) ?
+          t3d.pos[0].toFixed(2) : '0';
+        const py = (t3d.pos && t3d.pos[1] !== undefined) ?
+          t3d.pos[1].toFixed(2) : '0';
+        const pz = (t3d.pos && t3d.pos[2] !== undefined) ?
+          t3d.pos[2].toFixed(2) : '0';
+        posLine.textContent = 'pos:  [' + px + ', ' + py + ', ' + pz + ']';
+        body.appendChild(posLine);
+        // Color + size compact row.
+        const cRow = document.createElement('div');
+        cRow.style.cssText = 'display:flex;gap:6px;align-items:center;';
+        const colLbl = document.createElement('span');
+        colLbl.textContent = 'color';
+        colLbl.style.cssText = 'font-size:9px;color:#888;min-width:34px;';
+        const colIn = document.createElement('input');
+        colIn.type = 'color';
+        colIn.value = t3d.color || '#ffffff';
+        colIn.dataset.field = 'color';
+        colIn.style.cssText = 'background:#222;border:1px solid #444;' +
+          'width:42px;height:22px;cursor:pointer;padding:0;';
+        colIn.addEventListener('change', () => {
+          _pushUndo('title-color');
+          t3d.color = colIn.value;
+          if (s.el) s.el.style.color = t3d.color;
+          _writeBack();
+        });
+        cRow.appendChild(colLbl);
+        cRow.appendChild(colIn);
+        const szLbl = document.createElement('span');
+        szLbl.textContent = 'size';
+        szLbl.style.cssText = 'font-size:9px;color:#888;margin-left:8px;';
+        const szIn = document.createElement('input');
+        szIn.type = 'range';
+        szIn.min = '8'; szIn.max = '96'; szIn.step = '1';
+        szIn.value = String(t3d.size || 24);
+        szIn.dataset.field = 'size';
+        szIn.style.cssText = 'flex:1;';
+        const szVal = document.createElement('span');
+        szVal.textContent = (t3d.size || 24) + 'px';
+        szVal.style.cssText = 'min-width:36px;text-align:right;' +
+          'font-size:10px;color:#aaa;';
+        szIn.addEventListener('pointerdown', () => {
+          _pushUndo('title-size');
+        });
+        szIn.addEventListener('input', () => {
+          szVal.textContent = szIn.value + 'px';
+        });
+        szIn.addEventListener('change', () => {
+          t3d.size = parseInt(szIn.value, 10) || 24;
+          if (s.el) s.el.style.fontSize = t3d.size + 'px';
+          _writeBack();
+        });
+        cRow.appendChild(szLbl);
+        cRow.appendChild(szIn);
+        cRow.appendChild(szVal);
+        body.appendChild(cRow);
+        // t_in / t_out / fade_ms inputs (compact row).
+        const timeRow = document.createElement('div');
+        timeRow.style.cssText = 'display:flex;gap:6px;';
+        const tInIn = _ssNumInput('t_in', t3d.t_in || 0.0, 0, 9999, 0.5,
+            () => {
+          _pushUndo('title-t-in');
+          t3d.t_in = parseFloat(tInIn.el.value) || 0;
+          _writeBack();
+        });
+        const tOutIn = _ssNumInput('t_out', t3d.t_out || 999.0, 0, 9999,
+            0.5, () => {
+          _pushUndo('title-t-out');
+          t3d.t_out = parseFloat(tOutIn.el.value) || 999;
+          _writeBack();
+        });
+        const fadeIn = _ssNumInput('fade_ms', t3d.fade_ms || 300, 0, 5000,
+            50, () => {
+          _pushUndo('title-fade-ms');
+          t3d.fade_ms = parseInt(fadeIn.el.value, 10) || 300;
+          _writeBack();
+        });
+        timeRow.appendChild(tInIn.wrap);
+        timeRow.appendChild(tOutIn.wrap);
+        timeRow.appendChild(fadeIn.wrap);
+        body.appendChild(timeRow);
+        // Delete button.
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.textContent = 'Delete title';
+        delBtn.style.cssText = 'background:#502020;color:#ffb0a0;' +
+          'border:1px solid #803030;border-radius:4px;font-size:10px;' +
+          'padding:4px 8px;cursor:pointer;margin-top:4px;';
+        delBtn.addEventListener('click', () => {
+          _delete(t3d.id);
+        });
+        body.appendChild(delBtn);
+        row.appendChild(body);
+        _ssListEl.appendChild(row);
+      }
+    }
+    // Small numeric-input factory (mirrors 15c's `_ssNumInput`).
+    function _ssNumInput(label, val, min, max, step, onCommit) {
+      const wrap = document.createElement('label');
+      wrap.style.cssText = 'display:flex;flex-direction:column;' +
+        'flex:1;gap:2px;';
+      const lbl = document.createElement('span');
+      lbl.textContent = label;
+      lbl.style.cssText = 'font-size:9px;color:#888;';
+      wrap.appendChild(lbl);
+      const inp = document.createElement('input');
+      inp.type = 'number';
+      inp.min = String(min); inp.max = String(max); inp.step = String(step);
+      inp.value = String(val);
+      inp.style.cssText = 'background:#222;color:#ddd;border:1px ' +
+        'solid #444;font-size:10px;padding:2px 4px;width:100%;' +
+        'box-sizing:border-box;';
+      inp.addEventListener('change', onCommit);
+      inp.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') { ev.preventDefault(); onCommit(); }
+      });
+      wrap.appendChild(inp);
+      return { wrap: wrap, value: () => inp.value, el: inp };
+    }
+    function _pushUndo(label) {
+      try { EditorModuleRegistry.pushUndo({ label: label }); }
+      catch (e) {}
+    }
+    function _writeBack() {
+      // Mutated cfg.titles3d in place -- the dirty signature flips on
+      // next getDirtyState(). Re-tick so an in-window opacity change
+      // (e.g. t_in/t_out edit) refreshes immediately.
+      _titlesTick(0);
+    }
+    function _rebuild() {
+      _disposeAll();
+      _buildFromCfg();
+    }
+
+    // ---- "+ Add title" -- places a new title at the OrbitControls
+    //      target (the orbit pivot). The default text is empty; the
+    //      author then types in the Scene Settings text input.
+    //      Mirrors 15c::_addAtTarget for placement semantics.
+    function _addAtTarget() {
+      const c = _liveCfg(); if (!c) return null;
+      let pos = [0, 0, 0];
+      try {
+        if (typeof controls !== 'undefined' && controls && controls.target) {
+          pos = [controls.target.x, controls.target.y, controls.target.z];
+        } else if (typeof camera !== 'undefined' && camera && camera.position) {
+          const fwd = new THREE.Vector3(0, 0, -1)
+            .applyQuaternion(camera.quaternion);
+          pos = [
+            camera.position.x + fwd.x,
+            camera.position.y + fwd.y,
+            camera.position.z + fwd.z,
+          ];
+        }
+      } catch (e) {}
+      const arr = Array.isArray(c.titles3d) ? c.titles3d : [];
+      const newT = {
+        id: _newTitleId(),
+        text: 'Title ' + (arr.length + 1),
+        pos: pos,
+        billboard: TITLE_DEFAULTS.billboard,
+        size: TITLE_DEFAULTS.size,
+        color: TITLE_DEFAULTS.color,
+        t_in: TITLE_DEFAULTS.t_in,
+        t_out: TITLE_DEFAULTS.t_out,
+        fade_ms: TITLE_DEFAULTS.fade_ms,
+      };
+      _pushUndo('title-add');
+      if (!Array.isArray(c.titles3d)) c.titles3d = [];
+      c.titles3d.push(newT);
+      _rebuild();
+      _ssRenderList();
+      return newT;
+    }
+
+    // ---- Delete a title by id (NOT index -- the live cfg index may
+    //      drift if another module/edit mutated the slice between
+    //      renders). Mirrors 15c::_delete semantics exactly.
+    function _delete(id) {
+      const c = _liveCfg(); if (!c) return false;
+      const arr = Array.isArray(c.titles3d) ? c.titles3d : [];
+      const idx = arr.findIndex(x => (x && x.id === id));
+      if (idx < 0) return false;
+      _pushUndo('title-delete');
+      arr.splice(idx, 1);
+      _rebuild();
+      _ssRenderList();
+      return true;
+    }
+
+    // ---- The EditorModule instance.
+    const titlesModule = {
+      name: 'titles3d',
+      stateKey: 'titles3d',
+      defaultModes: ['author', 'user', 'embed'],
+
+      mount: function (overlay, hud, interaction, modes) {
+        _buildFromCfg();
+        // Capture the current cfg.titles3d slice as the clean
+        // baseline; subsequent edits flip getDirtyState() true.
+        _cleanSig = _sig(_slice());
+        // Register an OverlayScene tick layer -- runs in all modes
+        // (defaultModes are 'author','user','embed'). The DOM
+        // (CSS2DObjects) is z-ordered by the css2d-root container
+        // owned by 08_input's `css2d` renderer; no 3D node is
+        // parented under OverlayScene.group so the layer's
+        // `node:undefined` means visibility-toggling is a no-op
+        // (OverlayScene's _applyVisibility never calls a node toggle
+        // -- it gates `update()` instead). update() runs every frame
+        // from the ONE OverlayScene tick (Phase-0 contract).
+        if (overlay && typeof overlay.register === 'function') {
+          overlay.register({
+            id: 'titles3d-tick',
+            modes: ['author', 'user', 'embed'],
+            update: (t) => _titlesTick(t),
+          });
+        }
+      },
+
+      unmount: function () {
+        _disposeAll();
+        _cleanSig = null;
+      },
+
+      getDirtyState: function () {
+        const sliceNow = _slice();
+        const sigNow = _sig(sliceNow);
+        const isDirty = (_cleanSig !== null && sigNow !== _cleanSig);
+        return { isDirty: isDirty, patchObject: sliceNow };
+      },
+
+      markClean: function () {
+        _cleanSig = _sig(_slice());
+      },
+
+      onCfgChange: function (prev, next, stateKey) {
+        // Wholesale cfg replacement (e.g. an EditHistory undo): if
+        // the titles3d slice changed, rebuild. Cheap sig-diff on a
+        // small list.
+        const sigNow = _sig(_slice());
+        if (sigNow !== _sig(_titleStates.map(s => s.t3d))) {
+          _rebuild();
+          if (_ssListEl) _ssRenderList();
+        }
+      },
+
+      // ---- Timeline lane -- contributes thin white bars at
+      //      [t_in..t_out] to the Phase 2D multi-lane bottom-
+      //      timeline. The registry walks
+      //      `timelineLane.render(ctx, x, y, w, h, t)` where
+      //      (x, y, w, h) is the lane's pixel rect and t is the
+      //      master playhead time. Spec §4.10 lists this lane as
+      //      "thin white bars".
+      timelineLane: {
+        rows: 1,
+        label: 'titles',
+        render: function (ctx, x, y, w, h, tCur) {
+          if (!ctx || w <= 0 || h <= 0) return;
+          const states = _titleStates;
+          if (!states.length) return;
+          // The master playhead's duration drives the time->x map.
+          // Without an active tour the multi-lane renderer still
+          // calls us; we degrade to a 1 s duration so a flat bar
+          // is at least visible (a non-trivial scene almost always
+          // has a path duration once the author has any keyframes).
+          let dur = 1;
+          try {
+            if (typeof _player !== 'undefined' && _player &&
+                _player.duration > 0) dur = _player.duration;
+          } catch (e) {}
+          const barH = Math.max(2, Math.floor(h * 0.4));
+          const yMid = y + Math.floor((h - barH) / 2);
+          ctx.fillStyle = '#ffffff';
+          for (let i = 0; i < states.length; i++) {
+            const t3d = states[i].t3d;
+            const tIn = Math.max(0, t3d.t_in || 0);
+            const tOut = Math.min(dur, t3d.t_out || dur);
+            if (tOut <= tIn) continue;
+            const x0 = x + (tIn / dur) * w;
+            const x1 = x + (tOut / dur) * w;
+            ctx.fillRect(x0, yMid, Math.max(2, x1 - x0), barH);
+          }
+        },
+      },
+
+      // ---- Scene Settings drawer section. titles3d is NOT in
+      //      17b's `_SS_PLACEHOLDER_ORDER` -- we CREATE a fresh
+      //      `<details data-section="titles3d">` + append it
+      //      (mirrors the Phase-6 CutsModule pattern: 17b is Phase-
+      //      2D owned and MUST NOT grow new placeholders here).
+      renderSceneSettings: function (parentEl) {
+        if (!parentEl) return;
+        // Idempotency: if we already attached, do not double-append.
+        const existing = (parentEl.querySelector
+          ? parentEl.querySelector('details[data-section="titles3d"]')
+          : null);
+        if (existing) {
+          _ssSection = existing;
+          _ssListEl = existing.querySelector('.spcp-titles3d-list');
+          _ssRenderList();
+          return;
+        }
+        _ssSection = document.createElement('details');
+        _ssSection.className = 'spcp-scene-settings-section';
+        _ssSection.dataset.section = 'titles3d';
+        _ssSection.style.cssText =
+          'background:rgba(255,255,255,0.04);border-radius:6px;' +
+          'padding:6px 10px;border:1px solid rgba(255,255,255,0.06);';
+        const sm = document.createElement('summary');
+        sm.textContent = '3D Titles';
+        sm.style.cssText =
+          'cursor:pointer;color:#fff;font-weight:600;font-size:12px;' +
+          'padding:4px 0;list-style:none;';
+        _ssSection.appendChild(sm);
+        const body = document.createElement('div');
+        body.style.cssText = 'padding:6px 0 4px 0;color:#9aa;' +
+          'font-size:11px;';
+        // "+ Add title" button at TOP so always reachable even with
+        // a long list (mirrors 15c's annotations section).
+        const addBtn = document.createElement('button');
+        addBtn.type = 'button';
+        addBtn.textContent = '+ Add title';
+        addBtn.style.cssText =
+          'background:rgba(255,255,255,0.18);color:#fff;' +
+          'border:1px solid rgba(255,255,255,0.40);border-radius:5px;' +
+          'font-size:11px;padding:5px 10px;cursor:pointer;' +
+          'margin-bottom:8px;width:100%;';
+        addBtn.addEventListener('click', () => { _addAtTarget(); });
+        body.appendChild(addBtn);
+        _ssListEl = document.createElement('div');
+        _ssListEl.className = 'spcp-titles3d-list';
+        body.appendChild(_ssListEl);
+        _ssSection.appendChild(body);
+        parentEl.appendChild(_ssSection);
+        _ssRenderList();
+        // Re-render when the drawer re-opens (so an externally-added
+        // title appears without an explicit refresh).
+        try {
+          EditorModuleRegistry.on('scene-settings:open', () => {
+            _ssRenderList();
+          });
+        } catch (e) {}
+      },
+
+      // ---- Test surface (functions, not getters -- sidesteps the
+      //      Object.assign getter-freeze pattern documented in
+      //      16_editor_timeline + 15d).
+      testSurface: {
+        titlesGet() { return titlesModule; },
+        titlesModuleDirty() {
+          return titlesModule.getDirtyState().isDirty;
+        },
+        titlesCount() { return _titleStates.length; },
+        titlesIds() { return _titleStates.map(s => s.t3d.id); },
+        titlesGetById(id) {
+          const s = _titleStates.find(s => s.t3d.id === id);
+          return s ? s.t3d : null;
+        },
+        titlesObj3DById(id) {
+          const s = _titleStates.find(s => s.t3d.id === id);
+          return s ? s.obj3d : null;
+        },
+        titlesElById(id) {
+          const s = _titleStates.find(s => s.t3d.id === id);
+          return s ? s.el : null;
+        },
+        titlesIsVisible(id) {
+          const s = _titleStates.find(s => s.t3d.id === id);
+          return s ? (s.lastOpacity > 0) : false;
+        },
+        titlesForceTick(t) { _titlesTick(t || 0); },
+        titlesLane() { return titlesModule.timelineLane; },
+        titlesSectionEl() { return _ssSection; },
+        titlesAddAt(pos) {
+          const c = _liveCfg(); if (!c) return null;
+          if (!Array.isArray(pos) || pos.length < 3) return null;
+          const arr = Array.isArray(c.titles3d) ? c.titles3d : [];
+          const newT = {
+            id: _newTitleId(),
+            text: 'Title ' + (arr.length + 1),
+            pos: [pos[0], pos[1], pos[2]],
+            billboard: TITLE_DEFAULTS.billboard,
+            size: TITLE_DEFAULTS.size,
+            color: TITLE_DEFAULTS.color,
+            t_in: TITLE_DEFAULTS.t_in,
+            t_out: TITLE_DEFAULTS.t_out,
+            fade_ms: TITLE_DEFAULTS.fade_ms,
+          };
+          if (!Array.isArray(c.titles3d)) c.titles3d = [];
+          c.titles3d.push(newT);
+          _rebuild();
+          if (_ssListEl) _ssRenderList();
+          return newT;
+        },
+        titlesDelete(id) { return _delete(id); },
+        titlesRender() { _ssRenderList(); },
+        // Helpers exposed for harness assertions.
+        _upgradeTitle: _upgradeTitle,
+        _timelineOpacity: _timelineOpacity,
+        _TITLE_DEFAULTS: TITLE_DEFAULTS,
+      },
+    };
+    EditorModuleRegistry.register(titlesModule);
+  })();
+
