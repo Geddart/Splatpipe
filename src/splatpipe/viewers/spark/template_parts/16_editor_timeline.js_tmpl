@@ -942,6 +942,67 @@
     // Task-16 overlay already uses -- see the layer below).
     requestAnimationFrame(() => { _tlResize(); _tlRefreshTotalUI(); });
 
+    // ---- Phase 2D (#122 §4.10): multi-lane bottom-timeline registry
+    //      scaffold. The existing _tlDraw owns the single-lane
+    //      canvas; v1 ships only the REGISTRY infrastructure so a
+    //      module can advertise its timeline-lane intent
+    //      (timelineLane = { rows, label, render(ctx, x, y, w, h, t) })
+    //      via EditorModuleRegistry. The actual visual integration
+    //      (multi-lane stacking + per-lane rendering + the left-
+    //      gutter labels) lands in Phases 3-7 alongside the modules
+    //      that own each lane. For Phase 2D the registry exposes:
+    //        timelineLanes.register(module)  -- pulls module.timelineLane
+    //        timelineLanes.list()            -- ordered Lane[]
+    //        timelineLanes.unregister(name)  -- removes by module name
+    //      and CameraPathModule is auto-registered via the
+    //      EditorModuleRegistry's 'register' event so its lane is
+    //      already in the list (the value is its `timelineLane` field
+    //      with rows=1 / label='Cameras' / a no-op render in Phase 2).
+    //
+    //      Why "infrastructure now, visual integration later": the
+    //      single-lane canvas currently lives in _tlDraw and is wired
+    //      against _tlActivePath's diamond row. Refactoring it
+    //      pre-emptively (without modules to fill the new lanes)
+    //      would risk regressing the working keyframe authoring path
+    //      for zero immediate user-visible gain.
+    const _tlLanesByName = Object.create(null);
+    const _tlLanesOrder = [];
+    const _LABEL_W = 36;            // left-gutter label width (px)
+    function _tlLaneRegister(mod) {
+      if (!mod || !mod.name || !mod.timelineLane) return false;
+      if (Object.prototype.hasOwnProperty.call(_tlLanesByName, mod.name)) {
+        return false;
+      }
+      const lane = mod.timelineLane;
+      _tlLanesByName[mod.name] = lane;
+      _tlLanesOrder.push(mod.name);
+      return true;
+    }
+    function _tlLaneUnregister(name) {
+      if (!Object.prototype.hasOwnProperty.call(_tlLanesByName, name)) {
+        return false;
+      }
+      delete _tlLanesByName[name];
+      const i = _tlLanesOrder.indexOf(name);
+      if (i !== -1) _tlLanesOrder.splice(i, 1);
+      return true;
+    }
+    function _tlLaneList() {
+      return _tlLanesOrder.map((n) => ({
+        name: n, lane: _tlLanesByName[n],
+      }));
+    }
+    // Subscribe to module registrations. The CameraPathModule
+    // registers itself BEFORE this IIFE runs (15a < 16 in fragment
+    // order); the 'register' event listener pulls it on first
+    // attach, and the catch-up walk handles modules that already
+    // registered. Later phase modules trigger on register.
+    try {
+      EditorModuleRegistry.on('register', _tlLaneRegister);
+      const _alreadyRegistered = EditorModuleRegistry.list();
+      for (const m of _alreadyRegistered) _tlLaneRegister(m);
+    } catch (e) {}
+
     // Fan the per-frame playhead sync off the ONE OverlayScene
     // tick (Task-0 contract -- no parallel rAF). modes:['author']
     // so OverlayScene skips update() outside author mode (inert in
@@ -1213,6 +1274,10 @@
             _tlSyncPlayhead();
             return _tlIsAutoTotal(p);
           },
+          // Phase 2D multi-lane registry test surface.
+          get tlLaneCount() { return _tlLanesOrder.length; },
+          get tlLaneNames() { return _tlLanesOrder.slice(); },
+          get tlLabelGutterPx() { return _LABEL_W; },
           // Set a total-duration value (the SAME path Enter/blur in
           // the input runs). Returns the post-commit value.
           tlSetTotalDuration(v) {

@@ -225,6 +225,72 @@ def test_phase_2c_timeline_addenda_present():
         "EditHistory snapshots/s); commit only on blur/Enter."
     )
 
+
+# --------------------------------------------------------------------------
+# Phase 2D (editor-arc-design #122 §12 + §4.10): Scene Settings drawer
+# scaffold + multi-lane bottom-timeline registry infrastructure.
+# --------------------------------------------------------------------------
+
+_PHASE_2D_MARKERS = (
+    # 17b fragment: drawer scaffold + cog toggle + sessionStorage
+    "Scene Settings drawer scaffold",
+    "id = 'scene-settings-cog'",
+    "id = 'scene-settings-drawer'",
+    "'spcp:scene-settings:open'",
+    "_SS_PLACEHOLDER_ORDER",
+    # 6 placeholder sections in spec §12.2 order
+    "['panorama', 'Backdrop'",
+    "['postfx', 'Post-FX'",
+    "['annotations', 'Annotations'",
+    "['audio', 'Audio'",
+    "['intro', 'Intro'",
+    "['startview', 'Start View'",
+    # renderSceneSettings hook wiring (per-module hook honoured)
+    "renderSceneSettings",
+    # Multi-lane timeline registry infrastructure (16_editor_timeline)
+    "multi-lane bottom-timeline registry",
+    "_tlLanesByName",
+    "_tlLaneRegister",
+    "const _LABEL_W = 36;",
+)
+
+
+def test_phase_2d_scene_settings_drawer_and_multi_lane_registry_present():
+    """The 17b Scene Settings drawer scaffold + the 16 multi-lane
+    registry infrastructure are both wired into the rendered HTML."""
+    html = html_for("HarnessScene")
+    for mk in _PHASE_2D_MARKERS:
+        assert mk in html, f"Phase 2D marker missing: {mk!r}"
+    # Section order invariant: the 6 placeholder sections appear in
+    # registration order (per spec §12.2 table). Find each one's
+    # offset in the placeholder array.
+    order = ['panorama', 'postfx', 'annotations', 'audio', 'intro', 'startview']
+    offsets = []
+    for sect in order:
+        # The placeholder entry literal has the form `['<id>', '<Label>'`.
+        needle = "['" + sect + "', '"
+        i = html.find(needle)
+        assert i > 0, f"section placeholder missing: {sect!r}"
+        offsets.append(i)
+    for a, b in zip(offsets, offsets[1:]):
+        assert a < b, (
+            "section placeholder order broken; spec §12.2 requires "
+            "panorama -> postfx -> annotations -> audio -> intro -> startview"
+        )
+    # Multi-lane registry hooks into the EditorModuleRegistry's
+    # 'register' event so any future module's `timelineLane` is
+    # auto-pulled when it registers. The catch-up walk also pulls
+    # modules that registered BEFORE the timeline IIFE runs.
+    assert "EditorModuleRegistry.on('register', _tlLaneRegister);" in html, (
+        "multi-lane registry must subscribe to EditorModuleRegistry "
+        "'register' so modules registered later are auto-pulled"
+    )
+    assert "const _alreadyRegistered = EditorModuleRegistry.list();" in html, (
+        "multi-lane registry must also catch up on modules that "
+        "registered BEFORE the timeline IIFE ran (e.g. CameraPathModule "
+        "in 15a -- fragment-order 15a < 16)"
+    )
+
 # --------------------------------------------------------------------------
 # my16-M1 follow-up: the camera-path overlay must be SCENE-RELATIVE
 # --------------------------------------------------------------------------
