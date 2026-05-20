@@ -138,14 +138,20 @@
       } catch (e) {}
     }
 
-    // ---- Slug for the SPCP1 token (mirror the SPV1 relay block):
-    //      the page <title> h1 text, sanitised to the kebab/word set
-    //      encode_spcp accepts (it rejects a ':' in the slug -- our
-    //      sanitiser strips it, so split(':',2) is safe both ways).
+    // ---- Slug for the SPCP1 token + http-mode save body (mirror the
+    //      SPV1 relay block): the page <title> h1 text, lower-cased then
+    //      sanitised to the kebab/word set encode_spcp accepts (it
+    //      rejects a ':' in the slug -- our sanitiser strips it, so
+    //      split(':',2) is safe both ways). Lower-case is REQUIRED for
+    //      the http-mode save path: save-camera.php validates the slug
+    //      with ^[a-z0-9_-]{1,64}$ -- a mixed-case display name like
+    //      "Fehmarn" would 400 against that regex even though SPCP1's
+    //      encode_spcp is case-tolerant. The lowercased slug also
+    //      matches the canonical Bunny CDN slug convention.
     const _gzProjName = (document.querySelector('#title h1') &&
       document.querySelector('#title h1').textContent || 'scene').trim();
-    const _gzSlug = (_gzProjName.replace(/[^A-Za-z0-9_-]+/g, '_')
-      .slice(0, 48)) || 'scene';
+    const _gzSlug = (_gzProjName.toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, '_').slice(0, 48)) || 'scene';
 
     // ---- BYTE-IDENTICAL JS port of core/spcp_token.encode_spcp ----
     // Python: json.dumps(payload, separators=(",",":")).encode()

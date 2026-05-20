@@ -54,6 +54,18 @@ PIN UPDATES:
     ``{slug, patch}`` wrapper that was wrong for the live PHP
     round-trip. All 6 fixtures shifted by the same +1408 byte delta
     in lockstep; pins re-pinned to the new baseline.
+  * 2026-05-20 (Phase 1 live-verify): ``_gzSlug`` is now lower-cased
+    before the character-class sanitiser strips non-``[a-z0-9_-]``
+    chars. The mixed-case display name "Fehmarn" was being sent as
+    the slug to ``save-camera.php`` which validates with
+    ``^[a-z0-9_-]{1,64}$`` -- so every http-mode Save 400'd with
+    "invalid slug". Caught by the Phase-1 live-verify against the
+    deployed ``fehmarn`` slug. The fix lower-cases the H1 text first
+    so the JS slug matches the canonical Bunny CDN convention (which
+    is itself lowercase). SPCP1's ``encode_spcp`` is case-tolerant,
+    so the cli-mode token continues to work; only http-mode was
+    broken. All 6 fixtures shifted by the same +430 byte delta in
+    lockstep; pins re-pinned to the new baseline.
 """
 
 from __future__ import annotations
@@ -69,42 +81,44 @@ from splatpipe.viewers.spark.template import html_for
 # Pins captured 2026-05-20 at HEAD f46fa67 (before T1 of #118), then
 # re-pinned 2026-05-20 (UX-5 fix; +4383 bytes in lockstep), then
 # re-pinned 2026-05-20 again (Phase 1 Q5: #author= -> #token= rename +
-# Save body shape correction; all 6 fixtures +1408 bytes in lockstep).
+# Save body shape correction; all 6 fixtures +1408 bytes in lockstep),
+# then re-pinned 2026-05-20 a third time (Phase 1 live-verify slug
+# lower-case fix; all 6 fixtures +430 bytes in lockstep).
 CORPUS: list[tuple[str, tuple, dict, int, str]] = [
     (
         "harness_defaults",
         ("HarnessScene",),
         {},
-        473262,
-        "dfc2b1565e6f0513b41d18fbc5ddc4f030c07241b808f58ff3a64a5c9c7909a2",
+        473692,
+        "796c2708f5843ec9a91612857ebc73947eb891f4a8ed3f0449dccb39a9c6ff5e",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        473234,
-        "cd2a64148dad7af992d0aef1c866f9febb0da971618a2811faafa3b144111511",
+        473664,
+        "5c2d949db94f0615240a31fdc43759f6ed688f1d9eddd521bec361dea00205db",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        473229,
-        "854efcc59fbd803b338a109957fbb80384ca0264e02caa7b7c51c1e9b2808f60",
+        473659,
+        "6a7a10f131efd2e343b56858f5cd82a51ec9804de00d9712f9ee0fccda926e21",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        473208,
-        "3d9a0046e88bd828a37944d64d83f57fa42876d51325753654479a7400821c6d",
+        473638,
+        "a6cdc6cac7b604ecb0a08198aeef5eb685a452a41919f57cd842df79bed0725b",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        473273,
-        "80986510c8ec46d9f363920a6998b6d24b191a2257652ee3339beaa964724ca1",
+        473703,
+        "964bc62a9a05cc75349cd85df101a7bf56653e28de40eda66952b32733984212",
     ),
     (
         "share_card",
@@ -114,8 +128,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        473132,
-        "31478dd551a4c6f324b8ade963097d6443f33d9f42d6dfec7fe7e5313419b06f",
+        473562,
+        "2088ddb8ef95b7f8dcda4c1382bbbf9522721fb384796ac3be4069dcc8c41706",
     ),
 ]
 
