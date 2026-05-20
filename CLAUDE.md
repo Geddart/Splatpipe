@@ -9,7 +9,7 @@ CLI-first Gaussian splatting pipeline. Takes COLMAP data through: auto-clean →
 ```bash
 cd H:\001_ProjectCache\1000_Coding\Splatpipe
 pip install -e ".[dev]"
-pytest tests/ -v                    # Run tests (714 collected; 688 passed, 26 skipped clean, ~26s)
+pytest tests/ -v                    # Run tests (721 collected; 695 passed, 26 skipped clean, ~28s)
 splatpipe --help                    # CLI commands
 splatpipe web                       # Launch dashboard
 ```
@@ -68,7 +68,29 @@ splatpipe/                    # repo root
       base.py                 # ViewerRenderer Protocol + clear_output_dir helper
       playcanvas/             # Skeleton; current PC viewer still lives in steps/lod_assembly.py
       spark/
-        template.py           # Self-contained Spark 2 viewer (THREE + @sparkjsdev/spark); hosts the in-viewer camera-keyframe editor + cinematic playback shell in _VIEWER_TEMPLATE (v0.8+)
+        template.py             # Orchestrator (~190 lines): reads template_parts/, @@NAME@@ substitution, html_for() (modularized v0.8+, T1-T6 of #118)
+        template_parts/         # Modularized Spark viewer (v0.8+, T1-T6 of #118): 21 fragments per concern, byte-identical generated HTML proven via 6-fixture output-pin
+          01_head.html_tmpl     # HTML head + share-meta @@SHARE_META@@ slot
+          02a_styles_main.css_tmpl
+          02b_styles_editor.css_tmpl
+          03_body_chrome.html_tmpl  # body shell + camera-select + HUD + loading
+          04_js_prologue.js_tmpl    # importmap (host-pinned Three + Spark fork) + SAVE_* / STOCK consts
+          05_framework.js_tmpl  # ModeManager / OverlayScene / InteractionManager / HudLayer
+          06_cfg.js_tmpl        # viewer cfg + _DEFAULTS
+          07_setup_three_spark.js_tmpl  # THREE + Spark + sparkOpts + paged_ext_splats
+          08_input.js_tmpl      # URL overrides + WASD + look + pivot + focus + HUD + touch + iOS callout + annotations
+          09_playback_spline.js_tmpl   # CubicSpline + buildPlayer
+          10_camera_select.js_tmpl     # camera-select / kebab / dropdown wiring
+          11_clip_player.js_tmpl       # ClipPlayer
+          12_user_transport.js_tmpl    # End-user transport + _orbitPathAround
+          13_bench.js_tmpl      # Bench launchers + ?bench= auto-trigger
+          14_splat_budget.js_tmpl      # Splat budget dropdown
+          15_editor_trajectory.js_tmpl # Author editor -- trajectory overlay
+          16_editor_timeline.js_tmpl   # Author editor -- bottom timeline
+          17_editor_gizmo.js_tmpl      # Author editor -- gizmo + Save + SPCP
+          18_frame_loop.js_tmpl        # Frame loop + bench recorder + setstart + preload IIFE
+          19_intro_controller.js_tmpl  # Intro controller
+          99_closing.html_tmpl  # _spDebug + </script></body></html>
         assembler.py          # SparkAssembler: build_lod -> scene.rad + viewer-config + index.html
         build_lod.py          # Wrapper around the Rust build-lod CLI
         _gen_harness_viewer.py # Generate + serve the Spark viewer-under-test for the Playwright editor harness (v0.8+)
@@ -146,7 +168,8 @@ splatpipe/                    # repo root
     test_set_camera_path.py   # splatpipe set-camera-path CLI (decode+merge+deploy relay; v0.8+)
     test_deploy_targets.py    # DeployTarget abstraction + bunny/folder targets (v0.8+)
     test_save_backends.py     # SaveBackend abstraction + cli/php/cloudflare backends (v0.8+)
-    test_html_for_save_mode.py     # Generated viewer save_mode/save_endpoint plumbing (v0.8+)
+    test_html_for_save_mode.py     # Generated viewer save_mode/save_endpoint plumbing + NEGATIVE-CONTROL author-mode UX/gizmo/overlay tests (v0.8+)
+    test_html_for_output_pin.py    # Output-pin byte-lock: html_for() len+SHA-256 for 6 corpus fixtures + UTF-8 LF fragment sanity (modularization-safe replacement for the retired excised-region source-level lock; T6 of #118)
     test_php_save_oracle.py        # PHP save adapter cross-language merge oracle (v0.8+)
     test_cloudflare_save_oracle.py # Cloudflare Worker save cross-language merge oracle (v0.8+)
     test_publish_config_sanitize.py # Public viewer-config sanitiser + publish_scene secret-leak regression (bug-audit #3; v0.8+)
@@ -383,7 +406,7 @@ Key config sections: `[tools]`, `[colmap_clean]`, `[postshot]` (profile, gpu, ma
 ## Tests
 
 ```bash
-pytest tests/ -v              # 714 collected (688 passed, 26 skipped)
+pytest tests/ -v              # 721 collected (695 passed, 26 skipped)
 pytest tests/ -k colmap       # Just COLMAP tests
 pytest tests/ -k integration  # End-to-end with tiny data
 pytest tests/ -k trainers     # Trainer abstraction tests
