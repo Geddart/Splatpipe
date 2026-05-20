@@ -35,10 +35,9 @@ import os
 import tempfile
 import urllib.parse
 import urllib.request
-from typing import Any
 
 import bpy
-from mathutils import Euler, Matrix, Quaternion, Vector
+from mathutils import Euler, Matrix, Vector
 
 
 bl_info = {
