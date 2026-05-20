@@ -586,6 +586,170 @@ def test_2026_05_20_author_ux_markers_present_and_negative_controlled():
 
 
 # --------------------------------------------------------------------------
+# 2026-05-20 author-mode UX-5: <2-keyframe path authoring unblock
+# --------------------------------------------------------------------------
+# Second user-reported bug in the same live ?author=1 editor on the
+# deployed kf-fehmarn slug ("I seem to not be able to scrub the timeline
+# when I create a new camera that only has one keyframe. But how am I
+# supposed to set the next keyframe if I cannot scrub?"). Three coupled
+# fixes, all region-interior to the modularized fragment files in
+# ``viewers/spark/template_parts/`` (recipe-2c -- the orchestrator
+# in ``template.py`` is untouched). NEGATIVE-CONTROLLED against the
+# committed pre-UX-5 HEAD (2b92e75; the T6-of-#118 modularization
+# commit) -- every UX-5 marker is ABSENT there, so this test provably
+# FAILS against the pre-fix code (a genuine discriminator, not a
+# tautology). The output-pin in ``test_html_for_output_pin.py``
+# independently locks the generated-HTML byte length / sha for the
+# 6-fixture corpus (re-pinned in lockstep against this UX-5 delta).
+_AUTHOR_UX_5_MARKERS = (
+    # Fix-1: _camSelApply author branch unconditionally re-enables
+    # OrbitControls after a real-path bind (lifted OUT of the snap
+    # block which only fires when buildPlayer succeeded, i.e. 2+ kfs).
+    "// UX-5 (2026-05-20)",
+    # Fix-2: _gzRecordKeyframe default temporal spacing constant for
+    # the second keyframe on a fresh 1-kf path (so the spline gains
+    # a non-zero duration and becomes scrub-able after two K presses).
+    "const _GZ_DEFAULT_KF_DT = 2.0;",
+    # Fix-3: startPath() reworded <2-kf alert text telling the author
+    # WHAT TO DO instead of just stating the precondition.
+    "Position the camera and press K to add",
+)
+
+
+def test_2026_05_20_ux5_one_keyframe_path_authoring_unblock():
+    """The three UX-5 fixes user-reported via Telegram on 2026-05-20
+    must each leave a structural marker in the rendered HTML.
+    NEGATIVE-CONTROLLED against the pre-UX-5 HEAD (2b92e75 -- the
+    T6-of-#118 modularization commit) -- every marker is ABSENT there,
+    so this test provably FAILS against the pre-fix code. The behaviour
+    is also verified end-to-end via Playwright on a deployed real-pixel
+    slug (the manual harness in ``tests/manual/``)."""
+    html = html_for("HarnessScene")
+    for mk in _AUTHOR_UX_5_MARKERS:
+        assert mk in html, f"UX-5 marker missing: {mk!r}"
+
+    # Fix-1 STRUCTURAL invariant: the `if (_player && _activePathId &&
+    # _activePathId !== val) { try { stopPath(); } catch (e) {} }`
+    # block must live OUTSIDE the `if (pv && pv.duration > 0) {` snap
+    # block in _camSelApply's author branch. On a <2-kf path pv === null
+    # and the snap block is skipped -- the stale-player stop must still
+    # run. Structural: find the author-branch try block, then assert
+    # the stopPath happens BEFORE the duration > 0 gate.
+    apply_i = html.index("function _camSelApply(val) {")
+    apply_end = html.index("function _camSelBuildOptions", apply_i)
+    body = html[apply_i:apply_end]
+    stop_i = body.find(
+        "if (_player && _activePathId && _activePathId !== val)")
+    snap_gate_i = body.find("if (pv && pv.duration > 0)")
+    assert stop_i > 0 and snap_gate_i > 0, (
+        "UX-5: _camSelApply must contain BOTH the stale-player stop "
+        "and the snap-block duration gate"
+    )
+    assert stop_i < snap_gate_i, (
+        "UX-5 fix-1: the stale-player stop must run BEFORE the snap "
+        "block's duration > 0 gate, so it fires on a <2-kf bind too"
+    )
+
+    # Fix-1 STRUCTURAL invariant: a literal `controls.enabled = true;`
+    # belt-and-braces line must exist in the author branch of
+    # _camSelApply, AFTER the snap block but still inside the
+    # try {} block guarded by `if (apPath)`. On a <2-kf path the snap
+    # block no-ops, so this unconditional re-enable is what unblocks
+    # the user from mouse-dragging the camera to position kf #2.
+    re_enable_i = body.find("controls.enabled = true;", snap_gate_i)
+    assert re_enable_i > 0, (
+        "UX-5 fix-1: _camSelApply author branch missing unconditional "
+        "`controls.enabled = true;` after the snap block"
+    )
+
+    # Fix-2 STRUCTURAL invariant: _gzRecordKeyframe must branch on
+    # `p.keyframes.length === 1` to place kf #2 at `lastT +
+    # _GZ_DEFAULT_KF_DT`. Without this branch the second K on a 1-kf
+    # path places kf #2 at t=0 (the playhead default when buildPlayer
+    # returns null), collapsing both kfs onto the same t and yielding
+    # a duration-0 spline that is still un-scrub-able.
+    rec_i = html.index("function _gzRecordKeyframe() {")
+    rec_end = html.index("_gzStopTour();", rec_i)
+    rec_body = html[rec_i:rec_end]
+    assert "p.keyframes.length === 1" in rec_body, (
+        "UX-5 fix-2: _gzRecordKeyframe must branch on a 1-kf path"
+    )
+    assert "_GZ_DEFAULT_KF_DT" in rec_body, (
+        "UX-5 fix-2: _gzRecordKeyframe must use _GZ_DEFAULT_KF_DT for "
+        "the kf #2 placement"
+    )
+
+    # Fix-3 STRUCTURAL invariant: the prior alert literal "Path needs
+    # at least 2 keyframes." is REMOVED entirely from the rendered
+    # HTML; the new alert names the path + reports the keyframe count
+    # + tells the author what to do.
+    assert "Path needs at least 2 keyframes." not in html, (
+        "UX-5 fix-3: the prior un-actionable alert literal must be "
+        "fully removed from the rendered HTML"
+    )
+
+    # (NEGATIVE CONTROL) the committed pre-UX-5 HEAD (2b92e75 -- the
+    # T6-of-#118 modularization commit) -- fetched fragment-by-
+    # fragment via `git cat-file blob` (the modularized loader reads
+    # from a side `template_parts/` dir which the in-process
+    # template.py mod can't reach via _git_blob_module). We check the
+    # raw fragment SOURCE -- the only two files UX-5 modifies -- to
+    # prove every UX-5 marker is ABSENT at 2b92e75 (the test would
+    # otherwise be a tautology).
+    import subprocess
+    pre_camsel = subprocess.run(
+        ["git", "cat-file", "blob",
+         "2b92e75:src/splatpipe/viewers/spark/template_parts/"
+         "10_camera_select.js_tmpl"],
+        stdout=subprocess.PIPE, check=True,
+        cwd=str(Path(__file__).resolve().parents[1]),
+    ).stdout.decode("utf-8")
+    pre_gizmo = subprocess.run(
+        ["git", "cat-file", "blob",
+         "2b92e75:src/splatpipe/viewers/spark/template_parts/"
+         "17_editor_gizmo.js_tmpl"],
+        stdout=subprocess.PIPE, check=True,
+        cwd=str(Path(__file__).resolve().parents[1]),
+    ).stdout.decode("utf-8")
+    pre_combined = pre_camsel + "\n" + pre_gizmo
+    for mk in _AUTHOR_UX_5_MARKERS:
+        assert mk not in pre_combined, (
+            f"negative control FAILED: UX-5 marker {mk!r} "
+            "unexpectedly already in the pre-UX-5 2b92e75 fragments "
+            "(the test would not discriminate the fix)"
+        )
+    # Pre-UX-5 has the OLD un-actionable alert literal -- proves the
+    # rewording in fix-3 actually shipped.
+    assert "Path needs at least 2 keyframes." in pre_camsel, (
+        "negative control FAILED: pre-UX-5 2b92e75 10_camera_select "
+        "unexpectedly does NOT carry the old 'Path needs at least 2 "
+        "keyframes.' alert (the test would not discriminate fix-3)"
+    )
+    # Pre-UX-5 has the OLD nesting in _camSelApply -- the stale-player
+    # stop and controls.enabled re-enable are INSIDE the snap block,
+    # so they no-op on a <2-kf path bind. Verify against the fragment
+    # source directly.
+    pre_apply_i = pre_camsel.index("function _camSelApply(val) {")
+    pre_apply_end = pre_camsel.index(
+        "function _camSelBuildOptions", pre_apply_i)
+    pre_body = pre_camsel[pre_apply_i:pre_apply_end]
+    pre_stop_i = pre_body.find(
+        "if (_player && _activePathId && _activePathId !== val)")
+    pre_snap_gate_i = pre_body.find("if (pv && pv.duration > 0)")
+    assert pre_stop_i > 0 and pre_snap_gate_i > 0, (
+        "negative control FAILED: pre-UX-5 2b92e75 unexpectedly lacks "
+        "either the stale-player stop or the snap-block duration gate"
+    )
+    # Pre-UX-5: stale-player stop INSIDE the snap block (after the
+    # duration > 0 gate). Post-UX-5 it MUST be before.
+    assert pre_stop_i > pre_snap_gate_i, (
+        "negative control FAILED: pre-UX-5 2b92e75 unexpectedly already "
+        "has the stale-player stop OUTSIDE the snap block (the test "
+        "would not discriminate fix-1)"
+    )
+
+
+# --------------------------------------------------------------------------
 # (b) explicit kwargs are baked through verbatim
 # --------------------------------------------------------------------------
 

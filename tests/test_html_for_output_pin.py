@@ -33,6 +33,17 @@ WHEN TO UPDATE THE PINS: only when a DELIBERATE generated-HTML change is
 made (a real feature edit). Then update both the length and the sha256
 in lockstep. Do NOT update for a "byte-inert" refactor -- that's exactly
 the change this test should catch.
+
+PIN UPDATES:
+  * 2026-05-20 (UX-5): user-reported regression in the live ?author=1
+    editor on kf-fehmarn -- "<2-keyframe path is unscrub-able + record
+    overwrites at t=0". The fix in 10_camera_select / 17_editor_gizmo
+    fragments deliberately changes the generated HTML (lifts the
+    stale-player stop + controls re-enable OUT of the snap block in
+    ``_camSelApply``, adds a ``_GZ_DEFAULT_KF_DT`` constant in the K
+    recorder for the 1-kf -> 2-kf bridge, and rewords the
+    ``startPath`` <2-kf alert). All 6 fixtures shifted by the same
+    +4383 byte delta in lockstep; pins updated to the new baseline.
 """
 
 from __future__ import annotations
@@ -45,42 +56,45 @@ from splatpipe.viewers.spark.template import html_for
 
 
 # CORPUS: list of (name, args, kwargs, expected_len, expected_sha256).
-# Pins captured 2026-05-20 at HEAD f46fa67 (before T1 of #118).
+# Pins captured 2026-05-20 at HEAD f46fa67 (before T1 of #118), then
+# re-pinned 2026-05-20 (UX-5 fix; all 6 fixtures +4383 bytes in lockstep
+# from the lifted controls re-enable + K-recorder DT bridge + startPath
+# alert wording).
 CORPUS: list[tuple[str, tuple, dict, int, str]] = [
     (
         "harness_defaults",
         ("HarnessScene",),
         {},
-        467471,
-        "8dffa752186659af713cf00812f92c59e4850004eb470a13fbb7361313ccb290",
+        471854,
+        "28cd38fbea3c20cf4494469c8e1c13c956d703b5b1ad1200a719f542d7155854",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        467443,
-        "98b1eda688ec855a06524cc96a2a1e257dc20ad129cb6e121c6a20787a2c30a7",
+        471826,
+        "dbd423a52d18ae8703248a83213ccbef6533e03d8f87e6145a5a72333f39827c",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        467438,
-        "4242968007e0cf18d0328fa373a4a00756edcddf57b23387c1e8d5d2f0f63f65",
+        471821,
+        "e561578bda437ec3fba83376c22c692d312471c0cc9eb8166929629038aff2f8",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        467417,
-        "74242592fb68cc259cdad2d4b9f9875da450e089a9d926aad43d3cd9592e2687",
+        471800,
+        "0d4923dafe787ff3dc415fbef09fb9d52b3af1a93f5cf482651e40030032b826",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        467482,
-        "dc753704646ddb73a8fee2c534cd99c89556b93d30dc9a9682fcf507d1806d2e",
+        471865,
+        "12fa16a474c074d91d801f1ffbd7388fadccbc0cc237d12a45e4343882cdb635",
     ),
     (
         "share_card",
@@ -90,8 +104,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        467341,
-        "ce21a543cbc97cf5455af20e28f69f00946d41832fb2097b3dbf15b172a82f7b",
+        471724,
+        "96b02cde60ed27af4e39cff700d2429c5fa6779f15c144f169925a6621d9b1fe",
     ),
 ]
 

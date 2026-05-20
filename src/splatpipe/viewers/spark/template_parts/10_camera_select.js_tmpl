@@ -251,9 +251,34 @@
       // scrub behaviour is unchanged. If a prior scrub left the
       // player paused on a DIFFERENT path we stopPath() first so the
       // stale player does not keep advancing past the snapped pose.
+      //
+      // UX-5 (2026-05-20): the prior nesting (stopPath()/controls re-
+      // enable INSIDE the `pv && pv.duration > 0` snap block) silently
+      // skipped both on a <2-keyframe path -- buildPlayer returns null
+      // for 0/1 kfs, the entire snap block is no-op'd, the stale
+      // _player + _pausedAt from a prior scrub keep the per-frame
+      // _trajLayer.update() rebase pinning the camera, AND controls
+      // stay disabled (so the user cannot mouse-drag to position
+      // keyframe #2). User-reported via Telegram on 2026-05-20:
+      // "I seem to not be able to scrub the timeline when I create a
+      // new camera that only has one keyframe. But how am I supposed
+      // to set the next keyframe if I cannot scrub?" The stale-player
+      // stop + controls.enabled=true are now UNCONDITIONAL on a real-
+      // path bind (the snap itself stays gated -- nothing to snap to
+      // on an empty path), so an empty/1-kf camera is mouse-draggable
+      // for Record-K to capture the next keyframe.
       try {
         const apPath = cameraPaths.find(x => x && x.id === val);
         if (apPath) {
+          // UX-5: stale-player stop is UNCONDITIONAL on a real-path
+          // bind (lifted OUT of the snap block). On a <2-kf path the
+          // snap below no-ops; without this, _player + _pausedAt from
+          // a prior path's scrub would leak across the camera switch
+          // and the _trajLayer.update() per-frame rebase would keep
+          // pinning the camera at the OLD path's _pausedAt.
+          if (_player && _activePathId && _activePathId !== val) {
+            try { stopPath(); } catch (e) {}
+          }
           const pv = buildPlayer(apPath);
           if (pv && pv.duration > 0) {
             const tFrac = scrubEl
@@ -263,9 +288,6 @@
             const tSnap = tFrac * pv.duration;
             const s = sampleAt(pv, tSnap);
             if (s && s.pos) {
-              if (_player && _activePathId && _activePathId !== val) {
-                try { stopPath(); } catch (e) {}
-              }
               camera.position.set(s.pos[0], s.pos[1], s.pos[2]);
               camera.quaternion.set(s.quat[0], s.quat[1], s.quat[2], s.quat[3]);
               if (typeof s.fov === 'number' && camera.isPerspectiveCamera) {
@@ -281,6 +303,15 @@
               }
             }
           }
+          // UX-5: ALWAYS re-enable controls after an author-mode bind
+          // (lifted OUT of the snap block). Required for the <2-kf
+          // empty-path workflow: the user must be able to mouse-drag
+          // OrbitControls to position the camera for Record-K. stopPath
+          // above also sets controls.enabled=true, but it is gated on
+          // `_player && _activePathId !== val` -- a fresh tab with no
+          // prior path play would skip it. Belt-and-braces here so the
+          // bound state is always interactive.
+          controls.enabled = true;
         }
       } catch (e) {}
     }
@@ -721,7 +752,23 @@
     const _resumeT = (_pausedAt !== null && _activePathId === pathId &&
       _pausedAtPlayer === _player) ? _pausedAt : null;
     _player = buildPlayer(p);
-    if (!_player) { alert('Path needs at least 2 keyframes.'); return; }
+    if (!_player) {
+      // UX-5 (2026-05-20): the prior alert "Path needs at least 2
+      // keyframes." was technically correct but did not tell the
+      // author WHAT TO DO. Reword to point at the K recorder + name
+      // the path + report the current keyframe count, mirroring the
+      // in-viewer wording the +Add-camera button title already uses
+      // ("press Record-K (R) to capture keyframes"). Behaviour is
+      // unchanged (still returns without starting playback) -- only
+      // the user-visible string is improved.
+      const _pName = (p && p.name) ? p.name : (p && p.id) ? p.id : '?';
+      const _pKfN = (p && Array.isArray(p.keyframes))
+        ? p.keyframes.length : 0;
+      alert("Path '" + _pName + "' has only " + _pKfN +
+        " keyframe(s). Position the camera and press K to add " +
+        "more, then Play.");
+      return;
+    }
     // Clear paused state (we are starting/resuming playback now).
     _pausedAt = null; _pausedAtPlayer = null;
     const _sp = _player.playSpeed || 1.0;

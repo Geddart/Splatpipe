@@ -1459,6 +1459,17 @@
     //      first (explicit interaction stop) so the captured pose is
     //      the user's, not a tour frame.
     const _GZ_R = (x) => Math.round(x * 1e5) / 1e5;
+    // UX-5 (2026-05-20): default temporal spacing for the SECOND
+    // keyframe on a fresh path (no playhead clock yet). Aligns with
+    // the editor's "Position camera + Record-K" rhythm: 2 s gives
+    // the spline real, scrub-able duration on the very first K
+    // after the initial kf at t=0 -- if we used t=0 again the path
+    // would collapse to duration 0 and stay unscrub-able. Kept as a
+    // local constant so the in-viewer feel of "two K presses ->
+    // scrubbable path" is the single source of truth (no new wire
+    // key; only an in-memory edit). User-reported regression: K on a
+    // 1-kf path overwrites at t=0 -> no duration -> no scrub.
+    const _GZ_DEFAULT_KF_DT = 2.0;
     function _gzRecordKeyframe() {
       const p = _gzActivePath();
       if (!p) return null;
@@ -1466,11 +1477,26 @@
       // Read the real elapsed playhead BEFORE stopping the tour
       // (stopPath() clears _player; we want the elapsed time the
       // user is parked at -- the same value _trajPlayhead returns).
+      // UX-5 (2026-05-20): on a <2-kf path buildPlayer returns null
+      // so _trajPlayhead is unavailable. We default t to (last_kf_t +
+      // _GZ_DEFAULT_KF_DT) for kf #2, or 0 for the very first kf, so
+      // the second K after Add-camera builds a real (duration > 0)
+      // scrubbable spline instead of collapsing two kfs at t=0.
       let t = 0;
       try {
         const ph = buildPlayer(p);
-        const v = ph ? _trajPlayhead(ph) : null;
-        if (typeof v === 'number' && isFinite(v)) t = Math.max(0, v);
+        if (ph) {
+          const v = _trajPlayhead(ph);
+          if (typeof v === 'number' && isFinite(v)) t = Math.max(0, v);
+        } else if (p.keyframes.length === 1) {
+          // Exactly one kf -> ph is null. Place kf #2 at last_t + DT
+          // so the new path has nonzero duration and is scrub-able.
+          const lastT = (typeof p.keyframes[0].t === 'number' &&
+            isFinite(p.keyframes[0].t)) ? p.keyframes[0].t : 0;
+          t = Math.max(0, lastT) + _GZ_DEFAULT_KF_DT;
+        }
+        // p.keyframes.length === 0 -> ph still null but t stays 0 (kf
+        // #1 at t=0; this is the canonical first-keyframe origin).
       } catch (e) {}
       _gzStopTour();
       const kf = {
