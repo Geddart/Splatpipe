@@ -71,6 +71,13 @@ PIN UPDATES:
     the modal interrupted the authoring loop). Identical behaviour
     other than the suppressed alert. All 6 fixtures shifted by the
     same -16 byte delta in lockstep; pins re-pinned.
+  * 2026-05-21 (Phase 2A #122): new ``EditorModuleRegistry`` (04a)
+    and ``EditHistory`` (17a) fragments concatenated into the bundle,
+    plus the ``05_framework`` wiring patch that exposes them at
+    ``window.__sceneview.modules`` / ``.history`` and the keydown
+    hotkey wiring (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z) at the tail of
+    17a. All 6 fixtures shifted by the same +23616 byte delta in
+    lockstep; pins re-pinned to the new baseline.
 """
 
 from __future__ import annotations
@@ -90,42 +97,45 @@ from splatpipe.viewers.spark.template import html_for
 # then re-pinned 2026-05-20 a third time (Phase 1 live-verify slug
 # lower-case fix; all 6 fixtures +430 bytes in lockstep), then re-pinned
 # 2026-05-20 (#123 hot-fix: startPath empty-path alert -> silent
-# console.warn; all 6 fixtures -16 bytes in lockstep).
+# console.warn; all 6 fixtures -16 bytes in lockstep), then re-pinned
+# 2026-05-21 (Phase 2A #122: EditorModuleRegistry + EditHistory +
+# framework wiring + Ctrl+Z hotkeys; all 6 fixtures +23616 bytes in
+# lockstep).
 CORPUS: list[tuple[str, tuple, dict, int, str]] = [
     (
         "harness_defaults",
         ("HarnessScene",),
         {},
-        473676,
-        "e53af081af2f2e6467abb5d6f345d35f5b3c5f204f16f11bb720973d27ed2b45",
+        497292,
+        "af473a08a82b62effcd43cdb1dc4c53e3f7a6c8615e0f50cb6fc646a9e7d5747",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        473648,
-        "55347f76630bf059c741e97e1ada0ba94fa7ef2b2470a342e0e0594c78bbc1a6",
+        497264,
+        "0e605f51107c6465ac58c2b6d4d908230027f4c4f72ef69fbe7116c0405c0c89",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        473643,
-        "05c3191a48c5b4e11afea40d89bfc9036791894a72e2cf1aab77b774612ea7e5",
+        497259,
+        "88b18b4a29a41ad1ae45c37ce49508703584edc21490b6060c5320551dd1461b",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        473622,
-        "0049361362770df4d8487098b1030cdf2bdc5ddba3fd2a6d176b76a7d3f5c2bb",
+        497238,
+        "dc4ae688ca2ff7987633b7c5af5ee6ac19acc25115c18427e8aa93847d38229f",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        473687,
-        "bbf5a2fa515d85e708727fbae4e0c05f276c1b2b76efb4bd1b7fe859ad341404",
+        497303,
+        "5124fce3175c4eab03beb34805b40e43a00a177d3b3be65f9b3e4b511127db5b",
     ),
     (
         "share_card",
@@ -135,8 +145,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        473546,
-        "1fe8a4ed9c4657ef12827c01d42f881a1b6327db2435f28c557a8bb2c103dfec",
+        497162,
+        "0704c138cd84d871d2d21e48dd39e5e4ecff0822d5f8c4017ef910a6d249e8a4",
     ),
 ]
 

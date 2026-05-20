@@ -62,6 +62,51 @@ def test_defaults_bake_cli_and_empty_endpoint():
     assert "const SAVE_MODE = \"cli\";" in html
     assert "const SAVE_ENDPOINT = \"\";" in html
 
+
+# --------------------------------------------------------------------------
+# Phase 2 (editor-arc-design #122): EditorModuleRegistry + EditHistory
+# integration markers. Pure structural assertion at the rendered-HTML level;
+# the contract semantics are exercised by tests/test_editor_module_registry.py
+# and tests/test_edit_history.py (Node-driven). Each marker is ASCII-only.
+# --------------------------------------------------------------------------
+
+_PHASE_2_FRAGMENT_MARKERS = (
+    # 04a fragment loaded into the bundle
+    "const EditorModuleRegistry = (() => {",
+    "_bootMount: _bootMount,",
+    # 05_framework wires registry onto window.__sceneview + boots it
+    "modules: (typeof EditorModuleRegistry !== 'undefined')",
+    "EditorModuleRegistry._bootMount();",
+    # 17a fragment loaded and self-publishes onto window.__sceneview.history
+    "const EditHistory = (() => {",
+    "const _HISTORY_CAP = 200;",
+    "window.__sceneview.history = EditHistory;",
+    # Hotkeys gated on author mode + ctrl/cmd-Z / ctrl-Y
+    "EditorModuleRegistry.undo();",
+    "EditorModuleRegistry.redo();",
+)
+
+
+def test_phase_2_registry_and_history_fragments_baked_in():
+    """The two new Phase 2 fragments are concatenated into the rendered
+    HTML in the expected positions (04a before 05_framework; 17a after
+    17_editor_gizmo)."""
+    html = html_for("HarnessScene")
+    for mk in _PHASE_2_FRAGMENT_MARKERS:
+        assert mk in html, f"Phase 2 marker missing: {mk!r}"
+    # Ordering invariant: 04a must precede the 05_framework wiring (so
+    # `typeof EditorModuleRegistry !== 'undefined'` evaluates true at
+    # module-publish time), and 17a must run AFTER 05_framework wires
+    # window.__sceneview (so the self-publish onto .history finds the
+    # already-created __sceneview object).
+    reg_i = html.index("const EditorModuleRegistry = (() => {")
+    framework_i = html.index("modules: (typeof EditorModuleRegistry !== 'undefined')")
+    history_i = html.index("const EditHistory = (() => {")
+    publish_i = html.index("window.__sceneview.history = EditHistory;")
+    assert reg_i < framework_i, "04a registry must precede 05 framework wiring"
+    assert framework_i < history_i, "05 framework must precede 17a history"
+    assert history_i < publish_i, "history IIFE must precede its self-publish"
+
 # --------------------------------------------------------------------------
 # my16-M1 follow-up: the camera-path overlay must be SCENE-RELATIVE
 # --------------------------------------------------------------------------

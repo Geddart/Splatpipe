@@ -1,0 +1,260 @@
+  // ============================================================
+  //  EditHistory (Phase 2 -- editor-arc-design #122, R8 snapshot)
+  // ------------------------------------------------------------
+  //  Ring-buffer undo/redo for the editor session. Snapshot pattern
+  //  (R8 §3, conflict-1 resolution): each gesture pushes ONE
+  //  JSON-cloned snapshot of `cfg`; undo pops the stack and restores
+  //  the whole cfg in-place (Object.keys(cfg).forEach + Object.assign
+  //  semantics so existing references remain valid). Redo re-applies
+  //  by walking forward in the ring.
+  //
+  //  WHY SNAPSHOT (not command pattern):
+  //    typical cfg ~ 8 KB JSON; worst plausible ~ 50 KB JSON, ~200 KB
+  //    in-heap. 200 snapshots = ~40 MB max -- a rounding error vs the
+  //    100-674 MB GPU splat data already in memory. Snapshot saves ~50
+  //    per-module inverse-op routines (a real dev + test surface cost)
+  //    and every undo is one line. See spec §6.2 + §10.1 for the full
+  //    trade-off rationale.
+  //
+  //  GRANULAR-VS-COARSE rule (CRITICAL per R8 §4.2): each *gesture*
+  //  pushes ONE snapshot at gesture start -- NEVER per animation
+  //  frame. The standard call sites the modules must use are:
+  //
+  //    Gizmo TransformControls dragging-changed=true (drag-start)
+  //      => EditorModuleRegistry.pushUndo('kf-drag')   (before mutation)
+  //    Recorder K press
+  //      => pushUndo('kf-record')                       (before append)
+  //    Timeline kf-drag pointerdown on a diamond
+  //      => pushUndo('kf-timeline-drag')                (before mutation)
+  //    Timeline scale-edge pointerdown
+  //      => pushUndo('kf-scale')                        (before mutation)
+  //    Interp popover button click
+  //      => pushUndo('kf-interp')                       (before mutation)
+  //    Camera rename input FOCUS (NOT per keystroke)
+  //      => pushUndo('cam-rename')                      (before commit)
+  //    Total-time input commit (Enter/blur, NOT per keystroke)
+  //      => pushUndo('path-total-time')                 (before commit)
+  //    Auto-toggle button click
+  //      => pushUndo('path-auto-toggle')                (before mutation)
+  //
+  //  Drag-END / value-change-FINALISED does NOT push -- the snapshot at
+  //  drag-start IS the undo entry. WRONG pattern (per spec §6.3):
+  //  pushing on mousemove -- yields 60 entries/s + an unusable history.
+  //
+  //  EPHEMERAL (R8 §5): history clears on
+  //    - mode switch (author -> enduser etc.)
+  //    - save (the saved cfg is the new clean baseline)
+  //    - scene reload
+  //  NOT persisted to localStorage.
+  //
+  //  TEST SURFACE: window.__sceneview.history exposes the IIFE.
+  //  Tests assert push/undo/redo/canUndo/canRedo/clear/cap.
+  // ============================================================
+  const EditHistory = (() => {
+    // R8 cap: 200 entries * ~200 KB worst-case = ~40 MB heap ceiling.
+    const _HISTORY_CAP = 200;
+    // Stack of snapshots. _cursor is the *next* index to write (= one
+    // past the most-recent entry). undo() returns _stack[_cursor-1]
+    // (the snapshot taken just BEFORE the last gesture); the post-undo
+    // state is the snapshot one step earlier. Redo walks _cursor
+    // forward through previously-undone entries.
+    const _stack = [];
+    let _cursor = 0;
+
+    function _warn(msg) {
+      try { console.warn('[EditHistory] ' + msg); } catch (e) {}
+    }
+
+    // Resolve the live cfg object. cfg is the module-scope const set
+    // in 06_cfg.js_tmpl; we resolve dynamically so tests can shim
+    // window.cfg or run the fragment in isolation. In the real viewer
+    // there's only one cfg and the resolution returns the SAME object
+    // every call.
+    function _liveCfg() {
+      try {
+        if (typeof cfg !== 'undefined' && cfg) return cfg;
+      } catch (e) {}
+      try {
+        if (typeof window !== 'undefined' && window.cfg) return window.cfg;
+      } catch (e) {}
+      return null;
+    }
+
+    function _clone(obj) {
+      // JSON-clone (the standard structuredClone polyfill that works
+      // back to every browser the viewer targets). cfg is plain JSON
+      // (no functions, no DOM refs, no circular -- a sanitised public
+      // viewer-config) so JSON.stringify round-trip is lossless.
+      try { return JSON.parse(JSON.stringify(obj)); }
+      catch (e) { _warn('clone failed: ' + e); return null; }
+    }
+
+    function _restore(target, source) {
+      // Restore by clearing target's keys then Object.assign-ing source.
+      // Why: callers (modules, getters) hold a REFERENCE to the live cfg
+      // object; we MUST NOT swap it out -- only mutate its contents.
+      if (!target || !source) return;
+      const tkeys = Object.keys(target);
+      for (const k of tkeys) {
+        if (!Object.prototype.hasOwnProperty.call(source, k)) {
+          try { delete target[k]; } catch (e) {}
+        }
+      }
+      Object.assign(target, source);
+    }
+
+    function push(label) {
+      const live = _liveCfg();
+      if (!live) return false;
+      const snap = _clone(live);
+      if (snap == null) return false;
+      // Truncate any "future" entries (the redo tail) -- a fresh push
+      // after an undo invalidates the redo path.
+      if (_cursor < _stack.length) {
+        _stack.length = _cursor;
+      }
+      _stack.push({ label: label || '', snap: snap, t: Date.now() });
+      _cursor = _stack.length;
+      // Cap: drop oldest if over (ring eviction, warn on overflow per
+      // spec instruction).
+      if (_stack.length > _HISTORY_CAP) {
+        const drop = _stack.length - _HISTORY_CAP;
+        _stack.splice(0, drop);
+        _cursor = _stack.length;
+        _warn('overflow: evicted ' + drop +
+          ' oldest snapshot(s); cap=' + _HISTORY_CAP);
+      }
+      try {
+        if (typeof EditorModuleRegistry !== 'undefined' &&
+            typeof EditorModuleRegistry.emit === 'function') {
+          EditorModuleRegistry.emit('history:push', label || '');
+        }
+      } catch (e) {}
+      return true;
+    }
+
+    function canUndo() { return _cursor > 1; }
+    function canRedo() { return _cursor < _stack.length; }
+
+    function undo() {
+      if (!canUndo()) return null;
+      // To undo gesture N (entry _stack[_cursor-1] was the snapshot
+      // taken BEFORE gesture N), restore from entry _stack[_cursor-2]
+      // -- the state before gesture N-1's mutation. Actually: a
+      // gesture pushes snapshot BEFORE mutating, so _stack[_cursor-1]
+      // IS the pre-gesture state. Restoring it = undoing the most
+      // recent gesture. _cursor moves back by 1.
+      _cursor -= 1;
+      const entry = _stack[_cursor - 1] || _stack[_cursor];
+      const live = _liveCfg();
+      if (entry && live) {
+        _restore(live, entry.snap);
+        _broadcastCfgChange(entry.label || '', 'undo');
+      }
+      try {
+        if (typeof EditorModuleRegistry !== 'undefined' &&
+            typeof EditorModuleRegistry.emit === 'function') {
+          EditorModuleRegistry.emit('history:undo', entry ? entry.label : '');
+        }
+      } catch (e) {}
+      return entry;
+    }
+
+    function redo() {
+      if (!canRedo()) return null;
+      // Move cursor forward; restore the snapshot at the new cursor
+      // position (the "post-mutation" state captured by the next push
+      // -- which was the pre-state of the gesture AFTER it).
+      const entry = _stack[_cursor];
+      _cursor += 1;
+      const live = _liveCfg();
+      if (entry && live) {
+        _restore(live, entry.snap);
+        _broadcastCfgChange(entry.label || '', 'redo');
+      }
+      try {
+        if (typeof EditorModuleRegistry !== 'undefined' &&
+            typeof EditorModuleRegistry.emit === 'function') {
+          EditorModuleRegistry.emit('history:redo', entry ? entry.label : '');
+        }
+      } catch (e) {}
+      return entry;
+    }
+
+    function clear() {
+      _stack.length = 0;
+      _cursor = 0;
+    }
+
+    function _broadcastCfgChange(label, dir) {
+      // Notify every module that cfg changed wholesale (the safe
+      // signal: stateKey = '*'). Modules that care can re-read cfg
+      // and refresh their UI / overlays.
+      try {
+        if (typeof EditorModuleRegistry !== 'undefined' &&
+            typeof EditorModuleRegistry.notifyCfgChange === 'function') {
+          EditorModuleRegistry.notifyCfgChange('*', null, _liveCfg());
+        }
+      } catch (e) {}
+    }
+
+    return {
+      push: push,
+      undo: undo,
+      redo: redo,
+      canUndo: canUndo,
+      canRedo: canRedo,
+      clear: clear,
+      get length() { return _stack.length; },
+      get cursor() { return _cursor; },
+      get capacity() { return _HISTORY_CAP; },
+      // Test surface: read-only snapshot list (label + time only;
+      // never the snap bytes themselves -- those are large).
+      labels: function () {
+        return _stack.map(function (e) {
+          return { label: e.label, t: e.t };
+        });
+      },
+    };
+  })();
+
+  // Publish onto window.__sceneview.history. 05_framework runs BEFORE
+  // this fragment and creates window.__sceneview; if not present (a
+  // dev harness loading fragments out of order) fall back to creating
+  // a stub so EditorModuleRegistry's history-getter still works.
+  try {
+    if (typeof window !== 'undefined') {
+      window.__sceneview = window.__sceneview || {};
+      window.__sceneview.history = EditHistory;
+    }
+  } catch (e) {}
+
+  // ---- Hotkeys: Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z (Cmd+ on macOS).
+  //      Wired centrally on window keydown so any focused element
+  //      that isn't a text input gets the shortcut. Gated on author
+  //      mode -- end-user / embed never see undo.
+  window.addEventListener('keydown', function (ev) {
+    try {
+      if (!ModeManager.is('author')) return;
+    } catch (e) { return; }
+    // Don't hijack when typing into a text input / textarea -- those
+    // surfaces have their own native undo. SELECT is excluded too
+    // since the existing editor keydown handlers do the same.
+    const ae = document.activeElement;
+    if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' ||
+               ae.tagName === 'SELECT' ||
+               (ae.isContentEditable === true))) {
+      return;
+    }
+    const mod = ev.metaKey || ev.ctrlKey;
+    if (!mod) return;
+    const k = (ev.key || '').toLowerCase();
+    if (k === 'z' && !ev.shiftKey) {
+      ev.preventDefault();
+      EditorModuleRegistry.undo();
+    } else if (k === 'y' || (k === 'z' && ev.shiftKey)) {
+      ev.preventDefault();
+      EditorModuleRegistry.redo();
+    }
+  });
+

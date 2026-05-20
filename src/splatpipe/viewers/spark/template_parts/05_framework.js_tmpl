@@ -222,6 +222,13 @@
   // Every later Playwright task asserts on this; later feature code
   // also reaches the four managers through it. Mirrors the existing
   // window.__sp / window._spDebug convention. Harmless, always on.
+  //
+  // Phase 2 (#122): also exposes the EditorModuleRegistry (defined in
+  // the 04a_editor_module_registry fragment that runs BEFORE this one)
+  // at .modules so editor modules + the Save dispatcher route through
+  // ONE coordinator. .history is filled in by 17a_edit_history later
+  // (it self-publishes onto window.__sceneview.history without us
+  // needing to know it here).
   try {
     window.__sceneview = {
       get mode() { return ModeManager.mode; },
@@ -229,7 +236,16 @@
       overlay: OverlayScene,
       interaction: InteractionManager,
       hud: HudLayer,
+      modules: (typeof EditorModuleRegistry !== 'undefined')
+        ? EditorModuleRegistry : null,
     };
+    // EditorModuleRegistry mounts every module that registered before
+    // this point + flips its _booted gate so any later registration
+    // mounts on the spot. Safe to call even if no module registered yet.
+    if (typeof EditorModuleRegistry !== 'undefined' &&
+        typeof EditorModuleRegistry._bootMount === 'function') {
+      EditorModuleRegistry._bootMount();
+    }
   } catch (e) {}
 
   // ?bench=<value> auto-triggers a benchmark recording.
