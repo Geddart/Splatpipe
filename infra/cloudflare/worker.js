@@ -59,6 +59,8 @@ export const ALLOWED_PATCH_KEYS = new Set([
   "spark_render",
   "annotations",
   "panorama_backdrop",
+  "postprocessing",
+  "audio",
 ]);
 
 // `slug` is the transport field carried in the POST body, not config; like

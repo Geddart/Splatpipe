@@ -49,6 +49,16 @@ from typing import Any
 #: shared core. Whole-replace semantics apply (no deep merge, no sub-key
 #: gate -- pure render params).
 #:
+#: ``postprocessing`` joined the list per spec §3.5 / §4.X so the
+#: PostFXModule (Phase 4) can save tonemap + exposure edits through the
+#: same shared core. Whole-replace semantics apply (the block is a tiny
+#: dict ``{tonemapping, exposure}`` -- no sub-key gate; pure render params).
+#:
+#: ``audio`` joined the list per spec §4.4 so the AudioModule (Phase 7)
+#: can save audio-track edits (add / delete / volume / loop / positional)
+#: through the same shared core. Whole-replace semantics apply (the patch
+#: replaces the entire ``audio: []`` array; no per-track merge).
+#:
 #: ``schema_version`` is INTENTIONALLY excluded -- it is a server-managed
 #: schema-evolution field set at publish time, never patched by an
 #: untrusted editor save.
@@ -63,6 +73,8 @@ ALLOWED_PATCH_KEYS: frozenset[str] = frozenset({
     "spark_render",
     "annotations",
     "panorama_backdrop",
+    "postprocessing",
+    "audio",
 })
 
 # primary_asset is structurally excluded — NEVER add it here.

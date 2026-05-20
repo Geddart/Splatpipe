@@ -81,6 +81,8 @@ const ALLOWED_PATCH_KEYS = [
     'spark_render',
     'annotations',
     'panorama_backdrop',
+    'postprocessing',
+    'audio',
 ];
 
 /* ===== tiny helpers ===================================================== */

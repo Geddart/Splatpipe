@@ -645,30 +645,42 @@
   css2d.setSize(window.innerWidth, window.innerHeight);
 
   // Audio (conditional on config having audio sources — matches PC viewer)
+  // Phase 7 (#122 §4.4): the AudioModule in 15f owns audio playback when
+  // registered. The legacy THREE.Audio loader below is GUARDED so it never
+  // double-instantiates -- 15f's mount() builds HTMLAudioElement per
+  // cfg.audio entry. The guard is value-false at 08's current runtime
+  // (15f registers later in the fragment order); 15f's mount() then
+  // owns playback. Mirrors the Phase 5 _annotationsOwnedByModule pattern.
   let audioListener = null;
-  if ((cfg.audio || []).length > 0) {
-    audioListener = new THREE.AudioListener();
-    camera.add(audioListener);
-    const audioLoader = new THREE.AudioLoader();
-    for (const src of cfg.audio) {
-      const isPositional = !!src.positional;
-      const sound = isPositional ? new THREE.PositionalAudio(audioListener) : new THREE.Audio(audioListener);
-      audioLoader.load(src.file, (buffer) => {
-        sound.setBuffer(buffer);
-        sound.setLoop(src.loop !== false);
-        sound.setVolume(typeof src.volume === 'number' ? src.volume : 0.5);
-        if (isPositional) {
-          sound.setRefDistance(5);
-          sound.setMaxDistance(100);
-        }
-        if (src.pos && isPositional) {
-          const holder = new THREE.Object3D();
-          holder.position.set(src.pos[0], src.pos[1], src.pos[2]);
-          holder.add(sound);
-          scene.add(holder);
-        }
-        sound.play();
-      });
+  const _audioOwnedByModule = !!(
+    window.__sceneview && window.__sceneview.modules &&
+    typeof window.__sceneview.modules.get === 'function' &&
+    window.__sceneview.modules.get('audio'));
+  if (!_audioOwnedByModule) {
+    if ((cfg.audio || []).length > 0) {
+      audioListener = new THREE.AudioListener();
+      camera.add(audioListener);
+      const audioLoader = new THREE.AudioLoader();
+      for (const src of cfg.audio) {
+        const isPositional = !!src.positional;
+        const sound = isPositional ? new THREE.PositionalAudio(audioListener) : new THREE.Audio(audioListener);
+        audioLoader.load(src.file, (buffer) => {
+          sound.setBuffer(buffer);
+          sound.setLoop(src.loop !== false);
+          sound.setVolume(typeof src.volume === 'number' ? src.volume : 0.5);
+          if (isPositional) {
+            sound.setRefDistance(5);
+            sound.setMaxDistance(100);
+          }
+          if (src.pos && isPositional) {
+            const holder = new THREE.Object3D();
+            holder.position.set(src.pos[0], src.pos[1], src.pos[2]);
+            holder.add(sound);
+            scene.add(holder);
+          }
+          sound.play();
+        });
+      }
     }
   }
 
