@@ -50,6 +50,11 @@ class PathDict(TypedDict, total=False):
     smoothness: float                 # 0.0 = linear (segments), 1.0 = full Catmull-Rom (default)
     play_speed: float                 # playback rate multiplier; 0.5 = half-speed, 2.0 = double-speed
     keyframes: list[KeyframeDict]
+    # Editor §3.7 (user voice 2026-05-20 17:09): decouple timeline scrub range
+    # from last_kf.t so the author can declare "this path is 30s long" with
+    # only 2 keyframes recorded so far. None / absent / 0 / negative => use
+    # the auto rule via effective_scrub_range() (max(last_kf.t, 10.0) floor).
+    total_duration_s: float | None
 
 
 DEFAULT_EASING = "easeInOutCubic"
@@ -80,8 +85,28 @@ def new_path(
 
 
 def _new_id() -> str:
-    # Short, sortable, unlikely to collide. uuid4 hex prefix is plenty.
+    # Short, sortable, unlikely to collide. Uses uuid4 hex prefix.
     return "p_" + uuid.uuid4().hex[:10]
+
+
+def effective_scrub_range(path: PathDict) -> tuple[float, float]:
+    """Return ``(0.0, total_duration)`` per editor spec §3.7.
+
+    If ``path["total_duration_s"]`` is set to a positive number, that value
+    wins (including the case where it's smaller than the last keyframe's
+    time — the editor UI handles "off-canvas" diamonds; this helper is
+    purely a declarative scrub-range setter).
+
+    Otherwise (absent / ``None`` / ``0`` / negative): derive from the
+    largest keyframe time with a 10.0s floor that gives the empty-path
+    UX a sensible default scrub range.
+    """
+    total = path.get("total_duration_s")
+    if total is not None and total > 0:
+        return (0.0, float(total))
+    keyframes = path.get("keyframes", []) or []
+    last_t = max((kf.get("t", 0.0) for kf in keyframes), default=0.0)
+    return (0.0, float(max(last_t, 10.0)))
 
 
 # ---- annotation schema (#122 Phase 5 prep -- user-locked Q6 2026-05-20) ----
