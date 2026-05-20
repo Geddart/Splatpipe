@@ -1,0 +1,998 @@
+  // ============================================================
+  //  Author editor -- bottom timeline (Task 17 -- plan H2/Task-13)
+  // ------------------------------------------------------------
+  //  AUTHOR MODE ONLY (ModeManager.is('author')): user / embed and
+  //  the 6 live single-camera scenes are byte-runtime-unchanged --
+  //  every code path here is gated by the SAME _EDITOR_AUTHOR flag
+  //  the Task-16 trajectory overlay uses, and the strip DOM is only
+  //  ever built in author mode (so this whole section is inert in
+  //  user/embed; the byte-lock proves the 6 live scenes' generated
+  //  HTML is byte-identical -- this code sits strictly INSIDE the
+  //  Task-16 T16-TRAJ region, recipe 2c, so it is absorbed by that
+  //  region's existing excision and the moving-baseline remainder
+  //  is unaffected by it).
+  //  IN-MEMORY temporal edits ONLY (the Task-17 scope boundary):
+  //    * a SECONDS ruler (the storage unit is ALWAYS seconds); an
+  //      OPTIONAL author fps grid that ONLY relabels the ruler
+  //      ticks (fps is a display relabel -- it NEVER mutates a
+  //      stored kf.t).
+  //    * a diamond per keyframe at its kf.t; dragging it
+  //      horizontally edits THAT keyframe's t (a temporal edit) --
+  //      mutates the in-memory active path (_trajActivePath(), the
+  //      SAME object the live player + the Task-16 overlay read)
+  //      and rebuilds the spline. The Task-16 overlay's
+  //      sig-driven OverlayScene.update() rebuild reacts to the
+  //      kf.t change automatically (its _trajKfSig includes
+  //      (k.t||0)); we ALSO null _player so the live player picks
+  //      up the new geometry on its next grab.
+  //    * a live-scrub playhead: dragging it drives the camera LIVE
+  //      via the EXISTING #path-scrub real 'input' mechanism (the
+  //      single source of truth that takes `_player` over for the
+  //      selected path AND rebases `_t0`) -- NOT only during play,
+  //      and ROBUST to the author-mode default-path auto-tour
+  //      (which auto-plays here because _cinematic is usermode-
+  //      only): the real scrub takes the camera over deterministic-
+  //      ally exactly as a user grabbing the slider would. We do
+  //      NOT reimplement the scrub math (lockstep with the player).
+  //    * transport play / pause / loop (reuse the existing
+  //      #path-play / #path-stop handlers; loop toggles the active
+  //      path's loop flag + rebuilds).
+  //    * wheel zoom (time scale) about the cursor time; pan via
+  //      scroll. Zoom/scroll change ONLY the px mapping, never a
+  //      stored t.
+  //    * box-select 2+ diamonds, then drag a SELECTION EDGE handle
+  //      => proportionally rescale the selected keyframes' t span
+  //      about the OPPOSITE edge anchor (ratio = newSpan/oldSpan;
+  //      t' = anchor + (t-anchor)*ratio). X deletes the selected
+  //      keyframes. Both mutate the in-memory path + rebuild.
+  //  PERSISTENCE IS NOT TASK-17: nothing here writes/saves; edits
+  //  mutate the in-memory active path + rebuild the spline (+ the
+  //  Task-16 overlay consequently) and stop there. SAVE_MODE /
+  //  SAVE_ENDPOINT / save_backends are deliberately untouched (a
+  //  later task owns Record + Emit SPCP).
+  //  Reuses, never reinvents: buildPlayer / sampleAt (the
+  //  SuperSplat cubic-Hermite spline), the #path-scrub real input
+  //  mechanism (camera takeover / _t0 rebase), _trajActivePath()
+  //  (the in-memory active path), the Task-16 sig-driven overlay
+  //  rebuild, the #author-root inline-style pattern, ModeManager.
+  //  window.__editor is EXTENDED (TEST-ONLY: getters + deterministic
+  //  hooks, same convention as window.__clip / __transport; no
+  //  production reader; inert without the harness).
+  // ============================================================
+  (function _tlInit() {
+    if (!_EDITOR_AUTHOR) return;
+    const root = document.getElementById('author-root');
+    if (!root) return;
+
+    // ---- View state (px mapping). Storage is ALWAYS seconds; zoom
+    //      (px per second) + scroll (seconds of left-edge offset)
+    //      are PURE DISPLAY -- they never touch a stored kf.t.
+    const _TL_PAD = 8;             // left inset (px) inside the lane
+    // A3/A4: a DEDICATED transport-bar band at the strip top so the
+    // play/pause/loop/fps (+ the A4-merged Rec/interp/tangents/Save)
+    // buttons sit ABOVE the lane and never overlap the seconds ruler
+    // (the old top:6px _tlBar overlapped the ruler band drawn at
+    // canvas-y 0.._TL_RULER_H). The lane is offset down by _TL_BAR_H
+    // (was a hard-coded 24) and the strip grew to keep the same lane
+    // height for the ruler/diamonds/playhead.
+    const _TL_BAR_H = 30;          // transport-bar band height (px)
+    const _TL_H = 64 + (_TL_BAR_H - 24); // strip height (px)
+    const _TL_RULER_H = 16;        // seconds-ruler band height (px)
+    let _tlZoom = 80;              // px / second (wheel-tunable)
+    let _tlScroll = 0;             // seconds at the lane's left edge
+    const _TL_ZOOM_MIN = 2, _TL_ZOOM_MAX = 4000;
+    let _tlFps = 0;                // 0 = OFF (seconds labels); >0 = fps grid
+    let _tlSel = new Set();        // selected keyframe indices
+    let _tlDragKf = -1;            // keyframe index being time-dragged
+    let _tlDragMode = '';          // '' | 'kf' | 'play' | 'scale' | 'box'
+    let _tlScaleEdge = '';         // 'left' | 'right' (which edge is grabbed)
+    let _tlScaleAnchor = 0;        // the FIXED opposite-edge time (seconds)
+    let _tlScaleBase = null;       // [{i, t0}] selected kf base times at grab
+    let _tlBoxX0 = 0;              // marquee start x (lane px)
+    let _tlBoxX1 = 0;
+    let _tlScrubbing = false;      // playhead being live-dragged
+
+    function _tlActivePath() {
+      // The SAME in-memory object the live player + the Task-16
+      // overlay use (reuse, never a parallel copy).
+      return (typeof _trajActivePath === 'function')
+        ? _trajActivePath() : null;
+    }
+    function _tlSortedKfs(p) {
+      if (!p || !p.keyframes) return [];
+      // A stable index-tagged sort by t so a diamond keeps its
+      // identity (the kf OBJECT) across a temporal edit even when
+      // the order changes.
+      return p.keyframes
+        .map((k, i) => ({ k: k, i: i, t: (k.t || 0) }))
+        .sort((a, b) => a.t - b.t);
+    }
+    function _tlDuration(p) {
+      const sk = _tlSortedKfs(p);
+      if (sk.length < 2) return sk.length ? (sk[0].t || 0) : 0;
+      // Includes hold_s (mirrors buildPlayer's accumulated duration
+      // so the playhead<->scrub mapping is consistent with the
+      // player clock).
+      let acc = 0;
+      for (const e of sk) acc += (e.k.hold_s && e.k.hold_s > 0)
+        ? e.k.hold_s : 0;
+      return (sk[sk.length - 1].t || 0) + acc;
+    }
+    // time (seconds) -> x within the lane (px); inverse for hit-test
+    // / drag. Pure display math (zoom/scroll) -- never a stored t.
+    function _tlT2X(t) { return _TL_PAD + (t - _tlScroll) * _tlZoom; }
+    function _tlX2T(x) { return _tlScroll + (x - _TL_PAD) / _tlZoom; }
+
+    // ---- DOM: a bottom strip injected into #author-root, inline-
+    //      styled exactly like #sp-hud / the Task-16 toggle (no new
+    //      CSS region). Pointer-events on the strip only; the strip
+    //      never covers the whole canvas.
+    const _tlStrip = document.createElement('div');
+    _tlStrip.id = 'editor-timeline';
+    _tlStrip.style.cssText =
+      'position:absolute;left:0;right:0;bottom:0;height:' + _TL_H +
+      'px;z-index:48;box-sizing:border-box;' +
+      'background:rgba(16,16,16,0.82);' +
+      '-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);' +
+      'border-top:1px solid rgba(255,255,255,0.12);' +
+      'font:11px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;' +
+      'color:#ccc;user-select:none;touch-action:none;overflow:hidden;';
+
+    // Transport cluster (left): play / pause / loop / fps. Reuses
+    // the existing #path-play / #path-stop handlers (no new stop /
+    // play mechanism). A3: lives in the dedicated top band
+    // (strip-y 0.._TL_BAR_H), vertically centred, clear of the ruler.
+    // A4: the merged Rec/interp/tangents/Save bar is appended onto
+    // this SAME row by _gzInit via the shared _tlBarRow ref below.
+    const _tlBar = document.createElement('div');
+    _tlBar.style.cssText =
+      'position:absolute;left:8px;right:8px;top:0;height:' + _TL_BAR_H +
+      'px;display:flex;gap:6px;align-items:center;z-index:2;';
+    function _tlBtn(txt, title) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.textContent = txt; b.title = title || '';
+      b.style.cssText =
+        'background:rgba(255,255,255,0.10);color:#eee;border:0;' +
+        'border-radius:5px;padding:4px 9px;cursor:pointer;' +
+        'font:12px monospace;line-height:1;';
+      return b;
+    }
+    const _tlPlay = _tlBtn('\u25B6', 'Play');
+    const _tlPause = _tlBtn('\u23F8', 'Pause');
+    const _tlLoop = _tlBtn('\u21BB', 'Loop');
+    const _tlFpsBtn = _tlBtn('fps', 'Toggle fps grid (relabels ruler only)');
+    _tlBar.appendChild(_tlPlay); _tlBar.appendChild(_tlPause);
+    _tlBar.appendChild(_tlLoop); _tlBar.appendChild(_tlFpsBtn);
+    _tlStrip.appendChild(_tlBar);
+    // A4: publish the transport row so _gzInit (runs AFTER this IIFE)
+    // can merge the Rec/interp/tangents/Save cluster onto it instead
+    // of a separate floating #editor-gizmo-bar.
+    _tlBarRow = _tlBar;
+
+    // The lane (ruler + diamonds + playhead). A canvas draws the
+    // ruler + diamonds + selection box; a thin div is the playhead.
+    // A3: starts BELOW the transport band (_TL_BAR_H) so the ruler
+    // (canvas-y 0.._TL_RULER_H) never sits under the buttons.
+    const _tlLane = document.createElement('div');
+    _tlLane.style.cssText =
+      'position:absolute;left:0;right:0;bottom:0;height:' +
+      (_TL_H - _TL_BAR_H) + 'px;cursor:crosshair;';
+    const _tlCanvas = document.createElement('canvas');
+    _tlCanvas.style.cssText =
+      'position:absolute;inset:0;width:100%;height:100%;display:block;';
+    const _tlPlayhead = document.createElement('div');
+    _tlPlayhead.style.cssText =
+      'position:absolute;top:0;bottom:0;width:2px;left:0;' +
+      'background:#35e0ff;box-shadow:0 0 4px #35e0ff;' +
+      'pointer-events:none;will-change:left;';
+    _tlLane.appendChild(_tlCanvas);
+    _tlLane.appendChild(_tlPlayhead);
+    _tlStrip.appendChild(_tlLane);
+    root.appendChild(_tlStrip);
+
+    const _tlCtx = _tlCanvas.getContext('2d');
+    let _tlW = 0, _tlHpx = 0, _tlDpr = 1;
+    function _tlResize() {
+      const r = _tlLane.getBoundingClientRect();
+      _tlDpr = Math.max(1, window.devicePixelRatio || 1);
+      _tlW = Math.max(1, Math.floor(r.width));
+      _tlHpx = Math.max(1, Math.floor(r.height));
+      _tlCanvas.width = Math.floor(_tlW * _tlDpr);
+      _tlCanvas.height = Math.floor(_tlHpx * _tlDpr);
+      _tlDraw();
+    }
+
+    // ---- Diamond geometry (canvas-space hit test). Each keyframe
+    //      is a diamond centred at (_tlT2X(kf.t), diamond-row-y).
+    const _TL_DIAM = 7;            // half-size (px)
+    function _tlDiamRowY() { return _TL_RULER_H + 14; }
+    function _tlHitKf(x, y) {
+      // Topmost keyframe whose diamond contains (x,y); -1 = none.
+      const p = _tlActivePath();
+      if (!p || !p.keyframes) return -1;
+      const cy = _tlDiamRowY();
+      let best = -1, bestd = 1e9;
+      for (let i = 0; i < p.keyframes.length; i++) {
+        const k = p.keyframes[i];
+        const cx = _tlT2X(k.t || 0);
+        const d = Math.abs(x - cx) + Math.abs(y - cy);
+        if (d <= _TL_DIAM + 4 && d < bestd) { best = i; bestd = d; }
+      }
+      return best;
+    }
+
+    // ---- Ruler. SECONDS by default. The fps grid is a pure
+    //      RELABEL: when _tlFps>0 the tick step + label switch to
+    //      frame units (label = round(t*fps)) but the stored kf.t
+    //      stays SECONDS -- toggling fps NEVER mutates any t.
+    function _tlNiceStep(minPxPer) {
+      // Smallest "nice" seconds step whose on-screen spacing >=
+      // minPxPer px (1,2,5 x 10^n).
+      const raw = minPxPer / _tlZoom;
+      const pow = Math.pow(10, Math.floor(Math.log10(raw <= 0 ? 1 : raw)));
+      const cand = [1, 2, 5, 10];
+      for (const c of cand) {
+        if (pow * c >= raw) return pow * c;
+      }
+      return pow * 10;
+    }
+    function _tlDraw() {
+      if (!_tlCtx) return;
+      const ctx = _tlCtx;
+      ctx.setTransform(_tlDpr, 0, 0, _tlDpr, 0, 0);
+      ctx.clearRect(0, 0, _tlW, _tlHpx);
+      const p = _tlActivePath();
+      const dur = _tlDuration(p);
+
+      // Ruler band background.
+      ctx.fillStyle = 'rgba(255,255,255,0.04)';
+      ctx.fillRect(0, 0, _tlW, _TL_RULER_H);
+
+      // Tick + label step. fps grid only changes the LABEL/step
+      // unit; positions are still computed from SECONDS via _tlT2X.
+      const stepS = _tlNiceStep(56);
+      const t0 = Math.max(0, Math.floor(_tlScroll / stepS) * stepS);
+      const tEnd = _tlScroll + _tlW / _tlZoom;
+      ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+      ctx.fillStyle = '#9aa';
+      ctx.lineWidth = 1;
+      ctx.font = '10px monospace';
+      ctx.textBaseline = 'top';
+      for (let t = t0; t <= tEnd + stepS; t += stepS) {
+        const x = _tlT2X(t);
+        if (x < -40 || x > _tlW + 40) continue;
+        ctx.beginPath();
+        ctx.moveTo(x + 0.5, 0);
+        ctx.lineTo(x + 0.5, _TL_RULER_H);
+        ctx.stroke();
+        let lbl;
+        if (_tlFps > 0) {
+          // RELABEL ONLY: frame index = round(seconds * fps). The
+          // stored t is unchanged; this is a display transform.
+          lbl = 'f' + Math.round(t * _tlFps);
+        } else {
+          lbl = (Math.round(t * 1000) / 1000) + 's';
+        }
+        ctx.fillText(lbl, x + 3, 2);
+      }
+
+      // Selection marquee (box-select in progress).
+      if (_tlDragMode === 'box') {
+        const bx = Math.min(_tlBoxX0, _tlBoxX1);
+        const bw = Math.abs(_tlBoxX1 - _tlBoxX0);
+        ctx.fillStyle = 'rgba(53,224,255,0.14)';
+        ctx.strokeStyle = 'rgba(53,224,255,0.6)';
+        ctx.fillRect(bx, _TL_RULER_H, bw, _tlHpx - _TL_RULER_H);
+        ctx.strokeRect(bx + 0.5, _TL_RULER_H + 0.5,
+          bw, _tlHpx - _TL_RULER_H - 1);
+      }
+
+      if (!p || !p.keyframes || !p.keyframes.length) return;
+      const cy = _tlDiamRowY();
+
+      // Selection-span EDGE handles (only when 2+ selected): two
+      // vertical grips at the min/max selected kf.t. Dragging one
+      // scales the selected span about the OTHER (the opposite
+      // anchor) -- proportional rescale.
+      if (_tlSel.size >= 2) {
+        let lo = Infinity, hi = -Infinity;
+        _tlSel.forEach((i) => {
+          const k = p.keyframes[i]; if (!k) return;
+          const t = k.t || 0;
+          if (t < lo) lo = t; if (t > hi) hi = t;
+        });
+        if (isFinite(lo) && isFinite(hi)) {
+          const xL = _tlT2X(lo), xR = _tlT2X(hi);
+          ctx.strokeStyle = 'rgba(53,224,255,0.5)';
+          ctx.setLineDash([3, 3]);
+          ctx.beginPath();
+          ctx.moveTo(xL + 0.5, _TL_RULER_H);
+          ctx.lineTo(xL + 0.5, _tlHpx);
+          ctx.moveTo(xR + 0.5, _TL_RULER_H);
+          ctx.lineTo(xR + 0.5, _tlHpx);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = '#35e0ff';
+          ctx.fillRect(xL - 3, cy + _TL_DIAM + 3, 6, 8);
+          ctx.fillRect(xR - 3, cy + _TL_DIAM + 3, 6, 8);
+        }
+      }
+
+      // Diamonds (one per keyframe at its kf.t). Selected = cyan;
+      // resting = orange (matches the Task-16 trajectory accent).
+      for (let i = 0; i < p.keyframes.length; i++) {
+        const k = p.keyframes[i];
+        const cx = _tlT2X(k.t || 0);
+        if (cx < -20 || cx > _tlW + 20) continue;
+        const on = _tlSel.has(i);
+        ctx.beginPath();
+        ctx.moveTo(cx, cy - _TL_DIAM);
+        ctx.lineTo(cx + _TL_DIAM, cy);
+        ctx.lineTo(cx, cy + _TL_DIAM);
+        ctx.lineTo(cx - _TL_DIAM, cy);
+        ctx.closePath();
+        ctx.fillStyle = on ? '#35e0ff' : '#ff8a3d';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+      void dur;
+    }
+
+    // ---- Playhead position (px) from the live player clock if a
+    //      path is driving the camera, else the #path-scrub slider.
+    //      EXACT same source the Task-16 overlay highlight uses --
+    //      single source of truth, no parallel clock.
+    function _tlPlayheadT() {
+      const p = _tlActivePath();
+      const dur = _tlDuration(p);
+      if (dur <= 0) return 0;
+      if (_player && _activePathId &&
+          _trajBuiltPathId && _activePathId === _trajBuiltPathId) {
+        const sp = _player.playSpeed || 1.0;
+        let tn = ((performance.now() - _t0) / 1000) * sp;
+        if (_player.loop && tn > _player.duration)
+          tn = tn % _player.duration;
+        return Math.max(0, Math.min(tn, dur));
+      }
+      if (scrubEl) {
+        const f = (parseFloat(scrubEl.value) || 0) / 1000;
+        return Math.max(0, Math.min(1, f)) * dur;
+      }
+      return 0;
+    }
+    function _tlSyncPlayhead() {
+      const t = _tlPlayheadT();
+      const x = _tlT2X(t);
+      _tlPlayhead.style.left = x + 'px';
+      _tlPlayhead.style.display =
+        (x >= -2 && x <= _tlW + 2) ? 'block' : 'none';
+    }
+
+    // ---- The SINGLE source of truth for live scrub: set the
+    //      EXISTING #path-scrub slider value (0..1000 of the active
+    //      path duration) and dispatch its REAL 'input' event so the
+    //      production handler runs -- it takes `_player` over for the
+    //      selected path AND rebases `_t0`, EXACTLY like a user
+    //      grabbing the slider. This is what makes the live scrub
+    //      robust to the author-mode default-path AUTO-TOUR (which
+    //      auto-plays here): the real scrub deterministically takes
+    //      the camera over from the auto-advancing tour, same as for
+    //      a real user. We never reimplement the scrub math.
+    function _tlScrubToTime(t) {
+      const p = _tlActivePath();
+      const dur = _tlDuration(p);
+      if (!scrubEl || dur <= 0) return;
+      // Make sure the scrub handler binds to the path the timeline
+      // is editing (it reads selEl.value when _player is null).
+      if (p && p.id && selEl && selEl.value !== p.id &&
+          !_player) {
+        try { selEl.value = p.id; } catch (e) {}
+      }
+      const f = Math.max(0, Math.min(1, t / dur));
+      scrubEl.value = String(f * 1000);
+      try {
+        scrubEl.dispatchEvent(new Event('input', { bubbles: true }));
+      } catch (e) {}
+      _tlSyncPlayhead();
+    }
+
+    // ---- In-memory temporal edit + spline rebuild. Mutates the
+    //      active path object in place (the SAME object the player +
+    //      Task-16 overlay read), then rebuilds the spline. The
+    //      Task-16 overlay's OverlayScene.update() sig check
+    //      (_trajKfSig includes (k.t||0)) rebuilds its geometry on
+    //      the next tick automatically; we ALSO null _player (if it
+    //      is driving THIS path) so the live player re-derives the
+    //      new geometry on its next grab. NO persistence -- this is
+    //      the full Task-17 mutation scope.
+    function _tlAfterEdit() {
+      const p = _tlActivePath();
+      if (!p) return;
+      // Clamp every kf.t to be finite + >= 0 (a temporal edit must
+      // never produce a NaN/negative time the spline chokes on).
+      if (p.keyframes) {
+        for (const k of p.keyframes) {
+          let t = +k.t;
+          if (!isFinite(t)) t = 0;
+          if (t < 0) t = 0;
+          k.t = t;
+        }
+      }
+      // Rebuild the spline off the mutated keyframes (reuse
+      // buildPlayer -- the single spline implementation). If this
+      // path is the one currently driving the camera, refresh
+      // _player in place + rebase _t0 to hold the current playhead
+      // so the edit does not teleport the camera.
+      if (_player && _activePathId === (p.id || _activePathId) &&
+          _trajBuiltPathId === (p.id || null)) {
+        const held = (function () {
+          const sp = _player.playSpeed || 1.0;
+          let tn = ((performance.now() - _t0) / 1000) * sp;
+          if (_player.loop && tn > _player.duration)
+            tn = tn % _player.duration;
+          return tn;
+        })();
+        const np = buildPlayer(p);
+        if (np) {
+          _player = np;
+          // UX-3 (2026-05-20): keep the paused-scrub identity
+          // discriminator alive across an in-place player rebuild.
+          // Without this the next _trajLayer.update() rebase tick
+          // sees _pausedAtPlayer !== _player (stale reference to the
+          // pre-edit player), the rebase becomes a no-op, and a kf
+          // edit while the user was scrub-paused would silently
+          // resume playback. Clamp _pausedAt to the new duration too
+          // (the edit may have shortened the path).
+          if (_pausedAt !== null) {
+            _pausedAtPlayer = np;
+            _pausedAt = Math.max(0, Math.min(_pausedAt, np.duration || 0));
+          }
+          const sp = np.playSpeed || 1.0;
+          const ht = Math.max(0, Math.min(held, np.duration));
+          _t0 = performance.now() - (ht / sp) * 1000;
+        } else {
+          // < 2 keyframes after a delete -> stop cleanly (reuse
+          // the existing stop path, never a new mechanism).
+          try { stopPath(); } catch (e) {}
+        }
+      }
+      // Force the Task-16 overlay + this timeline to re-read NOW
+      // (its layer also rebuilds on the next OverlayScene tick via
+      // the sig check; this just makes the harness deterministic).
+      try {
+        if (window.__editor && typeof window.__editor.rebuild ===
+            'function') window.__editor.rebuild();
+      } catch (e) {}
+      _tlDraw();
+      _tlSyncPlayhead();
+    }
+
+    // ---- Pointer interaction on the lane. One pointerdown router:
+    //      a diamond hit => temporal drag; an edge-handle hit (2+
+    //      selected) => span scale; the ruler band => live scrub;
+    //      empty lane => box-select marquee. pointermove/up are on
+    //      window so a drag that leaves the strip still tracks.
+    function _tlLaneXY(ev) {
+      const r = _tlLane.getBoundingClientRect();
+      return { x: ev.clientX - r.left, y: ev.clientY - r.top };
+    }
+    function _tlHitEdge(x, y) {
+      // Returns 'left'|'right'|'' for the selection-span edge grips
+      // (only when 2+ selected; the grip is the small rect below
+      // the diamond row at the min/max selected kf.t).
+      const p = _tlActivePath();
+      if (!p || _tlSel.size < 2) return '';
+      let lo = Infinity, hi = -Infinity, kLo = -1, kHi = -1;
+      _tlSel.forEach((i) => {
+        const k = p.keyframes[i]; if (!k) return;
+        const t = k.t || 0;
+        if (t < lo) { lo = t; kLo = i; }
+        if (t > hi) { hi = t; kHi = i; }
+      });
+      if (kLo < 0 || kHi < 0 || lo === hi) return '';
+      const cy = _tlDiamRowY();
+      if (y < cy + _TL_DIAM + 1 || y > cy + _TL_DIAM + 13) return '';
+      if (Math.abs(x - _tlT2X(lo)) <= 6) return 'left';
+      if (Math.abs(x - _tlT2X(hi)) <= 6) return 'right';
+      return '';
+    }
+    function _tlOnDown(ev) {
+      if (ev.button !== undefined && ev.button !== 0) return;
+      const xy = _tlLaneXY(ev);
+      _tlLane.setPointerCapture && (() => {
+        try { _tlLane.setPointerCapture(ev.pointerId); } catch (e) {}
+      })();
+      ev.preventDefault();
+      // (1) selection-span edge handle -> proportional scale.
+      const edge = _tlHitEdge(xy.x, xy.y);
+      if (edge) {
+        const p = _tlActivePath();
+        let lo = Infinity, hi = -Infinity;
+        _tlSel.forEach((i) => {
+          const k = p.keyframes[i]; if (!k) return;
+          const t = k.t || 0;
+          if (t < lo) lo = t; if (t > hi) hi = t;
+        });
+        _tlDragMode = 'scale';
+        _tlScaleEdge = edge;
+        // The OPPOSITE edge time is the FIXED anchor the rescale
+        // pivots about (drag 'right' -> anchor = lo; drag 'left' ->
+        // anchor = hi). t' = anchor + (t-anchor)*ratio.
+        _tlScaleAnchor = (edge === 'right') ? lo : hi;
+        _tlScaleBase = [];
+        _tlSel.forEach((i) => {
+          const k = p.keyframes[i];
+          if (k) _tlScaleBase.push({ i: i, t0: (k.t || 0) });
+        });
+        return;
+      }
+      // (2) diamond -> temporal drag of THAT keyframe.
+      const ki = _tlHitKf(xy.x, xy.y);
+      if (ki >= 0) {
+        _tlDragMode = 'kf';
+        _tlDragKf = ki;
+        // Click selects just this kf unless shift-extends; a
+        // pre-existing multi-selection that includes ki is kept so
+        // a drag can move the whole selection if desired (here a
+        // single-kf temporal edit -- the spec's "drag a diamond
+        // horizontally -> its t changes").
+        if (!ev.shiftKey) {
+          if (!_tlSel.has(ki)) { _tlSel.clear(); _tlSel.add(ki); }
+        } else {
+          if (_tlSel.has(ki)) _tlSel.delete(ki); else _tlSel.add(ki);
+        }
+        _tlDraw();
+        return;
+      }
+      // (3) ruler band -> live scrub (drag the playhead). Routes
+      //     through the REAL #path-scrub mechanism.
+      if (xy.y <= _TL_RULER_H + 6) {
+        _tlDragMode = 'play';
+        _tlScrubbing = true;
+        _tlScrubToTime(Math.max(0, _tlX2T(xy.x)));
+        return;
+      }
+      // (4) empty lane -> box-select marquee.
+      _tlDragMode = 'box';
+      _tlBoxX0 = xy.x; _tlBoxX1 = xy.x;
+      if (!ev.shiftKey) _tlSel.clear();
+      _tlDraw();
+    }
+    function _tlOnMove(ev) {
+      if (!_tlDragMode) return;
+      const xy = _tlLaneXY(ev);
+      if (_tlDragMode === 'kf') {
+        const p = _tlActivePath();
+        if (!p || !p.keyframes || _tlDragKf < 0) return;
+        const k = p.keyframes[_tlDragKf];
+        if (!k) return;
+        let nt = _tlX2T(xy.x);
+        if (!isFinite(nt)) return;
+        if (nt < 0) nt = 0;
+        k.t = nt;                       // the temporal edit
+        _tlAfterEdit();
+        return;
+      }
+      if (_tlDragMode === 'scale') {
+        const p = _tlActivePath();
+        if (!p || !_tlScaleBase) return;
+        const a = _tlScaleAnchor;
+        // Base span (grabbed edge - anchor) -> new span (cursor -
+        // anchor). ratio = newSpan/oldSpan; proportional rescale of
+        // EVERY selected kf about the fixed opposite anchor.
+        let base0 = 0;
+        for (const e of _tlScaleBase) {
+          const d = Math.abs(e.t0 - a);
+          if (d > base0) base0 = d;
+        }
+        if (base0 <= 1e-6) return;
+        let cur = Math.abs(_tlX2T(xy.x) - a);
+        // Keep the span strictly positive (do not let an edge cross
+        // the anchor / collapse to zero).
+        if (cur < 1e-4) cur = 1e-4;
+        const ratio = cur / base0;
+        for (const e of _tlScaleBase) {
+          const k = p.keyframes[e.i];
+          if (!k) continue;
+          let nt = a + (e.t0 - a) * ratio;
+          if (nt < 0) nt = 0;
+          k.t = nt;
+        }
+        _tlAfterEdit();
+        return;
+      }
+      if (_tlDragMode === 'play') {
+        _tlScrubToTime(Math.max(0, _tlX2T(xy.x)));
+        return;
+      }
+      if (_tlDragMode === 'box') {
+        _tlBoxX1 = xy.x;
+        // Live marquee selection: every keyframe whose diamond x is
+        // inside the box (a fresh set unless shift-additive at down).
+        const p = _tlActivePath();
+        if (p && p.keyframes) {
+          const lo = Math.min(_tlBoxX0, _tlBoxX1);
+          const hi = Math.max(_tlBoxX0, _tlBoxX1);
+          for (let i = 0; i < p.keyframes.length; i++) {
+            const cx = _tlT2X(p.keyframes[i].t || 0);
+            if (cx >= lo && cx <= hi) _tlSel.add(i);
+          }
+        }
+        _tlDraw();
+        return;
+      }
+    }
+    function _tlOnUp() {
+      if (_tlDragMode === 'box') {
+        // Marquee finished; keep whatever fell inside it.
+      }
+      // UX-3 (2026-05-20): no longer stopPath() on scrub release. The
+      // A6 stopPath() call here (the previous fix) set _player=null
+      // which RE-ENABLED OrbitControls; the very next tick() ran
+      // `if (!_player) controls.update();` which clobbered the camera
+      // from the STALE pre-scrub spherical -- the "jumps back to
+      // Perspective" symptom B. The scrub input handler now sets
+      // _pausedAt + _pausedAtPlayer; the _trajLayer.update() per-
+      // frame rebase above re-pins _t0 so the tick() player block
+      // samples ~_pausedAt every frame and the camera holds at the
+      // released pose. _player stays alive so `if (!_player)
+      // controls.update()` is gated off -- no clobber. To exit pause:
+      // press Play (startPath resumes from _pausedAt), Stop, or
+      // Perspective in the camera dropdown (both stopPath).
+      _tlDragMode = '';
+      _tlDragKf = -1;
+      _tlScrubbing = false;
+      _tlScaleBase = null;
+      _tlDraw();
+    }
+    _tlLane.addEventListener('pointerdown', _tlOnDown);
+    window.addEventListener('pointermove', _tlOnMove);
+    window.addEventListener('pointerup', _tlOnUp);
+
+    // ---- Wheel zoom (time scale) about the cursor time. Storage
+    //      stays SECONDS -- only the px mapping (zoom/scroll)
+    //      changes; no stored t is touched.
+    _tlLane.addEventListener('wheel', (ev) => {
+      ev.preventDefault();
+      const xy = _tlLaneXY(ev);
+      const tAt = _tlX2T(xy.x);            // time under the cursor
+      const f = Math.exp(-ev.deltaY * 0.0016);
+      const nz = Math.max(_TL_ZOOM_MIN,
+        Math.min(_TL_ZOOM_MAX, _tlZoom * f));
+      _tlZoom = nz;
+      // Keep the time under the cursor pinned (zoom about cursor).
+      _tlScroll = tAt - (xy.x - _TL_PAD) / _tlZoom;
+      if (_tlScroll < 0) _tlScroll = 0;
+      _tlDraw();
+      _tlSyncPlayhead();
+    }, { passive: false });
+
+    // ---- Transport. Reuse the EXISTING #path-play / #path-stop
+    //      handlers (no new play/stop). Loop toggles the active
+    //      path's loop flag + rebuilds (a temporal-ish edit on the
+    //      path object -- still in-memory, still no persistence).
+    _tlPlay.addEventListener('click', () => {
+      const p = _tlActivePath();
+      if (p && p.id && selEl) {
+        try { selEl.value = p.id; } catch (e) {}
+      }
+      try { startPath(selEl ? selEl.value : (p && p.id)); }
+      catch (e) {}
+    });
+    _tlPause.addEventListener('click', () => {
+      try { stopPath(); } catch (e) {}
+      _tlSyncPlayhead();
+    });
+    _tlLoop.addEventListener('click', () => {
+      const p = _tlActivePath();
+      if (!p) return;
+      p.loop = !p.loop;
+      _tlLoop.style.background = p.loop
+        ? 'rgba(53,224,255,0.32)' : 'rgba(255,255,255,0.10)';
+      _tlAfterEdit();
+    });
+    _tlFpsBtn.addEventListener('click', () => {
+      // Cycle OFF -> 24 -> 30 -> 60 -> OFF. PURE RELABEL of the
+      // ruler -- it NEVER mutates a stored kf.t (the storage unit
+      // is always seconds; this only changes tick labels).
+      const cyc = [0, 24, 30, 60];
+      const idx = cyc.indexOf(_tlFps);
+      _tlFps = cyc[(idx + 1) % cyc.length];
+      _tlFpsBtn.textContent = _tlFps > 0 ? (_tlFps + 'fps') : 'fps';
+      _tlFpsBtn.style.background = _tlFps > 0
+        ? 'rgba(53,224,255,0.32)' : 'rgba(255,255,255,0.10)';
+      _tlDraw();                 // relabel only; NO _tlAfterEdit()
+    });
+
+    // ---- X deletes the selected keyframes (in-memory mutation +
+    //      spline rebuild; refuse to drop below 2 so the path stays
+    //      a valid spline -- a sensible clamp, not a hidden mode).
+    window.addEventListener('keydown', (ev) => {
+      if (!ModeManager.is('author')) return;
+      if (ev.key !== 'x' && ev.key !== 'X' &&
+          ev.key !== 'Delete') return;
+      // Ignore when typing in an input (none here, but defensive).
+      const ae = document.activeElement;
+      if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' ||
+          ae.tagName === 'SELECT')) return;
+      if (!_tlSel.size) return;
+      const p = _tlActivePath();
+      if (!p || !p.keyframes) return;
+      const keep = [];
+      for (let i = 0; i < p.keyframes.length; i++) {
+        if (!_tlSel.has(i)) keep.push(p.keyframes[i]);
+      }
+      if (keep.length < 2) {
+        // Clamp: a path needs >= 2 keyframes to be a spline; ignore
+        // a delete that would invalidate it (do NOT silently break
+        // the path).
+        return;
+      }
+      p.keyframes = keep;
+      _tlSel.clear();
+      _tlAfterEdit();
+    });
+
+    // The strip + diamonds + playhead must follow window resize and
+    // the splat canvas size (it is absolutely positioned over it).
+    window.addEventListener('resize', _tlResize);
+    // Initial layout once the strip has a measured size (next frame
+    // so getBoundingClientRect is non-zero), then keep the playhead
+    // synced from the ONE OverlayScene tick (no parallel rAF: we
+    // fan a tiny per-frame playhead sync off the SAME tick the
+    // Task-16 overlay already uses -- see the layer below).
+    requestAnimationFrame(() => { _tlResize(); });
+
+    // Fan the per-frame playhead sync off the ONE OverlayScene
+    // tick (Task-0 contract -- no parallel rAF). modes:['author']
+    // so OverlayScene skips update() outside author mode (inert in
+    // user/embed). node-less (it is pure DOM, not a 3D node) so
+    // OverlayScene never touches a node's visibility for it.
+    const _tlLayer = {
+      id: 'editor-timeline',
+      modes: ['author'],
+      update() {
+        if (!ModeManager.is('author')) return;
+        if (!_tlScrubbing) _tlSyncPlayhead();
+      },
+    };
+    OverlayScene.register(_tlLayer);
+
+    // ---- TEST-ONLY surface extension (mirror window.__clip /
+    //      __transport / the Task-16 window.__editor: getters +
+    //      deterministic hooks; NO production reader; inert without
+    //      the harness). Extends the EXISTING window.__editor object
+    //      (created by the Task-16 block above) so the harness reads
+    //      one surface. Every hook drives the REAL code path a user
+    //      action would (the same convention as __editor.scrubTo /
+    //      __clip.restart).
+    try {
+      if (window.__editor) {
+        const _api = {
+          // ---- read state ----
+          get tlPresent() { return !!_tlStrip.parentNode; },
+          get tlZoom() { return _tlZoom; },
+          get tlScroll() { return _tlScroll; },
+          get tlFps() { return _tlFps; },
+          get tlDuration() { return _tlDuration(_tlActivePath()); },
+          get tlSelection() {
+            return Array.from(_tlSel).sort((a, b) => a - b);
+          },
+          // The stored keyframe times (SECONDS) of the active path,
+          // in keyframe-array order (NOT sorted) so the harness can
+          // assert a SPECIFIC kf's t changed / is byte-identical.
+          get tlKfTimes() {
+            const p = _tlActivePath();
+            return (p && p.keyframes)
+              ? p.keyframes.map(k => (k.t || 0)) : [];
+          },
+          // Diamond screen positions (px) + their kf.t, so the
+          // harness can assert px == time->px under zoom/scroll.
+          get tlDiamonds() {
+            const p = _tlActivePath();
+            if (!p || !p.keyframes) return [];
+            return p.keyframes.map((k, i) => ({
+              i: i, t: (k.t || 0), x: _tlT2X(k.t || 0),
+              sel: _tlSel.has(i),
+            }));
+          },
+          // Playhead time (seconds) + px -- the harness asserts a
+          // playhead drag moves the CAMERA (read _spDebug.camera).
+          get tlPlayheadT() { return _tlPlayheadT(); },
+          get tlPlayheadX() {
+            return parseFloat(_tlPlayhead.style.left) || 0;
+          },
+          get tlActivePathId() {
+            const p = _tlActivePath();
+            return p ? (p.id || null) : null;
+          },
+          get tlLoop() {
+            const p = _tlActivePath();
+            return !!(p && p.loop);
+          },
+          // ---- deterministic hooks (drive the REAL handlers) ----
+          // Live scrub: routes through the REAL #path-scrub input
+          // mechanism (single source of truth -- takes _player over
+          // + rebases _t0, robust to the auto-tour). frac in 0..1.
+          tlScrub(frac) {
+            const dur = _tlDuration(_tlActivePath());
+            _tlScrubToTime(Math.max(0, Math.min(1, +frac || 0)) * dur);
+            return _tlPlayheadT();
+          },
+          // Temporal edit: set keyframe[idx].t = newT (the SAME
+          // mutation a diamond drag performs) + rebuild.
+          tlDragKf(idx, newT) {
+            const p = _tlActivePath();
+            if (!p || !p.keyframes || !p.keyframes[idx]) return false;
+            let t = +newT;
+            if (!isFinite(t)) return false;
+            if (t < 0) t = 0;
+            p.keyframes[idx].t = t;
+            _tlAfterEdit();
+            return true;
+          },
+          // Selection set (by kf index) -- the SAME state a marquee
+          // produces; lets the harness deterministically select 2+.
+          tlSelect(idxs) {
+            _tlSel.clear();
+            (idxs || []).forEach((i) => {
+              if (i >= 0) _tlSel.add(i | 0);
+            });
+            _tlDraw();
+            return Array.from(_tlSel).sort((a, b) => a - b);
+          },
+          // Box-select by a time window [t0,t1] (drives the SAME
+          // marquee selection math the pointer path uses).
+          tlBoxSelect(t0, t1) {
+            const p = _tlActivePath();
+            _tlSel.clear();
+            if (p && p.keyframes) {
+              const lo = Math.min(+t0, +t1), hi = Math.max(+t0, +t1);
+              for (let i = 0; i < p.keyframes.length; i++) {
+                const t = p.keyframes[i].t || 0;
+                if (t >= lo && t <= hi) _tlSel.add(i);
+              }
+            }
+            _tlDraw();
+            return Array.from(_tlSel).sort((a, b) => a - b);
+          },
+          // Scale the selected span by dragging an EDGE: move the
+          // grabbed edge ('left'|'right') to newEdgeT; the opposite
+          // edge is the fixed anchor; proportional rescale (the
+          // SAME math _tlOnMove('scale') runs). Returns the post-
+          // scale stored times of the selected kfs.
+          tlScaleSelection(edge, newEdgeT) {
+            const p = _tlActivePath();
+            if (!p || !p.keyframes || _tlSel.size < 2) return null;
+            let lo = Infinity, hi = -Infinity;
+            _tlSel.forEach((i) => {
+              const k = p.keyframes[i]; if (!k) return;
+              const t = k.t || 0;
+              if (t < lo) lo = t; if (t > hi) hi = t;
+            });
+            if (!isFinite(lo) || !isFinite(hi) || lo === hi)
+              return null;
+            const anchor = (edge === 'right') ? lo : hi;
+            let base0 = Math.abs(((edge === 'right') ? hi : lo) -
+              anchor);
+            if (base0 <= 1e-6) return null;
+            let cur = Math.abs((+newEdgeT) - anchor);
+            if (cur < 1e-4) cur = 1e-4;
+            const ratio = cur / base0;
+            const base = [];
+            _tlSel.forEach((i) => {
+              base.push({ i: i, t0: (p.keyframes[i].t || 0) });
+            });
+            for (const e of base) {
+              let nt = anchor + (e.t0 - anchor) * ratio;
+              if (nt < 0) nt = 0;
+              p.keyframes[e.i].t = nt;
+            }
+            _tlAfterEdit();
+            return { anchor: anchor, ratio: ratio,
+              times: Array.from(_tlSel).sort((a, b) => a - b)
+                .map(i => (p.keyframes[i].t || 0)) };
+          },
+          // X delete the current selection (the SAME mutation the
+          // keydown handler performs; honours the >=2 clamp).
+          tlDeleteSelection() {
+            const p = _tlActivePath();
+            if (!p || !p.keyframes || !_tlSel.size) return false;
+            const keep = [];
+            for (let i = 0; i < p.keyframes.length; i++) {
+              if (!_tlSel.has(i)) keep.push(p.keyframes[i]);
+            }
+            if (keep.length < 2) return false;
+            p.keyframes = keep;
+            _tlSel.clear();
+            _tlAfterEdit();
+            return true;
+          },
+          // Transport (drive the REAL #path-play/#path-stop reuse).
+          tlPlay() {
+            const p = _tlActivePath();
+            if (p && p.id && selEl) {
+              try { selEl.value = p.id; } catch (e) {}
+            }
+            try { startPath(selEl ? selEl.value : (p && p.id)); }
+            catch (e) {}
+            return !!_player;
+          },
+          tlPause() {
+            try { stopPath(); } catch (e) {}
+            _tlSyncPlayhead();
+            return !_player;
+          },
+          tlToggleLoop() {
+            const p = _tlActivePath();
+            if (!p) return null;
+            p.loop = !p.loop;
+            _tlAfterEdit();
+            return !!p.loop;
+          },
+          // Wheel zoom about a time (the SAME zoom math the wheel
+          // handler runs); factor>1 zooms IN. Storage stays seconds.
+          tlZoomAbout(tAt, factor) {
+            const xAt = _tlT2X(+tAt);
+            _tlZoom = Math.max(_TL_ZOOM_MIN,
+              Math.min(_TL_ZOOM_MAX, _tlZoom * (+factor || 1)));
+            _tlScroll = (+tAt) - (xAt - _TL_PAD) / _tlZoom;
+            if (_tlScroll < 0) _tlScroll = 0;
+            _tlDraw();
+            _tlSyncPlayhead();
+            return _tlZoom;
+          },
+          // fps grid toggle (RELABEL ONLY -- asserts stored t
+          // unchanged before/after). Pass a specific fps or cycle.
+          tlSetFps(v) {
+            _tlFps = (v && v > 0) ? (v | 0) : 0;
+            _tlFpsBtn.textContent =
+              _tlFps > 0 ? (_tlFps + 'fps') : 'fps';
+            _tlDraw();
+            return _tlFps;
+          },
+          // The Task-16 trajectory overlay's current keyframe
+          // signature -- so the harness can assert an in-memory
+          // temporal edit actually triggered the overlay rebuild
+          // (the sig CHANGED) without a save/network.
+          get tlOverlaySig() {
+            try {
+              const p = _tlActivePath();
+              return (typeof _trajKfSig === 'function')
+                ? _trajKfSig(p) : '';
+            } catch (e) { return ''; }
+          },
+          // v2-C Phase 2 follow-on (R2): force a timeline redraw
+          // against the current _tlActivePath(). Used by _camSelApply
+          // when the author rebinds to a different camera so the
+          // bottom-timeline diamonds reflect the NEW path immediately
+          // (the timeline IIFE's per-frame update() only syncs the
+          // playhead position; it never redraws the diamond row off
+          // path-change alone). _tlDraw + _tlSyncPlayhead are the SAME
+          // pair every existing edit-hook (_tlAfterEdit / tlZoomAbout
+          // / tlSetFps) uses, so this reuses the canonical refresh.
+          // Safe for a freshly-created empty-keyframes path:
+          // _tlDraw's `if (!p || !p.keyframes || !p.keyframes.length)
+          // return;` short-circuits AFTER clearing the canvas, so the
+          // strip ends up genuinely EMPTY rather than showing stale
+          // diamonds from the prior camera.
+          tlRedraw() {
+            _tlDraw();
+            _tlSyncPlayhead();
+          },
+        };
+        // Copy onto the Task-16 window.__editor PRESERVING getters as
+        // GETTERS (Object.assign would invoke each getter once and
+        // freeze the RESULT as a static data property -- so a later
+        // tlZoomAbout/tlSetFps/tlDragKf mutation would not be visible
+        // through window.__editor.tlZoom/.tlFps/.tlKfTimes). Copy the
+        // property DESCRIPTORS so the getters stay live (mirrors how
+        // the Task-16 surface itself uses real getters).
+        Object.defineProperties(
+          window.__editor, Object.getOwnPropertyDescriptors(_api));
+      }
+    } catch (e) {}
+  })();
+

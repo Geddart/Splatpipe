@@ -1,0 +1,2085 @@
+  // ============================================================
+  //  Author editor -- select-key gizmo + interp popover +
+  //  Record(K) + Save/Emit SPCP (Task 18 -- plan H2/Task-14)
+  // ------------------------------------------------------------
+  //  AUTHOR MODE ONLY (ModeManager.is('author')): user / embed and
+  //  the 6 live single-camera scenes are byte-runtime-unchanged --
+  //  every code path here is gated by the SAME _EDITOR_AUTHOR flag
+  //  the Task-16 trajectory overlay + the Task-17 timeline use, and
+  //  every DOM/listener/THREE object is only ever created in author
+  //  mode (so this whole section is inert in user/embed; the
+  //  byte-lock proves the 6 live scenes' generated HTML is
+  //  byte-identical -- this code sits strictly INSIDE the Task-16
+  //  T16-TRAJ region, recipe 2c, so it is absorbed by that region's
+  //  EXISTING excision and the moving-baseline remainder is
+  //  unaffected by it).
+  //  The IMPORT: TransformControls is loaded via a DYNAMIC
+  //  import('three/addons/controls/TransformControls.js') -- the
+  //  ``three/addons/`` prefix ALREADY resolves through the existing
+  //  importmap (the SAME mapping OrbitControls/CSS2DRenderer use),
+  //  so there is NO new importmap entry and NO shared-HTML change:
+  //  the import statement is region-interior author-gated code, not
+  //  a top-level static import that would land OUTSIDE T16-TRAJ.
+  //  WHAT IT DOES (the Task-18 scope):
+  //    * click a trajectory frustum (the Task-16 _trajFrusta meshes)
+  //      -> select that keyframe -> attach TransformControls to a
+  //      proxy Object3D parked at the keyframe pose.
+  //    * drag the gizmo -> write the proxy's pose back to THAT
+  //      keyframe's kf.pos (translate) / kf.quat (rotate) IN MEMORY
+  //      (the SAME object the live player + the Task-16 overlay +
+  //      the Task-17 timeline read) -> _trajRebuild + sig bump so
+  //      the Task-16 overlay + Task-17 diamonds rebuild. NO save.
+  //    * SPACE toggles World <-> Screen (Screen = camera-aligned
+  //      axes: TransformControls 'local' space on a proxy whose
+  //      quaternion we keep == the camera's, so the gizmo axes
+  //      track the screen). R / T toggle rotate / translate.
+  //    * V opens a 5-type interp popover (a segmented control over
+  //      the EXISTING _VALID_INTERP set) and writes the selected
+  //      keyframe's kf.interp -> rebuild (the spline already honours
+  //      per-keyframe interp via _kfMeta).
+  //    * K records a keyframe = the LIVE camera pose + the REAL
+  //      elapsed playhead t (the SAME single-source-of-truth clock
+  //      _trajPlayhead() returns -- the live _player/_t0 clock while
+  //      a tour plays, else the #path-scrub position; this is the
+  //      in-viewer analogue of the Task-5 "recording uses real
+  //      elapsed time" fix, NOT a reinvented timer) appended to the
+  //      active path's keyframes -> rebuild.
+  //    * Save: SAVE_MODE=="cli" (the decision-A DEFAULT) emits an
+  //      SPCP1:<slug>:<b64url> token + the
+  //      `splatpipe set-camera-path <token>` command in an
+  //      on-screen textarea + copy-to-clipboard, MIRRORING the
+  //      existing SPV1 "Set start view" relay UI (no client secret,
+  //      identical trust model). SAVE_MODE=="http" (opt-in) POSTs
+  //      the camera-scope patch JSON to SAVE_ENDPOINT with
+  //      Authorization: Bearer <secret> where <secret> is read ONLY
+  //      from the author URL fragment (#author=<secret>).
+  //  AUTO-TOUR: in ?author=1 the default-path tour AUTO-PLAYS
+  //  (_cinematic is usermode-only). Authoring while it auto-advances
+  //  is disorienting, so the FIRST author interaction (gizmo attach
+  //  / Record / interp open) does an EXPLICIT stopPath() -- the
+  //  SAME single stop mechanism the Task-17 timeline's pause/scrub
+  //  reuse (NOT a change to Task-13's _cinematic gate; an explicit
+  //  interaction stop, exactly like the Task-15 end-user interrupt).
+  //  The SPCP1 codec is a BYTE-IDENTICAL JS port of
+  //  core/spcp_token.encode_spcp: compact JSON
+  //  (separators (",",":"), ensure_ascii=True, key INSERTION order
+  //  -- NO sort_keys) -> urlsafe base64 -> rstrip('='). The number
+  //  formatter (_spcpNum) reproduces CPython json.dumps' float repr
+  //  (integer-valued -> integer literal -> a json.loads/json.dumps
+  //  fixed point; |x|<1e-4 -> zero-padded sci e[+-]NN like Python,
+  //  NOT JS fixed-notation) so a Python decode_spcp(js_token)
+  //  round-trips AND encode_spcp(slug, that payload) == js_token
+  //  byte-for-byte (the spec's core correctness gate, asserted by a
+  //  real pytest check on the harness-captured token).
+  //  Payload = Contract-C / ALLOWED_PATCH_KEYS ONLY:
+  //  start_view, camera_paths, clips, cameras, default_path_id,
+  //  intro, titles3d, spark_render, annotations -- wrapped as
+  //  { v:1, scope:'camera_paths', ...patch }. NEVER primary_asset
+  //  (the locked Speicher-blank invariant; merge_camera_scope
+  //  force-keeps the live pointer and ALLOWED_PATCH_KEYS asserts it
+  //  is excluded -- the emitted payload must respect that).
+  //  window.__editor is EXTENDED (TEST-ONLY: getters + deterministic
+  //  hooks, same convention as the Task-16/17 surface; no production
+  //  reader; inert without the harness).
+  //  Reuses, never reinvents: _trajActivePath/_trajPlayhead/
+  //  _trajRebuild/_trajKfSig/_trajFrusta (Task-16), buildPlayer/
+  //  sampleAt (the SuperSplat spline), the _raycaster (the existing
+  //  scene raycaster), InteractionManager (pointer brokering vs
+  //  OrbitControls/playback), stopPath (the single stop mechanism),
+  //  the SPV1 relay-UI pattern, _VALID_INTERP, SAVE_MODE/
+  //  SAVE_ENDPOINT (Task-8 -- consumed, NOT re-added).
+  // ============================================================
+  (function _gzInit() {
+    if (!_EDITOR_AUTHOR) return;
+
+    // ---- Suppress the auto-tour in ?author=1 (the SECOND half of the
+    //      "cannot move the keyframes" bug). The intro controller's
+    //      cinematic gate is usermode-ONLY, so in author mode it falls
+    //      into the immediate `_introStartTour()` path and the default
+    //      cinematic plays on load -- ending with the camera PARKED
+    //      inside the dense end-of-path keyframe cluster. From there
+    //      every keyframe frustum projects centimetres from the camera
+    //      (gizmo + frusta thousands of px off-screen) so NO keyframe
+    //      is clickable / draggable. An author opens the editor to
+    //      EDIT, not to watch the tour: keep the camera at the saved
+    //      start_view (a sane authoring vantage where all keyframes
+    //      are visible) by making `_introStartTour()` a guaranteed
+    //      no-op -- it bails on `if (_introTourStarted) return;`, the
+    //      SAME idempotency guard the fade/fallback paths already rely
+    //      on. This is an author-mode-only behavior gate (NOT a
+    //      _cinematic change) and is fully inert for the 6 live
+    //      usermode scenes (this whole block is _EDITOR_AUTHOR-gated).
+    //      `_introTourStarted` is a top-level `let` declared well
+    //      above; this IIFE runs BEFORE the intro-controller IIFE so
+    //      the flag is set in time. Belt-and-braces: if a tour is
+    //      somehow already live (race / future reorder) stop it and
+    //      restore the start_view so the authoring camera is stable.
+    try { _introTourStarted = true; } catch (e) {}
+    if (_player) {
+      try { stopPath(); } catch (e) {}
+      try {
+        const _sv = cfg && cfg.start_view;
+        if (_sv && Array.isArray(_sv.pos)) {
+          camera.position.set(_sv.pos[0], _sv.pos[1], _sv.pos[2]);
+          if (Array.isArray(_sv.quat)) {
+            camera.quaternion.set(_sv.quat[0], _sv.quat[1],
+              _sv.quat[2], _sv.quat[3]);
+          }
+          if (typeof _sv.fov === 'number') {
+            camera.fov = _sv.fov; camera.updateProjectionMatrix();
+          }
+          if (Array.isArray(_sv.target) && controls &&
+              controls.target) {
+            controls.target.set(_sv.target[0], _sv.target[1],
+              _sv.target[2]);
+          }
+          camera.updateMatrixWorld(true);
+        }
+      } catch (e) {}
+    }
+
+    // ---- Slug for the SPCP1 token (mirror the SPV1 relay block):
+    //      the page <title> h1 text, sanitised to the kebab/word set
+    //      encode_spcp accepts (it rejects a ':' in the slug -- our
+    //      sanitiser strips it, so split(':',2) is safe both ways).
+    const _gzProjName = (document.querySelector('#title h1') &&
+      document.querySelector('#title h1').textContent || 'scene').trim();
+    const _gzSlug = (_gzProjName.replace(/[^A-Za-z0-9_-]+/g, '_')
+      .slice(0, 48)) || 'scene';
+
+    // ---- BYTE-IDENTICAL JS port of core/spcp_token.encode_spcp ----
+    // Python: json.dumps(payload, separators=(",",":")).encode()
+    //         -> base64.urlsafe_b64encode(...).rstrip("=")
+    //         -> "SPCP1:" + slug + ":" + that
+    // json.dumps defaults: ensure_ascii=True, NO sort_keys (key
+    // INSERTION order). We replicate ALL of that exactly.
+    //
+    // _spcpNum: reproduce CPython json/float repr so a value
+    // round-trips through Python json.loads -> json.dumps unchanged
+    // (the byte-identity gate). Key facts (verified against CPython):
+    //   * 0 / -0  -> "0"   (json.loads("0") is int 0 -> "0": a fixed
+    //                        point; JS String(-0) is "0" too).
+    //   * integer-valued, |n| < 1e21 -> String(n) (e.g. "2","-40").
+    //     json.loads parses it as an int and re-dumps the SAME
+    //     literal -> fixed point (covers the >=1e16 case too: JS
+    //     emits the integer literal, Python keeps it an int).
+    //   * fractional, 1e-4 <= |n| < 1e16 -> String(n): JS shortest
+    //     round-trip digits == CPython's, both fixed-notation ->
+    //     byte-identical.
+    //   * fractional, |n| < 1e-4 (CPython switches to sci here):
+    //     mantissa from toExponential() + Python-style exponent
+    //     "e" + sign + >=2-digit zero-padded magnitude (JS gives
+    //     "1e-5", Python "1e-05"; we pad to match).
+    //   * non-finite -> never valid JSON (the clean payload has
+    //     none); throw so a bug is loud, never silently NaN.
+    function _spcpNum(n) {
+      if (!isFinite(n)) throw new Error('non-finite number in payload');
+      if (n === 0) return '0';                 // also -0 (=== 0)
+      if (Number.isInteger(n) && Math.abs(n) < 1e21) return String(n);
+      if (Math.abs(n) >= 1e-4) return String(n);
+      // |n| < 1e-4, fractional -> CPython sci: mantissa + e[+-]NN.
+      const e = n.toExponential();             // e.g. "1.23e-5"
+      const m = e.indexOf('e');
+      const mant = e.slice(0, m);
+      let exp = parseInt(e.slice(m + 1), 10);   // negative here
+      const sign = exp < 0 ? '-' : '+';
+      let mag = String(Math.abs(exp));
+      if (mag.length < 2) mag = '0' + mag;      // zero-pad to >=2
+      return mant + 'e' + sign + mag;
+    }
+    // Python json string escaping with ensure_ascii=True: the JSON
+    // string escapes (\" \\ \b \f \n \r \t), other C0
+    // controls AND every non-ASCII codepoint as \uXXXX (surrogate
+    // pairs preserved as two \uXXXX -- exactly what CPython emits;
+    // JS strings are already UTF-16 so iterating code UNITS yields
+    // the same pair encoding).
+    function _spcpStr(s) {
+      let out = '"';
+      for (let i = 0; i < s.length; i++) {
+        const c = s.charCodeAt(i);
+        const ch = s[i];
+        if (ch === '"') out += '\\"';
+        else if (ch === '\\') out += '\\\\';
+        else if (c === 8) out += '\\b';
+        else if (c === 9) out += '\\t';
+        else if (c === 10) out += '\\n';
+        else if (c === 12) out += '\\f';
+        else if (c === 13) out += '\\r';
+        else if (c < 0x20 || c > 0x7e) {
+          out += '\\u' + c.toString(16).padStart(4, '0');
+        } else {
+          out += ch;
+        }
+      }
+      return out + '"';
+    }
+    // Compact JSON, key INSERTION order (NO sort), separators
+    // (",",":") -- byte-for-byte json.dumps(payload,
+    // separators=(",",":")). Arrays/objects recurse; null/bool
+    // exactly as Python; numbers via _spcpNum; strings via _spcpStr.
+    // (The payload we build holds only JSON-safe primitives, arrays
+    // and plain objects -- the SAME shape that came from the
+    // viewer-config JSON -- so this total covers it.)
+    function _spcpJson(v) {
+      if (v === null) return 'null';
+      const t = typeof v;
+      if (t === 'boolean') return v ? 'true' : 'false';
+      if (t === 'number') return _spcpNum(v);
+      if (t === 'string') return _spcpStr(v);
+      if (Array.isArray(v)) {
+        let s = '[';
+        for (let i = 0; i < v.length; i++) {
+          if (i) s += ',';
+          // Python json renders array None/NaN slots as null; an
+          // undefined/function slot cannot occur in our payload, map
+          // it to null defensively (never throw mid-encode).
+          const e = v[i];
+          s += (e === undefined || typeof e === 'function')
+            ? 'null' : _spcpJson(e);
+        }
+        return s + ']';
+      }
+      if (t === 'object') {
+        let s = '{';
+        let first = true;
+        // Object.keys preserves insertion order for string keys
+        // (the payload keys are all plain strings) -- the SAME order
+        // Python dict iteration would use for an equivalently-built
+        // dict; encode_spcp does NOT sort, so we must NOT either.
+        for (const k of Object.keys(v)) {
+          const val = v[k];
+          // Python json SKIPS no keys (it would serialise None);
+          // our payload never holds undefined/function values, but
+          // skip such a slot defensively rather than emit invalid
+          // JSON (a value Python could not have produced anyway).
+          if (val === undefined || typeof val === 'function') continue;
+          if (!first) s += ',';
+          first = false;
+          s += _spcpStr(k) + ':' + _spcpJson(val);
+        }
+        return s + '}';
+      }
+      // undefined / symbol: not representable -- our payload never
+      // contains these at the top level (guarded above for slots).
+      throw new Error('unserialisable value in payload');
+    }
+    function _b64urlBytes(str) {
+      // str is already pure ASCII (ensure_ascii=True), so its UTF-8
+      // == its byte values; btoa over it == Python
+      // base64.urlsafe_b64encode of the same bytes, then '+/' ->
+      // '-_' and strip '=' (encode_spcp's exact tail).
+      const b64 = btoa(str);
+      return b64.replace(/\+/g, '-').replace(/\//g, '_')
+        .replace(/=+$/, '');
+    }
+    function _encodeSpcp(slug, payload) {
+      if (String(slug).indexOf(':') !== -1) {
+        // Mirror encode_spcp's slug guard (a ':' would break the
+        // cross-language split(':',2) decode). Our sanitiser already
+        // strips ':' so this never fires in practice; defensive.
+        throw new Error("slug must not contain ':'");
+      }
+      const json = _spcpJson(payload);
+      return 'SPCP1:' + slug + ':' + _b64urlBytes(json);
+    }
+
+    // ---- Build the Contract-C camera-scope patch from the AUTHORED
+    //      in-memory state. ONLY the locked allow-list keys
+    //      (start_view, camera_paths, clips, cameras,
+    //      default_path_id, intro, titles3d, spark_render,
+    //      annotations) -- NEVER primary_asset (the Speicher-blank
+    //      invariant: merge_camera_scope force-keeps the live
+    //      pointer; emitting it here would be a critical breach).
+    //      Values are taken from the LIVE cfg object (the same
+    //      object the Task-16/17 in-memory edits + Record(K) + the
+    //      gizmo mutate in place) so the author's edits are exactly
+    //      what gets persisted. Missing keys are simply omitted (a
+    //      whole-replace merge -- absent key == leave the live
+    //      config's value untouched).
+    const _PATCH_KEYS = ['start_view', 'camera_paths', 'clips',
+      'cameras', 'default_path_id', 'intro', 'titles3d',
+      'spark_render', 'annotations'];
+    function _buildPatch() {
+      const patch = {};
+      for (const k of _PATCH_KEYS) {
+        if (cfg && Object.prototype.hasOwnProperty.call(cfg, k) &&
+            cfg[k] !== undefined && cfg[k] !== null) {
+          patch[k] = cfg[k];
+        }
+      }
+      return patch;
+    }
+    function _buildSpcpPayload() {
+      // Exactly decode_spcp's gate shape: v + scope FIRST (insertion
+      // order), then the allow-listed camera-scope keys. (Python
+      // round-trip: decode_spcp checks v==1 & scope=='camera_paths';
+      // the cli backend's merge_camera_scope then ignores v/scope
+      // and applies only ALLOWED_PATCH_KEYS -- so including them in
+      // the token envelope is correct and required.)
+      const p = { v: 1, scope: 'camera_paths' };
+      const patch = _buildPatch();
+      for (const k of Object.keys(patch)) p[k] = patch[k];
+      return p;
+    }
+
+    // ---- Explicit auto-tour stop (single source of truth). In
+    //      ?author=1 the default-path tour auto-plays; the first
+    //      authoring gesture stops it via the EXISTING stopPath()
+    //      (the SAME mechanism Task-17's pause uses) so the gizmo
+    //      drag / Record happen against a still camera. This is an
+    //      explicit interaction stop, NOT a _cinematic-gate change.
+    let _gzTourStopped = false;
+    function _gzStopTour() {
+      if (_player) {
+        try { stopPath(); } catch (e) {}
+        _gzTourStopped = true;
+      }
+    }
+
+    // ---- Selection + gizmo state. _gzProxy is a bare Object3D the
+    //      TransformControls drives; we mirror its pose to/from the
+    //      selected keyframe. It is added to the scene ONLY while a
+    //      key is selected and removed on deselect (no leak). The
+    //      TransformControls 'helper' (its visible gizmo) is added/
+    //      removed alongside.
+    let _gzCtl = null;            // TransformControls instance (lazy)
+    let _gzProxy = null;          // THREE.Object3D the gizmo drives
+    let _gzSelKf = -1;            // selected keyframe index (-1 none)
+    let _gzMode = 'translate';    // 'translate' | 'rotate'
+    let _gzScreen = false;        // false = World, true = Screen
+    let _gzDragging = false;
+    let _gzImportPromise = null;  // memoised dynamic import
+    let _gzPopEl = null;          // the interp popover element
+    let _gzCtlHelper = null;      // the gizmo's visible helper object
+    let _gzAltOrbiting = false;   // B1: an Alt+Left orbit gesture is live
+    let _gzAltPrevGz = null;      // _gzCtl.enabled saved across the gesture
+    let _gzAltPrevTan = null;     // _tanCtl.enabled saved across the gesture
+    let _gzAltPid = -1;           // pointerId that started the Alt-orbit
+    // B2 stacked-keyframe click-cycle state. _gzPkLastX/Y = the screen
+    // px of the previous pick; _gzPkCands = the sorted candidate kf
+    // indices of that pick; _gzPkIdx = how deep we are in that stack;
+    // _gzPkSig = the _trajBuiltSig at that pick (a frustum rebuild
+    // invalidates the cycle). Reset on selection-cleared, on rebuild,
+    // and when the click moves past _GZ_PK_SAME_PX.
+    let _gzPkLastX = null, _gzPkLastY = null;
+    let _gzPkCands = [];
+    let _gzPkIdx = 0;
+    let _gzPkSig = null;
+
+    function _gzActivePath() {
+      return (typeof _trajActivePath === 'function')
+        ? _trajActivePath() : null;
+    }
+    // The keyframe OBJECT for the current selection (selection is by
+    // the Task-16 frustum's kfIndex == the path's keyframes[] index;
+    // _trajRebuild builds one frustum per keyframe IN ORDER).
+    function _gzSelKfObj() {
+      const p = _gzActivePath();
+      if (!p || !p.keyframes || _gzSelKf < 0 ||
+          _gzSelKf >= p.keyframes.length) return null;
+      return p.keyframes[_gzSelKf];
+    }
+
+    // Push the selected keyframe's pose onto the proxy (so the gizmo
+    // sits exactly where the camera will be for that key).
+    const _GZ_TMPQ = new THREE.Quaternion();
+    function _gzSyncProxyFromKf() {
+      const kf = _gzSelKfObj();
+      if (!kf || !_gzProxy) return;
+      const pos = (kf.pos && kf.pos.length === 3) ? kf.pos : [0, 0, 0];
+      _gzProxy.position.set(pos[0], pos[1], pos[2]);
+      const q = (kf.quat && kf.quat.length === 4)
+        ? kf.quat : [0, 0, 0, 1];
+      _gzProxy.quaternion.set(q[0], q[1], q[2], q[3]);
+      _gzProxy.updateMatrixWorld(true);
+    }
+
+    // Trigger the Task-16 overlay + the Task-17 timeline to re-read
+    // the mutated keyframe NOW (deterministic for the harness; the
+    // OverlayScene sig check would also rebuild on the next tick --
+    // _trajKfSig includes pos/quat/interp). Also null _player if it
+    // is driving THIS path so a later Play re-derives the geometry.
+    function _gzAfterEdit() {
+      const p = _gzActivePath();
+      if (!p) return;
+      try {
+        _trajRebuild(p);
+        _trajPhPlayer = p ? buildPlayer(p) : null;
+      } catch (e) {}
+      // Bump the built-sig mismatch so the OverlayScene update()
+      // path also rebuilds (belt-and-braces; _trajRebuild already
+      // reset it -- this just guarantees a mismatch if a later
+      // tick races).
+      try {
+        if (window.__editor && typeof window.__editor.rebuild ===
+            'function') window.__editor.rebuild();
+      } catch (e) {}
+      if (_player && _activePathId === (p.id || _activePathId)) {
+        // A pose edit while the player drives this path: rebuild it
+        // in place (reuse buildPlayer -- the one spline impl) so the
+        // edit is not lost; if it cannot build, stop cleanly.
+        const np = buildPlayer(p);
+        if (np) _player = np;
+        else { try { stopPath(); } catch (e) {} }
+      }
+      // Re-place the bezier tangent handles after the rebuild: the
+      // keyframe pos may have moved (main gizmo) and _trajApplyScale
+      // may have re-derived _trajFrLen, so the handle distance/box
+      // size + line endpoints must track. No-op when no handles are
+      // shown (function declarations are hoisted in this IIFE so
+      // calling _tanRefresh defined further below is valid).
+      try { _tanRefresh(); } catch (e) {}
+    }
+
+    // Write the proxy's CURRENT pose back to the selected keyframe
+    // (translate -> kf.pos; rotate -> kf.quat). Called on the
+    // TransformControls 'objectChange' so the trajectory tracks the
+    // drag live (the spec's "drag -> kf.pos changes + trajectory
+    // rebuilds").
+    function _gzWriteProxyToKf() {
+      const kf = _gzSelKfObj();
+      if (!kf || !_gzProxy) return;
+      kf.pos = [_gzProxy.position.x, _gzProxy.position.y,
+        _gzProxy.position.z];
+      _gzProxy.getWorldQuaternion(_GZ_TMPQ);
+      kf.quat = [_GZ_TMPQ.x, _GZ_TMPQ.y, _GZ_TMPQ.z, _GZ_TMPQ.w];
+      _gzAfterEdit();
+    }
+
+    // Apply the World/Screen + translate/rotate mode to the live
+    // control. Screen == camera-aligned axes: TransformControls'
+    // 'local' space on a proxy whose rotation we keep equal to the
+    // camera's, so the gizmo's axes follow the screen. World ==
+    // 'world' space (the proxy keeps the keyframe's own rotation,
+    // restored from the keyframe so a space round-trip is lossless).
+    function _gzApplySpace() {
+      if (!_gzCtl) return;
+      _gzCtl.setMode(_gzMode);
+      if (_gzScreen) {
+        // Camera-aligned: drive the gizmo in the proxy's LOCAL
+        // frame and make that frame == the camera orientation.
+        _gzProxy.quaternion.copy(camera.quaternion);
+        _gzProxy.updateMatrixWorld(true);
+        _gzCtl.setSpace('local');
+      } else {
+        // World axes: restore the keyframe's own orientation onto
+        // the proxy (so a rotate drag edits the real kf.quat) and
+        // use world space.
+        _gzSyncProxyFromKf();
+        _gzCtl.setSpace('world');
+      }
+    }
+
+    // Lazily import + construct TransformControls (dynamic import
+    // via the EXISTING ``three/addons/`` importmap mapping -- no new
+    // importmap entry; region-interior). Resolves to the control or
+    // null (import failure must never throw into the author UI).
+    function _gzEnsureControl() {
+      if (_gzCtl) return Promise.resolve(_gzCtl);
+      if (!_gzImportPromise) {
+        _gzImportPromise = import(
+          'three/addons/controls/TransformControls.js'
+        ).then((mod) => {
+          const TC = mod && (mod.TransformControls ||
+            (mod.default && mod.default.TransformControls) ||
+            mod.default);
+          if (!TC) return null;
+          const ctl = new TC(camera, renderer.domElement);
+          ctl.setSize(0.9);
+          // The gizmo's visible part. r150+ exposes getHelper();
+          // older builds ARE the Object3D. Add ONLY the helper (or
+          // the control) to the scene -- never both -- so there is
+          // exactly one gizmo in the graph.
+          const helper = (typeof ctl.getHelper === 'function')
+            ? ctl.getHelper() : ctl;
+          _gzCtlHelper = helper;
+          // While the gizmo is grabbed, OrbitControls must NOT also
+          // move the camera. Broker through the ONE InteractionManager
+          // (the Task-0 contract): take a NON-exclusive 'tool' owner
+          // on drag-start, release on drag-end, and gate OrbitControls
+          // off for the drag (mirrors how playback flips
+          // controls.enabled). 'dragging-changed' is TransformControls'
+          // canonical drag signal.
+          ctl.addEventListener('dragging-changed', (ev) => {
+            _gzDragging = !!ev.value;
+            if (_gzDragging) {
+              // A real handle grab is an authoring gesture: stop any
+              // auto-tour FIRST so the render loop's `if (_player)`
+              // block does not re-sample the OLD spline every frame
+              // and stomp the live edit invisibly. _gzStopTour() is
+              // idempotent (no-op when _player is null -- the normal
+              // author-mode case now that the tour is suppressed);
+              // this is the safety net for any race / future reorder.
+              _gzStopTour();
+              InteractionManager.requestPointer('tool');
+              controls.enabled = false;
+            } else {
+              InteractionManager.releasePointer('tool');
+              // Restore OrbitControls only if nothing exclusive
+              // (a path/bench) is driving the camera.
+              if (!InteractionManager.isCameraOwned()) {
+                controls.enabled = true;
+              }
+            }
+          });
+          // Live write-back: every gizmo move edits the selected
+          // keyframe + rebuilds the trajectory (the spec's
+          // "drag -> kf.pos changes + trajectory rebuilds").
+          ctl.addEventListener('objectChange', () => {
+            _gzWriteProxyToKf();
+          });
+          _gzCtl = ctl;
+          if (helper && helper.parent !== scene) scene.add(helper);
+          return ctl;
+        }).catch(() => null);
+      }
+      return _gzImportPromise;
+    }
+
+    // Attach the gizmo to a keyframe (idx = the path keyframes[]
+    // index, == the Task-16 frustum kfIndex). Creates the proxy if
+    // needed, parks it at the keyframe, attaches TransformControls.
+    function _gzAttach(idx) {
+      const p = _gzActivePath();
+      if (!p || !p.keyframes || idx < 0 ||
+          idx >= p.keyframes.length) return;
+      // First authoring gesture: stop the auto-tour (explicit
+      // interaction stop -- the SAME stopPath() Task-17 reuses).
+      _gzStopTour();
+      _gzSelKf = idx;
+      if (!_gzProxy) {
+        _gzProxy = new THREE.Object3D();
+        _gzProxy.name = 'editor-gizmo-proxy';
+      }
+      if (_gzProxy.parent !== scene) scene.add(_gzProxy);
+      _gzSyncProxyFromKf();
+      // If this keyframe already carries explicit bezier tangents,
+      // show its grab-able in/out handles immediately; otherwise
+      // hide any handles from a previous selection (a non-bezier key
+      // has none until the author presses B / the tangents button).
+      if (_tanIsBezierSel()) _tanShow(); else _tanHide();
+      _gzEnsureControl().then((ctl) => {
+        if (!ctl || _gzSelKf !== idx) return;
+        ctl.attach(_gzProxy);
+        _gzApplySpace();
+        _trajRefreshActive();
+      });
+    }
+
+    // Detach + hide the gizmo (deselect). Removes the proxy + the
+    // helper from the scene so there is no orphan/leak; the
+    // TransformControls instance itself is kept (memoised) for
+    // re-attach -- attach/detach is its designed lifecycle.
+    function _gzDetach() {
+      _gzSelKf = -1;
+      // B2: selection cleared -> forget the stacked-click cycle so the
+      // NEXT pick starts at the front-most again (declarations are
+      // hoisted in this IIFE -- _gzPkResetCycle is defined below).
+      _gzPkResetCycle();
+      if (_gzCtl) {
+        try { _gzCtl.detach(); } catch (e) {}
+      }
+      if (_gzProxy && _gzProxy.parent) {
+        _gzProxy.parent.remove(_gzProxy);
+      }
+      _tanHide();
+      controls.enabled = !InteractionManager.isCameraOwned();
+    }
+
+    // ============================================================
+    //  GRAB-ABLE BEZIER TANGENT HANDLES (the "Nice Tangents", 3ds-
+    //  Max-style). For the SELECTED keyframe, when its interp is
+    //  `bezier`, draw a small IN-handle + OUT-handle (little squares
+    //  on thin tangent lines) the author DRAGS WITH A REAL MOUSE to
+    //  reshape the curve. This is REAL, not cosmetic: the drag writes
+    //  kf.in_tan / kf.out_tan (and pins kf.interp='bezier'); the
+    //  EXISTING CubicSpline.calcKnots KF_BEZIER branch already maps
+    //  km.in_tan[j]/km.out_tan[j] onto the pos.xyz Hermite tangents
+    //  (mIn/mOut) -- so the trajectory polyline + the Task-17 timeline
+    //  visibly reshape, and the SPCP camera_paths payload round-trips
+    //  the tangents (they are plain number arrays inside a keyframe;
+    //  merge_camera_scope whole-replaces camera_paths and the SPCP
+    //  codec serialises arrays-of-numbers byte-identically -- proven
+    //  by tests/test_spcp_js_port.py). NO spline-math change: the
+    //  schema (path_io.KeyframeDict.in_tan/out_tan) + the spline's
+    //  KF_BEZIER consumption already exist; this is purely the
+    //  "draggable handles are a later phase" UI the spline comment
+    //  anticipated.
+    //  HANDLE <-> TANGENT MATH. The spline tangent for dim j is a
+    //  WORLD-SPACE value-delta over the unit Hermite segment (see
+    //  evaluateSegment: m0=knots[idx+2], m1=knots[idx+dim*3], basis
+    //  p0(1+2t)(1-t)^2 + m0 t(1-t)^2 + p1 t^2(3-2t) + m1 t^2(t-1)).
+    //  The OUT-handle world point = kf.pos + outTan * _TAN_FRAC; the
+    //  IN-handle = kf.pos - inTan * _TAN_FRAC (drawn on the INCOMING
+    //  side, the DCC convention). _TAN_FRAC scales the (time-scaled,
+    //  possibly large) tangent down to a grab-able on-curve length;
+    //  the inverse on drag is exact: tan = (handleWorld - kf.pos) /
+    //  _TAN_FRAC  (out), = (kf.pos - handleWorld) / _TAN_FRAC (in).
+    //  DEFAULT (no explicit tangents yet): derive EXACTLY what the
+    //  spline's KF_BEZIER no-handle fallback uses (the `automatic`
+    //  formula tangent*inScale / tangent*outScale, tangent =
+    //  (pNext-pPrev)/(t_next-t_prev)) so converting a key to bezier
+    //  produces ZERO visual jump (the handles start ON the curve).
+    //  DRAG = a REAL trusted mouse: a DEDICATED translate-only
+    //  TransformControls (the SAME proven addon pattern the keyframe
+    //  gizmo uses -- synthetic pointer events do NOT drive it; only a
+    //  trusted mouse does) attaches to whichever handle proxy the
+    //  pointer grabs; its 'objectChange' recomputes the tangent +
+    //  rebuilds. The pick integrates into the EXISTING
+    //  _gzOnCanvasDown capture handler (yield to the handle TC when
+    //  the pointer is over its gizmo, exactly like the keyframe
+    //  gizmo) so a real handle drag is never starved. All region-
+    //  interior to T16-TRAJ (recipe 2c) -- author-mode only, inert
+    //  for the 6 live scenes.
+    // ============================================================
+    // On-curve handle length = a fraction of the active-path frustum
+    // scale (_trajFrLen is itself scene-relative, set per rebuild by
+    // _trajApplyScale) so handles read at the PATH's scale -- never
+    // scene-spanning, never sub-pixel. The little square is a small
+    // fraction of THAT, like the frustum image-plane.
+    const _TAN_FRAC_OF_FR = 1.6;     // handle distance ~ 1.6x frustum len
+    const _TAN_BOX_OF_FR = 0.34;     // handle square ~ 0.34x frustum len
+    const _TAN_COL_OUT = 0x57ff8a;   // OUT handle: green (3ds-Max-ish)
+    const _TAN_COL_IN = 0xff5d6b;    // IN handle: red
+    const _TAN_LINE_OPACITY = 0.85;
+    let _tanGroup = null;            // THREE.Group: lines + boxes
+    let _tanInProxy = null;          // Object3D the handle-TC drives (IN)
+    let _tanOutProxy = null;         // ... (OUT)
+    let _tanInBox = null, _tanOutBox = null;     // visible squares
+    let _tanInLine = null, _tanOutLine = null;   // kf->handle lines
+    let _tanCtl = null;              // dedicated translate-only TC (lazy)
+    let _tanCtlHelper = null;
+    let _tanCtlImport = null;        // memoised dynamic import
+    let _tanDragging = false;
+    let _tanActiveSide = null;       // 'in' | 'out' while a drag is live
+    const _TAN_TMP = new THREE.Vector3();
+
+    // The world-space tangent length scale (>0). Recomputed off the
+    // live _trajFrLen so it tracks the active path's scale.
+    function _tanFrac() {
+      const fr = (typeof _trajFrLen === 'number' && _trajFrLen > 0)
+        ? _trajFrLen : 0.4;
+      return fr * _TAN_FRAC_OF_FR;
+    }
+    function _tanBoxSize() {
+      const fr = (typeof _trajFrLen === 'number' && _trajFrLen > 0)
+        ? _trajFrLen : 0.4;
+      return fr * _TAN_BOX_OF_FR;
+    }
+
+    // Is the selected keyframe in explicit-tangent (bezier) mode?
+    function _tanIsBezierSel() {
+      const kf = _gzSelKfObj();
+      return !!(kf && kf.interp === 'bezier');
+    }
+
+    // The `automatic`-formula tangent (a world [x,y,z] value-delta)
+    // for the selected keyframe -- IDENTICAL to what the spline's
+    // KF_BEZIER no-handle fallback computes, so a derived default
+    // produces no curve jump. Uses the SORTED keyframes (buildPlayer
+    // order == the spline's knot order). `which` = 'in' | 'out'.
+    function _tanAutoVec(which) {
+      const p = _gzActivePath();
+      if (!p || !p.keyframes) return [0, 0, 0];
+      const ks = p.keyframes.slice()
+        .sort((a, b) => (a.t || 0) - (b.t || 0));
+      const sel = _gzSelKfObj();
+      let i = ks.indexOf(sel);
+      if (i < 0) return [0, 0, 0];
+      const n = ks.length;
+      const t = (ks[i].t || 0);
+      const tPrev = i > 0 ? (ks[i - 1].t || 0) : t;
+      const tNext = i < n - 1 ? (ks[i + 1].t || 0) : t;
+      const inScale = i > 0 ? (t - tPrev) : (n > 1
+        ? ((ks[1].t || 0) - (ks[0].t || 0)) : 1);
+      const outScale = i < n - 1 ? (tNext - t) : (i > 0
+        ? (t - tPrev) : 1);
+      const out = [0, 0, 0];
+      for (let j = 0; j < 3; j++) {
+        const pj = (sel.pos && sel.pos.length === 3) ? sel.pos[j] : 0;
+        const pPrev = (i > 0 && ks[i - 1].pos)
+          ? ks[i - 1].pos[j] : pj;
+        const pNext = (i < n - 1 && ks[i + 1].pos)
+          ? ks[i + 1].pos[j] : pj;
+        let tangent;
+        if (i === 0) {
+          tangent = (tNext - t) ? (pNext - pj) / (tNext - t) : 0;
+        } else if (i === n - 1) {
+          tangent = (t - tPrev) ? (pj - pPrev) / (t - tPrev) : 0;
+        } else {
+          tangent = (tNext - tPrev)
+            ? (pNext - pPrev) / (tNext - tPrev) : 0;
+        }
+        out[j] = tangent * (which === 'in' ? inScale : outScale);
+      }
+      return out;
+    }
+
+    // Read the selected keyframe's effective in/out tangent vectors
+    // (explicit kf.in_tan/out_tan when present + length 3, else the
+    // `automatic` derived default). Returns { inv:[x,y,z],
+    // outv:[x,y,z] } or null.
+    function _tanVecs() {
+      const kf = _gzSelKfObj();
+      if (!kf || !kf.pos || kf.pos.length !== 3) return null;
+      const inv = (Array.isArray(kf.in_tan) && kf.in_tan.length === 3)
+        ? kf.in_tan.slice() : _tanAutoVec('in');
+      const outv = (Array.isArray(kf.out_tan) && kf.out_tan.length === 3)
+        ? kf.out_tan.slice() : _tanAutoVec('out');
+      return { inv: inv, outv: outv };
+    }
+
+    // Build the handle geometry once (lazy). Two small boxes (the
+    // grab-able squares) + two thin lines; positions are set every
+    // refresh. Always-on-top (depthTest off) like the Task-16
+    // overlay so a handle is never hidden behind the splat.
+    function _tanBuild() {
+      if (_tanGroup) return;
+      _tanGroup = new THREE.Group();
+      _tanGroup.name = 'editor-tangent-handles';
+      const _mkBox = (col) => {
+        const g = new THREE.BoxGeometry(1, 1, 1);
+        const m = new THREE.MeshBasicMaterial({
+          color: col, transparent: true, opacity: 0.95 });
+        m.depthTest = false; m.depthWrite = false;
+        const mesh = new THREE.Mesh(g, m);
+        mesh.renderOrder = 13;   // above frusta (11)
+        return mesh;
+      };
+      const _mkLine = (col) => {
+        // A7: anti-aliased fat tangent line when the addon is
+        // loaded; thin THREE.Line otherwise. _setLine (below)
+        // writes endpoints for BOTH (Line2.setPositions vs the
+        // BufferAttribute) so the per-drag update stays one path.
+        if (_fatMod) {
+          try {
+            const g = new _fatMod.LineGeometry();
+            g.setPositions([0, 0, 0, 0, 0, 0]);
+            const m = new _fatMod.LineMaterial({
+              color: col, linewidth: _TAN_FAT_LINE_W,
+              worldUnits: false, dashed: false,
+              alphaToCoverage: true, transparent: true,
+              opacity: _TAN_LINE_OPACITY });
+            m.depthTest = false; m.depthWrite = false;
+            m.resolution.set(_fatRes.x, _fatRes.y);
+            _fatMats.push(m);
+            const ln = new _fatMod.Line2(g, m);
+            ln.renderOrder = 12;
+            ln.__fat = true;
+            return ln;
+          } catch (e) { /* fall through to thin */ }
+        }
+        const g = new THREE.BufferGeometry();
+        g.setAttribute('position',
+          new THREE.BufferAttribute(new Float32Array(6), 3));
+        const m = new THREE.LineBasicMaterial({
+          color: col, transparent: true,
+          opacity: _TAN_LINE_OPACITY });
+        m.depthTest = false; m.depthWrite = false;
+        const ln = new THREE.Line(g, m);
+        ln.renderOrder = 12;
+        return ln;
+      };
+      _tanOutBox = _mkBox(_TAN_COL_OUT);
+      _tanInBox = _mkBox(_TAN_COL_IN);
+      _tanOutLine = _mkLine(_TAN_COL_OUT);
+      _tanInLine = _mkLine(_TAN_COL_IN);
+      _tanGroup.add(_tanOutLine);
+      _tanGroup.add(_tanInLine);
+      _tanGroup.add(_tanOutBox);
+      _tanGroup.add(_tanInBox);
+      if (!_tanOutProxy) {
+        _tanOutProxy = new THREE.Object3D();
+        _tanOutProxy.name = 'editor-tan-out-proxy';
+      }
+      if (!_tanInProxy) {
+        _tanInProxy = new THREE.Object3D();
+        _tanInProxy.name = 'editor-tan-in-proxy';
+      }
+    }
+
+    // Position the boxes/lines from the selected keyframe's tangents
+    // (skip the side currently being dragged so the live TC pose is
+    // authoritative for that frame). The proxies are parked at the
+    // handle world points so the dedicated TC sits exactly on the
+    // square. Box size + handle distance are scene-relative.
+    function _tanRefresh() {
+      if (!_tanGroup || _gzSelKf < 0) return;
+      const kf = _gzSelKfObj();
+      const v = _tanVecs();
+      if (!kf || !v) return;
+      const fr = _tanFrac();
+      const bs = _tanBoxSize();
+      const px = kf.pos[0], py = kf.pos[1], pz = kf.pos[2];
+      const outW = [px + v.outv[0] * fr, py + v.outv[1] * fr,
+        pz + v.outv[2] * fr];
+      const inW = [px - v.inv[0] * fr, py - v.inv[1] * fr,
+        pz - v.inv[2] * fr];
+      if (_tanActiveSide !== 'out') {
+        _tanOutBox.position.set(outW[0], outW[1], outW[2]);
+        _tanOutBox.scale.setScalar(bs);
+        if (_tanOutProxy) {
+          _tanOutProxy.position.set(outW[0], outW[1], outW[2]);
+          _tanOutProxy.updateMatrixWorld(true);
+        }
+      } else if (_tanOutProxy) {
+        _tanOutBox.position.copy(_tanOutProxy.position);
+        _tanOutBox.scale.setScalar(bs);
+      }
+      if (_tanActiveSide !== 'in') {
+        _tanInBox.position.set(inW[0], inW[1], inW[2]);
+        _tanInBox.scale.setScalar(bs);
+        if (_tanInProxy) {
+          _tanInProxy.position.set(inW[0], inW[1], inW[2]);
+          _tanInProxy.updateMatrixWorld(true);
+        }
+      } else if (_tanInProxy) {
+        _tanInBox.position.copy(_tanInProxy.position);
+        _tanInBox.scale.setScalar(bs);
+      }
+      const _setLine = (ln, bx) => {
+        // A7: fat Line2 needs LineGeometry.setPositions(); thin
+        // THREE.Line keeps the in-place BufferAttribute write.
+        if (ln.__fat) {
+          try {
+            ln.geometry.setPositions([
+              px, py, pz,
+              bx.position.x, bx.position.y, bx.position.z]);
+            if (typeof ln.computeLineDistances === 'function')
+              ln.computeLineDistances();
+          } catch (e) {}
+          return;
+        }
+        const a = ln.geometry.getAttribute('position');
+        a.setXYZ(0, px, py, pz);
+        a.setXYZ(1, bx.position.x, bx.position.y, bx.position.z);
+        a.needsUpdate = true;
+      };
+      _setLine(_tanOutLine, _tanOutBox);
+      _setLine(_tanInLine, _tanInBox);
+    }
+
+    // Write a dragged handle proxy's world position back to the
+    // selected keyframe's tangent (the inverse of _tanRefresh's
+    // forward map) + PIN kf.interp='bezier' (so the spline's
+    // KF_BEZIER branch consumes it) + rebuild the trajectory/
+    // timeline (the spec's "drag -> curve reshapes"). Also seeds the
+    // OTHER side from its current effective value so converting via a
+    // drag does not snap the unedited side.
+    const _TAN_R = (x) => Math.round(x * 1e5) / 1e5;
+    function _tanWriteFromProxy(side) {
+      const kf = _gzSelKfObj();
+      if (!kf || !kf.pos || kf.pos.length !== 3) return;
+      const fr = _tanFrac() || 1;
+      const before = _tanVecs();
+      const proxy = side === 'out' ? _tanOutProxy : _tanInProxy;
+      if (!proxy) return;
+      const dx = proxy.position.x - kf.pos[0];
+      const dy = proxy.position.y - kf.pos[1];
+      const dz = proxy.position.z - kf.pos[2];
+      // OUT handle is on the +tan side, IN handle on the -tan side.
+      const s = side === 'out' ? 1 : -1;
+      const tan = [_TAN_R(s * dx / fr), _TAN_R(s * dy / fr),
+        _TAN_R(s * dz / fr)];
+      if (side === 'out') {
+        kf.out_tan = tan;
+        if (!(Array.isArray(kf.in_tan) && kf.in_tan.length === 3) &&
+            before) kf.in_tan = before.inv.map(_TAN_R);
+      } else {
+        kf.in_tan = tan;
+        if (!(Array.isArray(kf.out_tan) && kf.out_tan.length === 3) &&
+            before) kf.out_tan = before.outv.map(_TAN_R);
+      }
+      kf.interp = 'bezier';   // explicit tangents only bite as bezier
+      _gzAfterEdit();
+      _tanRefresh();
+    }
+
+    // Lazily import + construct the DEDICATED handle TransformControls
+    // (translate-only). SAME dynamic-import-through-the-existing-
+    // importmap pattern as the keyframe gizmo (no new importmap
+    // entry; region-interior). A REAL mouse drives it -- exactly the
+    // proven pattern; synthetic events do not.
+    function _tanEnsureCtl() {
+      if (_tanCtl) return Promise.resolve(_tanCtl);
+      if (!_tanCtlImport) {
+        _tanCtlImport = import(
+          'three/addons/controls/TransformControls.js'
+        ).then((mod) => {
+          const TC = mod && (mod.TransformControls ||
+            (mod.default && mod.default.TransformControls) ||
+            mod.default);
+          if (!TC) return null;
+          const ctl = new TC(camera, renderer.domElement);
+          ctl.setSize(0.62);
+          ctl.setMode('translate');     // tangents are positional
+          ctl.setSpace('world');
+          const helper = (typeof ctl.getHelper === 'function')
+            ? ctl.getHelper() : ctl;
+          _tanCtlHelper = helper;
+          ctl.addEventListener('dragging-changed', (ev) => {
+            _tanDragging = !!ev.value;
+            if (_tanDragging) {
+              // A real handle grab is an authoring gesture: stop any
+              // auto-tour FIRST (idempotent) so the render loop does
+              // not re-sample the OLD spline and stomp the edit.
+              _gzStopTour();
+              InteractionManager.requestPointer('tool');
+              controls.enabled = false;
+            } else {
+              _tanActiveSide = null;
+              InteractionManager.releasePointer('tool');
+              if (!InteractionManager.isCameraOwned()) {
+                controls.enabled = true;
+              }
+            }
+          });
+          ctl.addEventListener('objectChange', () => {
+            // The proxy currently attached IS the active side.
+            const side = (ctl.object === _tanOutProxy) ? 'out'
+              : (ctl.object === _tanInProxy) ? 'in' : _tanActiveSide;
+            if (side) { _tanActiveSide = side; _tanWriteFromProxy(side); }
+          });
+          _tanCtl = ctl;
+          if (helper && helper.parent !== scene) scene.add(helper);
+          return ctl;
+        }).catch(() => null);
+      }
+      return _tanCtlImport;
+    }
+
+    // Show the handles for the selected keyframe (only when it is in
+    // bezier mode). Builds geometry + proxies lazily, parks them on
+    // the current tangents, makes the group visible. The dedicated TC
+    // is imported AND attached (default = the OUT proxy) so a single
+    // real-mouse grab-and-drag works: _tanRetargetForPointer (called
+    // from the capture-phase pointerdown) re-points the live TC onto
+    // whichever handle the pointer is over BEFORE the yield, so TC's
+    // own bubble-phase pointerDown drives the drag in ONE gesture (the
+    // proven keyframe-gizmo "no-starvation" pattern, applied to the
+    // handles -- NOT a two-gesture attach-then-drag).
+    function _tanShow() {
+      if (_gzSelKf < 0 || !_tanIsBezierSel()) { _tanHide(); return; }
+      _tanBuild();
+      if (_tanGroup.parent !== scene) scene.add(_tanGroup);
+      _tanGroup.visible = true;
+      _tanRefresh();
+      if (_tanOutProxy && _tanOutProxy.parent !== scene) {
+        scene.add(_tanOutProxy);
+      }
+      if (_tanInProxy && _tanInProxy.parent !== scene) {
+        scene.add(_tanInProxy);
+      }
+      _tanEnsureCtl().then((ctl) => {
+        if (!ctl || !_tanIsBezierSel() || _gzSelKf < 0) return;
+        // Keep the TC live on a handle so the FIRST real grab drags
+        // immediately (one gesture). Default to OUT; the pointerdown
+        // retarget switches to whichever handle the mouse is over.
+        if (ctl.object !== _tanOutProxy && ctl.object !== _tanInProxy) {
+          ctl.attach(_tanOutProxy);
+          _tanActiveSide = 'out';
+        }
+      });
+    }
+
+    // Re-point the live handle TC onto whichever handle SQUARE the
+    // pointer is over (called from the capture-phase pointerdown,
+    // BEFORE the _tanPointerOnGizmo yield). This makes a single
+    // grab-and-drag work: by the time _tanPointerOnGizmo runs its
+    // pointerHover, the TC is already attached to the correct handle
+    // proxy, so its bubble-phase pointerDown starts the drag on the
+    // SAME pointerdown (no two-gesture attach step). No-op when no
+    // handle is under the pointer (then the TC keeps its current
+    // target and the yield check simply returns false there).
+    function _tanRetargetForPointer(clientX, clientY) {
+      if (!_tanCtl || !_tanGroup || !_tanGroup.visible ||
+          !_tanIsBezierSel()) return;
+      const side = _tanPickBox(clientX, clientY);
+      if (!side) return;
+      const proxy = side === 'out' ? _tanOutProxy : _tanInProxy;
+      const box = side === 'out' ? _tanOutBox : _tanInBox;
+      if (!proxy || !box) return;
+      // Park the proxy exactly on the square so the gizmo is under
+      // the pointer, then (re)attach if needed.
+      proxy.position.copy(box.position);
+      proxy.updateMatrixWorld(true);
+      if (proxy.parent !== scene) scene.add(proxy);
+      _tanActiveSide = side;
+      if (_tanCtl.object !== proxy) {
+        try { _tanCtl.attach(proxy); } catch (e) {}
+      }
+    }
+
+    // Hide + detach the handles (deselect / non-bezier / Escape).
+    // Removes the group + proxies from the scene (no leak); the TC
+    // instance is memoised for re-attach (its designed lifecycle).
+    function _tanHide() {
+      _tanActiveSide = null;
+      if (_tanCtl) { try { _tanCtl.detach(); } catch (e) {} }
+      if (_tanGroup && _tanGroup.parent) {
+        _tanGroup.parent.remove(_tanGroup);
+      }
+      if (_tanGroup) _tanGroup.visible = false;
+      if (_tanOutProxy && _tanOutProxy.parent) {
+        _tanOutProxy.parent.remove(_tanOutProxy);
+      }
+      if (_tanInProxy && _tanInProxy.parent) {
+        _tanInProxy.parent.remove(_tanInProxy);
+      }
+    }
+
+    // Convert the selected keyframe to explicit-tangent (bezier)
+    // mode: set kf.interp='bezier' and SEED kf.in_tan/kf.out_tan from
+    // the `automatic` derived defaults so the curve does NOT jump
+    // (the handles appear exactly ON the existing spline). Idempotent
+    // if already bezier with tangents. Then show the handles.
+    function _tanEnableBezier() {
+      const kf = _gzSelKfObj();
+      if (!kf) return false;
+      _gzStopTour();
+      if (kf.interp !== 'bezier' ||
+          !(Array.isArray(kf.in_tan) && kf.in_tan.length === 3) ||
+          !(Array.isArray(kf.out_tan) && kf.out_tan.length === 3)) {
+        const v = _tanVecs();   // derived defaults when absent
+        if (v) {
+          if (!(Array.isArray(kf.in_tan) && kf.in_tan.length === 3)) {
+            kf.in_tan = v.inv.map(_TAN_R);
+          }
+          if (!(Array.isArray(kf.out_tan) && kf.out_tan.length === 3)) {
+            kf.out_tan = v.outv.map(_TAN_R);
+          }
+        }
+        kf.interp = 'bezier';
+        _gzAfterEdit();
+      }
+      _tanShow();
+      return _tanIsBezierSel();
+    }
+
+    // Attach the dedicated handle-TC to a handle proxy (the pointer
+    // pick resolved which side). Parks the proxy on the current
+    // handle world point first so the gizmo lands on the square.
+    function _tanAttachSide(side) {
+      if (!_tanIsBezierSel()) return;
+      _tanShow();
+      _tanActiveSide = side;
+      const proxy = side === 'out' ? _tanOutProxy : _tanInProxy;
+      const box = side === 'out' ? _tanOutBox : _tanInBox;
+      if (!proxy || !box) return;
+      proxy.position.copy(box.position);
+      proxy.updateMatrixWorld(true);
+      if (proxy.parent !== scene) scene.add(proxy);
+      _tanEnsureCtl().then((ctl) => {
+        if (!ctl || _tanActiveSide !== side) return;
+        ctl.attach(proxy);
+      });
+    }
+
+    // Is a real pointerdown over a HANDLE-gizmo axis? SAME capture-
+    // phase contract the keyframe gizmo uses: refresh the handle TC's
+    // hover axis from THIS pointer and report whether a handle is
+    // under it -- when true the caller MUST yield the event to the
+    // handle TC untouched (capture-phase stopPropagation would starve
+    // its bubble-phase pointerDown and make a real drag impossible).
+    const _TAN_NDC = new THREE.Vector2();
+    function _tanPointerOnGizmo(clientX, clientY) {
+      if (!_tanCtl || _tanCtl.object == null) return false;
+      if (_tanCtl.dragging) return true;
+      const rect = renderer.domElement.getBoundingClientRect();
+      _TAN_NDC.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+      _TAN_NDC.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+      try { _tanCtl.pointerHover(_TAN_NDC); }
+      catch (e) { return false; }
+      return _tanCtl.axis !== null && _tanCtl.axis !== undefined;
+    }
+
+    // Raycast-pick a handle SQUARE at client px -> 'in' | 'out' |
+    // null. Uses the EXISTING scene _raycaster (single source of
+    // truth). Boxes are small so a generous nearest-hit wins.
+    function _tanPickBox(clientX, clientY) {
+      if (!_tanGroup || !_tanGroup.visible ||
+          !_tanIsBezierSel()) return null;
+      const rect = renderer.domElement.getBoundingClientRect();
+      _ndc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+      _ndc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+      _raycaster.setFromCamera(_ndc, camera);
+      let best = null, bestD = Infinity;
+      if (_tanOutBox) {
+        const h = _raycaster.intersectObject(_tanOutBox, false);
+        if (h.length && h[0].distance < bestD) {
+          bestD = h[0].distance; best = 'out';
+        }
+      }
+      if (_tanInBox) {
+        const h = _raycaster.intersectObject(_tanInBox, false);
+        if (h.length && h[0].distance < bestD) {
+          bestD = h[0].distance; best = 'in';
+        }
+      }
+      return best;
+    }
+
+    // ---- Pointer pick: a left click on a trajectory frustum
+    //      selects that keyframe (the Task-16 _trajFrusta meshes
+    //      are the only pickables here). Uses the EXISTING scene
+    //      _raycaster (single source of truth). A click that hits
+    //      no frustum AND is not on the gizmo deselects. We ignore
+    //      the click while the gizmo is being dragged (the gizmo
+    //      owns the pointer then) and while OrbitControls is mid-
+    //      gesture is naturally fine (a frustum hit is a discrete
+    //      click, not a drag).
+    // B2: forget the stacked-click cycle. Called on selection-cleared
+    // and whenever the candidate set / click position is no longer the
+    // same stack (so the NEXT click selects the front-most again).
+    function _gzPkResetCycle() {
+      _gzPkLastX = null;
+      _gzPkLastY = null;
+      _gzPkCands = [];
+      _gzPkIdx = 0;
+      _gzPkSig = null;
+    }
+    // B2 pick target: a FIXED SCREEN-SPACE radius (~5 px, ~10 px on
+    //   retina) centred on each keyframe's camera-icon PIVOT -- NOT a
+    //   widened raycaster Line threshold (the old code set
+    //   `_raycaster.params.Line.threshold = _trajFrHalf * 0.6`, which
+    //   is SCENE-RELATIVE METRES -> a multi-metre invisible grab
+    //   volume on a large scene that also OCCLUDED anything behind it
+    //   and made a target-behind-a-target unselectable). A pure
+    //   2D screen-distance test on the PROJECTED keyframe position is
+    //   inherently non-occluding (depth is irrelevant to the hit
+    //   test) and constant in pixels at any scene scale. When several
+    //   keyframes fall inside that radius, repeated clicks at ~the
+    //   same screen point CYCLE front -> behind -> ... -> wrap (sorted
+    //   by camera distance, nearest first). Returns the chosen
+    //   keyframe index (the path keyframes[] index == frustum
+    //   kfIndex), fed UNCHANGED to _gzAttach(idx); -1 = nothing in
+    //   range (the caller then deselects, exactly as before).
+    const _GZ_PK_V = new THREE.Vector3();
+    const _GZ_PK_SAME_PX = 6;   // "same screen point" tolerance (px)
+    function _gzPickFrustum(clientX, clientY) {
+      if (!_trajFrusta.length) { _gzPkResetCycle(); return -1; }
+      const rect = renderer.domElement.getBoundingClientRect();
+      if (!rect.width || !rect.height) return -1;
+      const radiusPx =
+        (window.devicePixelRatio && window.devicePixelRatio > 1)
+          ? 10 : 5;
+      // Project every keyframe pivot to screen px; collect the ones
+      // within radiusPx, remembering each one's camera distance for
+      // the front->back ordering. A point BEHIND the camera (NDC
+      // z > 1 after project()) is never a candidate.
+      const cands = [];
+      for (const f of _trajFrusta) {
+        if (!f.pos || f.pos.length !== 3) continue;
+        _GZ_PK_V.set(f.pos[0], f.pos[1], f.pos[2]);
+        const camDist = _GZ_PK_V.distanceTo(camera.position);
+        _GZ_PK_V.project(camera);
+        if (_GZ_PK_V.z > 1) continue;   // behind the camera
+        const sx = rect.left + (_GZ_PK_V.x * 0.5 + 0.5) * rect.width;
+        const sy = rect.top + (-_GZ_PK_V.y * 0.5 + 0.5) * rect.height;
+        const dx = sx - clientX, dy = sy - clientY;
+        if ((dx * dx + dy * dy) <= (radiusPx * radiusPx)) {
+          cands.push({ idx: f.kfIndex, camDist: camDist });
+        }
+      }
+      if (!cands.length) { _gzPkResetCycle(); return -1; }
+      // Front -> back (nearest camera distance first).
+      cands.sort((a, b) => a.camDist - b.camDist);
+      const order = cands.map((c) => c.idx);
+      // Stacked-cycle: same screen point (within _GZ_PK_SAME_PX) AND
+      // the SAME candidate stack AND the SAME frustum build -> advance
+      // one deeper (mod N, so it wraps back to the front-most);
+      // otherwise this is a fresh pick -> front-most (index 0).
+      const sig = _trajBuiltSig;
+      const samePoint =
+        _gzPkLastX !== null &&
+        Math.abs(clientX - _gzPkLastX) <= _GZ_PK_SAME_PX &&
+        Math.abs(clientY - _gzPkLastY) <= _GZ_PK_SAME_PX;
+      const sameStack =
+        _gzPkSig === sig &&
+        _gzPkCands.length === order.length &&
+        _gzPkCands.every((v, k) => v === order[k]);
+      if (samePoint && sameStack) {
+        _gzPkIdx = (_gzPkIdx + 1) % order.length;
+      } else {
+        _gzPkIdx = 0;
+      }
+      _gzPkLastX = clientX;
+      _gzPkLastY = clientY;
+      _gzPkCands = order;
+      _gzPkSig = sig;
+      return order[_gzPkIdx];
+    }
+    // Is the pointerdown (clientX/Y) over a TransformControls gizmo
+    // HANDLE? We run in CAPTURE phase, BEFORE TransformControls' own
+    // bubble-phase pointerdown listener; if we stopPropagation() a
+    // pointerdown that landed on a gizmo axis, TC's pointerDown()
+    // never fires and the gizmo can NEVER be dragged with a real
+    // mouse (it only starts a drag when this.axis !== null, and axis
+    // is set by its pointerHover raycast). So: refresh the control's
+    // hover axis from THIS pointer (the SAME NDC->raycast TC's own
+    // pointerHover does) and report whether a handle is under it.
+    // When true the caller MUST yield the event to TC untouched.
+    const _GZ_NDC = new THREE.Vector2();
+    function _gzPointerOnGizmo(clientX, clientY) {
+      if (!_gzCtl || _gzCtl.object !== _gzProxy || _gzSelKf < 0) {
+        return false;
+      }
+      if (_gzCtl.dragging) return true;   // already grabbed
+      const rect = renderer.domElement.getBoundingClientRect();
+      _GZ_NDC.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+      _GZ_NDC.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+      try {
+        // Updates _gzCtl.axis (null = not over a handle). Identical
+        // to the raycast TC.pointerHover runs on its own pointermove
+        // -- we just trigger it deterministically for THIS down.
+        _gzCtl.pointerHover(_GZ_NDC);
+      } catch (e) { return false; }
+      return _gzCtl.axis !== null && _gzCtl.axis !== undefined;
+    }
+    function _gzOnCanvasDown(ev) {
+      if (!ModeManager.is('author')) return;
+      if (ev.button !== undefined && ev.button !== 0) return;
+      // B1 -- NAVIGATION SUPREMACY: Alt+Left ALWAYS orbits the
+      //   camera, overriding gizmo / tangent-handle / frustum
+      //   selection no matter what is under the pointer. Return at
+      //   the VERY TOP (before the tangent retarget + every pick) so
+      //   this capture handler never stopPropagation()s -> the event
+      //   bubbles to OrbitControls' own (bubble-phase) pointerdown,
+      //   which maps plain LEFT -> ROTATE. The TransformControls
+      //   instances are ALSO neutralised for the gesture by the
+      //   window-level Alt guard registered below (a capture-phase
+      //   return alone cannot stop TC's own bubble pointerdown -- the
+      //   inverse of the _gzPointerOnGizmo problem). _gzAltOrbiting
+      //   stays true until the matching pointerup/cancel so TC is
+      //   disabled for the whole drag.
+      if (ev.altKey) return;
+      if (_gzAltOrbiting) return;   // mid Alt-orbit (TC neutralised)
+      if (_gzDragging || _tanDragging) return;   // a gizmo owns it
+      // 1. The TANGENT handles are visually TOPMOST. FIRST re-point
+      //    the live handle TC onto whichever handle SQUARE the
+      //    pointer is over (one-gesture grab: the TC is already
+      //    attached+live from _tanShow; this just switches it to the
+      //    correct in/out proxy and parks it under the pointer). THEN
+      //    the yield check below sees a handle under the pointer and
+      //    returns -- TC's own bubble-phase pointerDown drives the
+      //    drag on THIS SAME pointerdown (the proven keyframe-gizmo
+      //    no-starvation pattern; capture-phase stopPropagation here
+      //    would starve it).
+      _tanRetargetForPointer(ev.clientX, ev.clientY);
+      if (_tanPointerOnGizmo(ev.clientX, ev.clientY)) return;
+      // 2. If the keyframe gizmo's own axes were hit, TransformControls
+      //    handles it (it has its own bubble-phase pointer listeners).
+      //    We MUST NOT pick a frustum NOR stopPropagation() here --
+      //    doing so starves TC's pointerDown() and the gizmo becomes
+      //    undraggable by a real mouse (the long-standing reason a
+      //    real handle drag "did not move the keyframe" -- only the
+      //    programmatic test API ever moved it). Yield it untouched.
+      if (_gzPointerOnGizmo(ev.clientX, ev.clientY)) return;
+      // 3. FALLBACK ONLY: a click on a tangent-handle SQUARE when the
+      //    TC was not yet live (the lazy-import race on the very first
+      //    click after a fresh page load -- step 1's retarget needs
+      //    _tanCtl to exist). Attach the handle TC so the NEXT real
+      //    drag works (one gesture thereafter). The normal path is
+      //    step 1 (retarget) + the yield, which drags in ONE gesture;
+      //    this branch only catches the cold-start race so the click
+      //    is not wasted. Wins over the frustum pick (the handles
+      //    belong to the already-selected keyframe, on top of it).
+      const side = _tanPickBox(ev.clientX, ev.clientY);
+      if (side) {
+        _tanAttachSide(side);
+        ev.stopPropagation();
+        return;
+      }
+      // 4. Otherwise: a click on a trajectory frustum selects that
+      //    keyframe (and shows its tangent handles if it is bezier).
+      const idx = _gzPickFrustum(ev.clientX, ev.clientY);
+      if (idx >= 0) {
+        _gzAttach(idx);
+        // A frustum pick is an editing gesture, not an orbit: stop
+        // the event so OrbitControls does not also start a drag
+        // from the same pointerdown.
+        ev.stopPropagation();
+      }
+    }
+    // ---- B1 Alt-orbit TransformControls neutraliser. _gzOnCanvasDown
+    //   already returns early on ev.altKey (so it never
+    //   stopPropagation()s and the event reaches OrbitControls). But
+    //   each TransformControls instance (_gzCtl, _tanCtl) has its OWN
+    //   bubble-phase pointerdown that starts a drag whenever its hover
+    //   axis is set -- a capture-phase return cannot stop that (the
+    //   inverse of _gzPointerOnGizmo's problem). So on an Alt+Left
+    //   pointerdown, disable BOTH controls for the duration of the
+    //   gesture and restore them EXACTLY to their prior enabled state
+    //   on the matching pointerup/cancel (they may legitimately be
+    //   disabled already). OrbitControls is NOT gated here (the
+    //   auto-tour is already suppressed in author mode and the left-
+    //   orbit path has no _player block) -> Alt+Left = clean orbit.
+    //   Registered in CAPTURE phase on window so it runs before TC's
+    //   domElement-level bubble pointerdown.
+    function _gzAltDown(ev) {
+      if (!ModeManager.is('author')) return;
+      if (ev.button !== undefined && ev.button !== 0) return;
+      if (!ev.altKey) return;
+      if (_gzAltOrbiting) return;        // already neutralised
+      _gzAltOrbiting = true;
+      _gzAltPid = (ev.pointerId != null) ? ev.pointerId : -1;
+      if (_gzCtl) {
+        _gzAltPrevGz = _gzCtl.enabled;
+        _gzCtl.enabled = false;
+      }
+      if (_tanCtl) {
+        _gzAltPrevTan = _tanCtl.enabled;
+        _tanCtl.enabled = false;
+      }
+    }
+    function _gzAltRestore(ev) {
+      if (!_gzAltOrbiting) return;
+      // Only IGNORE a pointerup whose pointerId is present AND differs
+      // from the initiating pointer's (a foreign second touch/pen must
+      // not re-enable TC mid Alt-orbit). A pointercancel, or any event
+      // with no usable pointerId, ALWAYS tears down -- wedge-safety:
+      // it must be impossible to end stuck-orbiting / TC-disabled.
+      if (ev && ev.type !== 'pointercancel' &&
+          ev.pointerId != null && ev.pointerId !== _gzAltPid) return;
+      _gzAltOrbiting = false;
+      _gzAltPid = -1;
+      if (_gzCtl && _gzAltPrevGz !== null) {
+        _gzCtl.enabled = _gzAltPrevGz;
+      }
+      if (_tanCtl && _gzAltPrevTan !== null) {
+        _tanCtl.enabled = _gzAltPrevTan;
+      }
+      _gzAltPrevGz = null;
+      _gzAltPrevTan = null;
+    }
+    window.addEventListener('pointerdown', _gzAltDown, true);
+    window.addEventListener('pointerup', _gzAltRestore);
+    window.addEventListener('pointercancel', _gzAltRestore);
+
+    // Capture phase so we see the pointerdown before OrbitControls'
+    // own canvas listener (it is attached without capture); only
+    // when we actually consume a frustum hit do we stopPropagation.
+    // A pointerdown on a gizmo handle is yielded untouched (above)
+    // so TransformControls' own bubble-phase listener drives the
+    // drag -- capture-phase stopPropagation would otherwise kill it.
+    renderer.domElement.addEventListener(
+      'pointerdown', _gzOnCanvasDown, true);
+
+    // ---- The 5-type interp popover (V). A segmented control over
+    //      the EXISTING _VALID_INTERP set (auto_clamped / automatic
+    //      / linear / bezier / stepped -- the real constant, not a
+    //      hardcoded list). Selecting writes the SELECTED keyframe's
+    //      kf.interp and rebuilds (the spline already honours
+    //      per-keyframe interp via _kfMeta). Built lazily, injected
+    //      into the Task-12 #author-root (CSS-gated to authormode --
+    //      no new CSS region, inline-styled like #sp-hud / the
+    //      Task-16 toggle), removed on close (no leak).
+    const _GZ_INTERPS = Object.keys(_VALID_INTERP);
+    function _gzClosePopover() {
+      if (_gzPopEl && _gzPopEl.parentNode) {
+        _gzPopEl.parentNode.removeChild(_gzPopEl);
+      }
+      _gzPopEl = null;
+    }
+    function _gzSelInterpVal() {
+      const kf = _gzSelKfObj();
+      return (kf && kf.interp) ? kf.interp : null;
+    }
+    function _gzSetInterp(val) {
+      const kf = _gzSelKfObj();
+      if (!kf) return false;
+      if (val && _VALID_INTERP[val]) kf.interp = val;
+      // Picking `bezier` from the interp popover is the same
+      // intent as the tangents button: seed the derived defaults
+      // (no curve jump) + reveal the grab-able handles. Any other
+      // mode hides them (explicit tangents only bite as bezier).
+      if (kf.interp === 'bezier') {
+        _tanEnableBezier();
+      } else {
+        _gzAfterEdit();
+        _tanHide();
+      }
+      return kf.interp === val;
+    }
+    function _gzOpenPopover() {
+      if (_gzSelKf < 0) return;       // need a selected keyframe
+      _gzStopTour();
+      _gzClosePopover();
+      const root = document.getElementById('author-root');
+      if (!root) return;
+      const kf = _gzSelKfObj();
+      const cur = (kf && typeof kf.interp === 'string' &&
+        _VALID_INTERP[kf.interp]) ? kf.interp : '';
+      const box = document.createElement('div');
+      box.id = 'editor-interp-pop';
+      box.style.cssText =
+        'position:absolute;top:54px;left:12px;z-index:51;' +
+        'display:flex;gap:4px;align-items:center;flex-wrap:wrap;' +
+        'max-width:360px;padding:8px 10px;border-radius:8px;' +
+        'background:rgba(20,20,20,0.86);' +
+        '-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);' +
+        'font:12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;' +
+        'color:#eee;user-select:none;';
+      const lab = document.createElement('span');
+      lab.textContent = 'interp:';
+      lab.style.cssText = 'opacity:.7;margin-right:4px;';
+      box.appendChild(lab);
+      _GZ_INTERPS.forEach((nm) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = nm;
+        b.setAttribute('data-interp', nm);
+        b.style.cssText =
+          'background:' + (nm === cur
+            ? 'rgba(53,224,255,0.34)' : 'rgba(255,255,255,0.10)') +
+          ';color:#eee;border:0;border-radius:5px;' +
+          'padding:4px 8px;cursor:pointer;font:12px monospace;' +
+          'line-height:1;';
+        b.addEventListener('click', () => {
+          _gzSetInterp(nm);
+          _gzClosePopover();
+        });
+        box.appendChild(b);
+      });
+      root.appendChild(box);
+      _gzPopEl = box;
+    }
+
+    // ---- Record(K): append a keyframe = the LIVE camera pose +
+    //      the REAL elapsed playhead t. The playhead is taken from
+    //      _trajPlayhead() (the SAME single-source-of-truth clock
+    //      the Task-16 overlay + Task-17 timeline read: the live
+    //      _player/_t0 clock while a tour plays, else the
+    //      #path-scrub position) -- the in-viewer analogue of the
+    //      Task-5 "recording uses real elapsed time" fix, NOT a
+    //      reinvented timer. The new keyframe is inserted into the
+    //      active path's keyframes[] (buildPlayer sorts by t, so a
+    //      record at any playhead lands correctly) and the
+    //      trajectory rebuilds. Recording also stops the auto-tour
+    //      first (explicit interaction stop) so the captured pose is
+    //      the user's, not a tour frame.
+    const _GZ_R = (x) => Math.round(x * 1e5) / 1e5;
+    function _gzRecordKeyframe() {
+      const p = _gzActivePath();
+      if (!p) return null;
+      if (!Array.isArray(p.keyframes)) p.keyframes = [];
+      // Read the real elapsed playhead BEFORE stopping the tour
+      // (stopPath() clears _player; we want the elapsed time the
+      // user is parked at -- the same value _trajPlayhead returns).
+      let t = 0;
+      try {
+        const ph = buildPlayer(p);
+        const v = ph ? _trajPlayhead(ph) : null;
+        if (typeof v === 'number' && isFinite(v)) t = Math.max(0, v);
+      } catch (e) {}
+      _gzStopTour();
+      const kf = {
+        t: _GZ_R(t),
+        pos: [_GZ_R(camera.position.x), _GZ_R(camera.position.y),
+          _GZ_R(camera.position.z)],
+        quat: [_GZ_R(camera.quaternion.x), _GZ_R(camera.quaternion.y),
+          _GZ_R(camera.quaternion.z), _GZ_R(camera.quaternion.w)],
+        fov: _GZ_R(camera.fov),
+      };
+      p.keyframes.push(kf);
+      _gzAfterEdit();
+      return kf;
+    }
+
+    // ---- Save / Emit. SAVE_MODE=="cli" (decision-A DEFAULT):
+    //      emit the SPCP1 token + the `splatpipe set-camera-path
+    //      <token>` command in an on-screen textarea + clipboard,
+    //      MIRRORING the existing SPV1 "Set start view" relay UI
+    //      (same overlay/card/textarea/copy pattern, same trust
+    //      model -- no client secret). SAVE_MODE=="http" (opt-in):
+    //      POST the camera-scope patch JSON to SAVE_ENDPOINT with
+    //      Authorization: Bearer <secret> where <secret> is read
+    //      ONLY from the author URL fragment (#author=<secret>) --
+    //      never baked, never in viewer-config.json. Returns the
+    //      token (cli) or a Promise (http) so the harness can
+    //      deterministically assert both paths.
+    function _gzEsc(s) {
+      return String(s).replace(/[&<>]/g, (c) =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    }
+    function _gzAuthorSecret() {
+      // The http-mode bearer lives ONLY in the URL fragment
+      // (#author=<secret>), never baked / in config. Parse it
+      // leniently (#author=... possibly among &-joined fields).
+      try {
+        const h = (location.hash || '').replace(/^#/, '');
+        for (const part of h.split('&')) {
+          const eq = part.indexOf('=');
+          if (eq > 0 && part.slice(0, eq) === 'author') {
+            return decodeURIComponent(part.slice(eq + 1));
+          }
+        }
+      } catch (e) {}
+      return '';
+    }
+    let _gzLastToken = '';
+    function _gzShowTokenCard(token) {
+      // Mirror the SPV1 relay overlay/card EXACTLY (same structure,
+      // wording shape, textarea + copy-again + done).
+      const old = document.getElementById('gz-save-overlay');
+      if (old) old.remove();
+      const cmd = 'splatpipe set-camera-path ' + token;
+      const ov = document.createElement('div');
+      ov.id = 'gz-save-overlay';
+      ov.style.cssText =
+        'position:fixed;inset:0;z-index:9999;display:flex;' +
+        'align-items:center;justify-content:center;' +
+        'background:rgba(0,0,0,.55);font:14px system-ui,sans-serif;';
+      const card = document.createElement('div');
+      card.style.cssText =
+        'background:#1f1f24;color:#eee;max-width:560px;width:90%;' +
+        'padding:20px 22px;border-radius:12px;' +
+        'box-shadow:0 8px 40px rgba(0,0,0,.5);';
+      let copied = false;
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(token);
+          copied = true;
+        }
+      } catch (e) {}
+      card.innerHTML =
+        '<div style="font-weight:600;font-size:16px;margin-bottom:6px;">' +
+        (copied ? 'Copied to clipboard \u2713'
+                : 'Camera-path token') + '</div>' +
+        '<div style="opacity:.75;margin-bottom:10px;">Send this ' +
+        'token to Claude on Telegram, or run the command below, to ' +
+        'save these camera paths for <b>' + _gzEsc(_gzProjName) +
+        '</b> for everyone:</div>' +
+        '<textarea id="gz-tok" readonly style="width:100%;height:84px;' +
+        'box-sizing:border-box;background:#111;color:#9fd;' +
+        'border:1px solid #333;border-radius:8px;padding:8px;' +
+        'font:12px monospace;resize:none;"></textarea>' +
+        '<div style="opacity:.6;margin:8px 0 4px;">CLI:</div>' +
+        '<textarea id="gz-cmd" readonly style="width:100%;height:44px;' +
+        'box-sizing:border-box;background:#111;color:#9fd;' +
+        'border:1px solid #333;border-radius:8px;padding:8px;' +
+        'font:12px monospace;resize:none;"></textarea>' +
+        '<div style="display:flex;gap:10px;justify-content:flex-end;' +
+        'margin-top:14px;">' +
+        '<button id="gz-copy" class="quality-btn">Copy again</button>' +
+        '<button id="gz-done" class="quality-btn" ' +
+        'style="background:#2d6cdf;color:#fff;">Done</button></div>';
+      ov.appendChild(card);
+      document.body.appendChild(ov);
+      const ta = card.querySelector('#gz-tok');
+      ta.value = token;
+      card.querySelector('#gz-cmd').value = cmd;
+      ta.focus(); ta.select();
+      ov.addEventListener('click', (e) => {
+        if (e.target === ov) ov.remove();
+      });
+      card.querySelector('#gz-done').addEventListener('click', () => {
+        ov.remove();
+      });
+      card.querySelector('#gz-copy').addEventListener('click', () => {
+        ta.focus(); ta.select();
+        try {
+          if (navigator.clipboard) navigator.clipboard.writeText(token);
+        } catch (e) {}
+        try { document.execCommand('copy'); } catch (e) {}
+      });
+    }
+    // The CLI-default Save: build the payload from the AUTHORED
+    // in-memory state, encode the SPCP1 token (byte-identical port),
+    // mirror the SPV1 relay UI. Returns the token string.
+    function _gzSaveCli() {
+      const payload = _buildSpcpPayload();
+      const token = _encodeSpcp(_gzSlug, payload);
+      _gzLastToken = token;
+      _gzShowTokenCard(token);
+      return token;
+    }
+    // The opt-in http Save: POST {slug, patch} (the allow-listed
+    // camera-scope patch keys ONLY -- NEVER primary_asset)
+    // to SAVE_ENDPOINT with Bearer <fragment secret>. The body is
+    // the SAME allow-listed patch (NEVER primary_asset) -- mirrors
+    // the Contract-C {slug, patch} body shape. Returns the fetch
+    // Promise so the harness can assert the call (no real server).
+    function _gzSaveHttp() {
+      const patch = _buildPatch();
+      const secret = _gzAuthorSecret();
+      const body = JSON.stringify({ slug: _gzSlug, patch: patch });
+      const headers = { 'Content-Type': 'application/json' };
+      if (secret) headers['Authorization'] = 'Bearer ' + secret;
+      return fetch(SAVE_ENDPOINT, {
+        method: 'POST', headers: headers, body: body,
+      });
+    }
+    function _gzSave() {
+      if (SAVE_MODE === 'http' && SAVE_ENDPOINT) {
+        return _gzSaveHttp();
+      }
+      return _gzSaveCli();
+    }
+
+    // ---- The author HUD button cluster (Rec/interp/tangents/Save).
+    //      A4: MERGED onto the Task-17 bottom-timeline transport ROW
+    //      (the same play/pause/loop/fps row) via the shared
+    //      _tlBarRow ref instead of a separate floating bar -- one
+    //      coherent transport cluster, nothing mutually occluding.
+    //      The gizmo space/mode + interp + record are keyboard-driven
+    //      (the spec's R/T/V/K); the Save button is the explicit
+    //      persist action. Falls back to a floating bar in
+    //      #author-root only if the timeline row is somehow absent.
+    //      ``editor-gizmo-bar`` stays the id of this logical group
+    //      (now an inline sub-cluster of the transport row).
+    {
+      const _row = _tlBarRow;
+      const root = _row || document.getElementById('author-root');
+      if (root) {
+        const bar = document.createElement('div');
+        bar.id = 'editor-gizmo-bar';
+        if (_row) {
+          // Inline sub-cluster of the timeline transport row: a thin
+          // separator then the buttons, no absolute pos / backdrop
+          // (the row already supplies the panel chrome). marginLeft
+          // pushes it clear of the play/pause/loop/fps group.
+          bar.style.cssText =
+            'display:flex;gap:6px;align-items:center;' +
+            'margin-left:14px;padding-left:14px;' +
+            'border-left:1px solid rgba(255,255,255,0.16);';
+        } else {
+          bar.style.cssText =
+            'position:absolute;top:12px;left:160px;z-index:50;' +
+            'display:flex;gap:6px;align-items:center;' +
+            'padding:6px 9px;border-radius:7px;' +
+            'background:rgba(20,20,20,0.72);' +
+            '-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);' +
+            'font:12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;' +
+            'color:#eee;user-select:none;';
+        }
+        const _mkBtn = (txt, title, id) => {
+          const b = document.createElement('button');
+          b.type = 'button'; b.textContent = txt;
+          b.title = title || ''; if (id) b.id = id;
+          b.style.cssText =
+            'background:rgba(255,255,255,0.10);color:#eee;border:0;' +
+            'border-radius:5px;padding:4px 9px;cursor:pointer;' +
+            'font:12px monospace;line-height:1;';
+          return b;
+        };
+        const recBtn = _mkBtn('\u25CF Rec (K)',
+          'Record a keyframe at the playhead from the live camera',
+          'editor-rec-btn');
+        const interpBtn = _mkBtn('interp (V)',
+          'Set the selected keyframe interpolation', 'editor-interp-btn');
+        const tanBtn = _mkBtn('tangents (B)',
+          'Show grab-able bezier in/out tangent handles on the ' +
+          'selected keyframe (drag them to shape the curve)',
+          'editor-tan-btn');
+        const saveBtn = _mkBtn('Save',
+          'Save camera paths (cli: emit SPCP1 token; http: POST)',
+          'editor-save-btn');
+        recBtn.addEventListener('click', () => { _gzRecordKeyframe(); });
+        interpBtn.addEventListener('click', () => { _gzOpenPopover(); });
+        tanBtn.addEventListener('click', () => { _tanEnableBezier(); });
+        saveBtn.addEventListener('click', () => { _gzSave(); });
+        bar.appendChild(recBtn);
+        bar.appendChild(interpBtn);
+        bar.appendChild(tanBtn);
+        bar.appendChild(saveBtn);
+        root.appendChild(bar);
+      }
+    }
+
+    // ---- Keyboard: R/T (translate/rotate), SPACE (World<->Screen),
+    //      V (interp popover), B (bezier tangent handles), K
+    //      (record). Author-mode only; ignored while typing in an
+    //      input/textarea (the Save card's textareas) so copying the
+    //      token does not trigger Record.
+    window.addEventListener('keydown', (ev) => {
+      if (!ModeManager.is('author')) return;
+      const ae = document.activeElement;
+      if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' ||
+          ae.tagName === 'SELECT')) return;
+      const k = ev.key;
+      if (k === 'r' || k === 'R') {
+        _gzMode = 'rotate'; _gzApplySpace();
+      } else if (k === 't' || k === 'T') {
+        _gzMode = 'translate'; _gzApplySpace();
+      } else if (k === ' ' || k === 'Spacebar' || ev.code === 'Space') {
+        _gzScreen = !_gzScreen; _gzApplySpace();
+        ev.preventDefault();    // stop the page scrolling on Space
+      } else if (k === 'v' || k === 'V') {
+        if (_gzPopEl) _gzClosePopover(); else _gzOpenPopover();
+      } else if (k === 'b' || k === 'B') {
+        // Reveal (or, if already shown for a non-bezier key,
+        // convert + reveal) the grab-able bezier tangent handles
+        // on the selected keyframe. No-op without a selection.
+        _tanEnableBezier();
+      } else if (k === 'k' || k === 'K') {
+        _gzRecordKeyframe();
+      } else if (k === 'Escape') {
+        _gzClosePopover();
+        _tanHide();
+        _gzDetach();
+      }
+    });
+
+    // ---- TEST-ONLY surface extension (mirror window.__clip /
+    //      __transport / the Task-16/17 window.__editor: getters +
+    //      deterministic hooks; NO production reader; inert without
+    //      the harness). Extends the EXISTING window.__editor object
+    //      (created by the Task-16 block, extended by Task-17) so
+    //      the harness reads ONE surface. Every hook drives the
+    //      REAL code path a user action / keypress would (the same
+    //      convention as __editor.scrubTo / tlDragKf).
+    try {
+      if (window.__editor) {
+        const _gzApi = {
+          // ---- read state ----
+          get gzMode() { return _gzMode; },
+          get gzSpace() { return _gzScreen ? 'screen' : 'world'; },
+          get gzSelKf() { return _gzSelKf; },
+          get gzAttached() {
+            return !!(_gzCtl && _gzCtl.object === _gzProxy &&
+              _gzSelKf >= 0);
+          },
+          get gzProxyInScene() {
+            return !!(_gzProxy && _gzProxy.parent === scene);
+          },
+          get gzHelperInScene() {
+            return !!(_gzCtlHelper && _gzCtlHelper.parent === scene);
+          },
+          get gzControlSpace() {
+            return _gzCtl ? _gzCtl.space : null;
+          },
+          get gzControlMode() {
+            return _gzCtl ? _gzCtl.mode : null;
+          },
+          get gzPopoverOpen() { return !!_gzPopEl; },
+          get gzInterpOptions() { return _GZ_INTERPS.slice(); },
+          get gzSelInterp() {
+            const kf = _gzSelKfObj();
+            return (kf && kf.interp) ? kf.interp : null;
+          },
+          get gzSaveMode() {
+            try { return SAVE_MODE; } catch (e) { return '?'; }
+          },
+          get gzSlug() { return _gzSlug; },
+          get gzLastToken() { return _gzLastToken; },
+          get gzFrustumCount() { return _trajFrusta.length; },
+          // The selected keyframe's CURRENT stored pose (the SAME
+          // in-memory object the player + overlay read) so the
+          // harness can assert a gizmo drag changed kf.pos/kf.quat.
+          get gzSelKfPose() {
+            const kf = _gzSelKfObj();
+            if (!kf) return null;
+            return {
+              t: kf.t,
+              pos: (kf.pos || []).slice(),
+              quat: (kf.quat || []).slice(),
+              fov: kf.fov,
+              interp: kf.interp || null,
+            };
+          },
+          // The active path's keyframe times (array order) -- so the
+          // harness can assert Record APPENDED a keyframe at the
+          // real-elapsed playhead t.
+          get gzKfTimes() {
+            const p = _gzActivePath();
+            return (p && p.keyframes)
+              ? p.keyframes.map(k => (k.t || 0)) : [];
+          },
+          get gzKfCount() {
+            const p = _gzActivePath();
+            return (p && p.keyframes) ? p.keyframes.length : 0;
+          },
+          // The Task-16 overlay signature -- so the harness can
+          // assert a gizmo/record/interp edit triggered the overlay
+          // rebuild (the sig CHANGED) without a save/network.
+          get gzOverlaySig() {
+            try {
+              const p = _gzActivePath();
+              return (typeof _trajKfSig === 'function')
+                ? _trajKfSig(p) : '';
+            } catch (e) { return ''; }
+          },
+          // ---- deterministic hooks (drive the REAL handlers) ----
+          // Select a keyframe by index == clicking its frustum
+          // (drives the SAME _gzAttach the pointer pick calls).
+          // Returns a Promise resolving once the (lazily imported)
+          // TransformControls has attached, so the harness can await.
+          gzSelect(idx) {
+            _gzAttach(idx);
+            return _gzEnsureControl().then(() => ({
+              attached: !!(_gzCtl && _gzCtl.object === _gzProxy),
+              sel: _gzSelKf,
+            }));
+          },
+          // Raycast-pick a frustum at NDC (-1..1) -> returns the kf
+          // index a click there would select (drives the REAL
+          // _gzPickFrustum off the live trajectory geometry; the
+          // harness converts a frustum's world pos to NDC itself).
+          gzPickAtNdc(ndcx, ndcy) {
+            const rect = renderer.domElement.getBoundingClientRect();
+            const cx = rect.left + (ndcx + 1) * 0.5 * rect.width;
+            const cy = rect.top + (1 - ndcy) * 0.5 * rect.height;
+            return _gzPickFrustum(cx, cy);
+          },
+          // TEST-ONLY: would a real pointerdown at these CLIENT px
+          // yield the event to TransformControls (pointer over a
+          // gizmo handle => the capture handler must NOT pick a
+          // frustum / stopPropagation, so TC's own bubble-phase
+          // pointerDown drives the drag)? Drives the EXACT
+          // _gzPointerOnGizmo the real `_gzOnCanvasDown` calls -- so
+          // the harness can assert the starvation bug is fixed
+          // WITHOUT performing the drag through the API. Also
+          // returns the resolved TC axis for diagnostics.
+          gzPointerOnGizmoAt(clientX, clientY) {
+            const on = _gzPointerOnGizmo(clientX, clientY);
+            return { onGizmo: !!on,
+              axis: _gzCtl ? (_gzCtl.axis || null) : null,
+              dragging: _gzCtl ? !!_gzCtl.dragging : false };
+          },
+          // TEST-ONLY: the live TransformControls drag state (the
+          // canonical "is a real drag in progress" signal) so the
+          // harness can assert a REAL mouse-drag actually entered
+          // TC's drag (proves the event reached TC, not the API).
+          get gzCtlDragging() {
+            return _gzCtl ? !!_gzCtl.dragging : false;
+          },
+          get gzCtlAxis() {
+            return _gzCtl ? (_gzCtl.axis || null) : null;
+          },
+          gzDetach() { _gzDetach(); return _gzSelKf; },
+          // Simulate a gizmo TRANSLATE drag: move the proxy by a
+          // world delta + run the SAME objectChange write-back the
+          // real drag fires (we cannot synthesise a pointer drag on
+          // the addon's internal plane deterministically; this
+          // drives the EXACT same _gzWriteProxyToKf the gizmo's
+          // 'objectChange' listener calls).
+          gzDragTranslate(dx, dy, dz) {
+            if (!_gzProxy || _gzSelKf < 0) return null;
+            _gzProxy.position.x += (+dx || 0);
+            _gzProxy.position.y += (+dy || 0);
+            _gzProxy.position.z += (+dz || 0);
+            _gzProxy.updateMatrixWorld(true);
+            _gzWriteProxyToKf();
+            const kf = _gzSelKfObj();
+            return kf ? (kf.pos || []).slice() : null;
+          },
+          // Simulate a gizmo ROTATE drag: rotate the proxy by a
+          // quaternion (xyzw) + run the SAME write-back.
+          gzDragRotate(qx, qy, qz, qw) {
+            if (!_gzProxy || _gzSelKf < 0) return null;
+            const q = new THREE.Quaternion(qx, qy, qz, qw).normalize();
+            _gzProxy.quaternion.premultiply(q);
+            _gzProxy.updateMatrixWorld(true);
+            _gzWriteProxyToKf();
+            const kf = _gzSelKfObj();
+            return kf ? (kf.quat || []).slice() : null;
+          },
+          // R/T mode toggle (drives the SAME _gzApplySpace the
+          // keydown handler runs).
+          gzSetMode(m) {
+            _gzMode = (m === 'rotate') ? 'rotate' : 'translate';
+            _gzApplySpace();
+            return _gzCtl ? _gzCtl.mode : _gzMode;
+          },
+          // SPACE World<->Screen toggle (drives the SAME path).
+          gzToggleSpace() {
+            _gzScreen = !_gzScreen;
+            _gzApplySpace();
+            return { screen: _gzScreen,
+              ctlSpace: _gzCtl ? _gzCtl.space : null };
+          },
+          gzSetSpace(s) {
+            _gzScreen = (s === 'screen');
+            _gzApplySpace();
+            return { screen: _gzScreen,
+              ctlSpace: _gzCtl ? _gzCtl.space : null };
+          },
+          // V interp popover open + pick (drives the REAL popover
+          // DOM + the REAL _gzSetInterp the buttons call).
+          gzOpenInterp() { _gzOpenPopover(); return !!_gzPopEl; },
+          gzCloseInterp() { _gzClosePopover(); return !_gzPopEl; },
+          gzPickInterp(val) {
+            // Click the matching popover button if open (the REAL
+            // DOM path); else fall back to the same _gzSetInterp.
+            if (_gzPopEl) {
+              const b = _gzPopEl.querySelector(
+                '[data-interp="' + val + '"]');
+              if (b) { b.click(); return _gzSelInterpVal(); }
+            }
+            _gzSetInterp(val);
+            _gzClosePopover();
+            return _gzSelInterpVal();
+          },
+          // K record (drives the REAL _gzRecordKeyframe -> live
+          // camera pose + real-elapsed playhead t).
+          gzRecord() {
+            const kf = _gzRecordKeyframe();
+            return kf ? { t: kf.t, pos: kf.pos.slice(),
+              quat: kf.quat.slice(), fov: kf.fov } : null;
+          },
+          get gzTourStopped() { return _gzTourStopped; },
+          // The real-elapsed playhead (the SAME _trajPlayhead the
+          // overlay/timeline use) -- so the harness can assert
+          // Record used it (not a +2.0 fallback).
+          get gzPlayheadT() {
+            try {
+              const p = _gzActivePath();
+              const ph = p ? buildPlayer(p) : null;
+              const v = ph ? _trajPlayhead(ph) : 0;
+              return (typeof v === 'number' && isFinite(v))
+                ? Math.max(0, v) : 0;
+            } catch (e) { return 0; }
+          },
+          // ---- Save / SPCP emit ----
+          // Build the Contract-C camera-scope patch (allow-list
+          // ONLY; the harness asserts NO primary_asset).
+          gzBuildPatch() { return _buildPatch(); },
+          gzBuildPayload() { return _buildSpcpPayload(); },
+          // The JS-ported encode_spcp over an ARBITRARY payload --
+          // so the harness/pytest can assert byte-identity vs the
+          // Python encode_spcp for the SAME payload (the spec's
+          // core correctness gate).
+          gzEncodeSpcp(slug, payload) {
+            return _encodeSpcp(slug, payload);
+          },
+          // Drive the REAL cli Save (emit token + show the relay
+          // card) and RETURN the emitted token so the harness can
+          // capture it for the Python round-trip / byte-identity
+          // pytest check (the spec mandates a real captured token,
+          // not a hand-constructed one).
+          gzSaveCliToken() {
+            return _gzSaveCli();
+          },
+          // Drive the REAL Save dispatch (cli -> token string;
+          // http -> the fetch Promise) -- so the harness can assert
+          // the http path POSTs the right patch to SAVE_ENDPOINT.
+          gzSave() { return _gzSave(); },
+          gzAuthorSecret() { return _gzAuthorSecret(); },
+          // Close the Save card if open (harness cleanup so its
+          // textarea focus does not eat later key probes).
+          gzCloseSaveCard() {
+            const o = document.getElementById('gz-save-overlay');
+            if (o) { o.remove(); return true; }
+            return false;
+          },
+          // ---- Bezier tangent-handle surface (TEST-ONLY) --------
+          // Are the in/out tangent handles currently shown?
+          get tanHandlesVisible() {
+            return !!(_tanGroup && _tanGroup.parent === scene &&
+              _tanGroup.visible);
+          },
+          get tanSelIsBezier() { return _tanIsBezierSel(); },
+          // The selected keyframe's STORED explicit tangents (the
+          // SAME in-memory arrays the spline reads + Save emits) --
+          // null until the key is bezier with handles. So the
+          // harness can assert a drag CHANGED kf.in_tan/out_tan.
+          get tanSelTans() {
+            const kf = _gzSelKfObj();
+            if (!kf) return null;
+            return {
+              interp: kf.interp || null,
+              in_tan: (Array.isArray(kf.in_tan)
+                && kf.in_tan.length === 3) ? kf.in_tan.slice() : null,
+              out_tan: (Array.isArray(kf.out_tan)
+                && kf.out_tan.length === 3)
+                ? kf.out_tan.slice() : null,
+            };
+          },
+          // The current handle SQUARE world positions (what the
+          // harness converts to NDC to aim a REAL mouse at).
+          get tanHandleWorld() {
+            if (!_tanGroup || !_tanOutBox || !_tanInBox) return null;
+            return {
+              out: [_tanOutBox.position.x, _tanOutBox.position.y,
+                _tanOutBox.position.z],
+              in: [_tanInBox.position.x, _tanInBox.position.y,
+                _tanInBox.position.z],
+            };
+          },
+          // Convert the selected key to bezier + reveal handles
+          // (drives the SAME _tanEnableBezier the B key / button
+          // call). Returns whether it is now bezier.
+          tanEnableBezier() { return _tanEnableBezier(); },
+          // Raycast-pick a handle square at NDC -> 'in'|'out'|null
+          // (drives the REAL _tanPickBox off the live geometry).
+          tanPickAtNdc(ndcx, ndcy) {
+            const rect = renderer.domElement.getBoundingClientRect();
+            const cx = rect.left + (ndcx + 1) * 0.5 * rect.width;
+            const cy = rect.top + (1 - ndcy) * 0.5 * rect.height;
+            return _tanPickBox(cx, cy);
+          },
+          // Would a real pointerdown at these CLIENT px yield to the
+          // handle TC (pointer over a handle axis => the capture
+          // handler must NOT consume it so TC's own bubble-phase
+          // pointerDown drives the drag)? Drives the EXACT
+          // _tanPointerOnGizmo the real _gzOnCanvasDown calls.
+          tanPointerOnGizmoAt(clientX, clientY) {
+            const on = _tanPointerOnGizmo(clientX, clientY);
+            return { onGizmo: !!on,
+              axis: _tanCtl ? (_tanCtl.axis || null) : null,
+              dragging: _tanCtl ? !!_tanCtl.dragging : false };
+          },
+          // The live handle-TC drag state (the canonical "a real
+          // drag is in progress" signal) so the harness can assert a
+          // REAL mouse-drag actually entered the handle TC.
+          get tanCtlDragging() {
+            return _tanCtl ? !!_tanCtl.dragging : false;
+          },
+          get tanCtlAxis() {
+            return _tanCtl ? (_tanCtl.axis || null) : null;
+          },
+          get tanActiveSide() { return _tanActiveSide; },
+          // Attach the handle-TC to a side (drives the SAME
+          // _tanAttachSide the pointer pick calls) -> resolves once
+          // the lazily-imported TC has attached.
+          tanAttach(side) {
+            _tanAttachSide(side);
+            return _tanEnsureCtl().then(() => ({
+              attached: !!(_tanCtl && _tanCtl.object ===
+                (side === 'out' ? _tanOutProxy : _tanInProxy)),
+              side: _tanActiveSide,
+            }));
+          },
+          // Simulate a handle drag by a WORLD delta + run the SAME
+          // _tanWriteFromProxy the gizmo's 'objectChange' fires (we
+          // cannot synthesise a pointer drag on the addon's internal
+          // plane deterministically; the REAL trusted-mouse drag is
+          // verified separately by Playwright -- this drives the
+          // EXACT same write-back path for a deterministic check).
+          tanDrag(side, dx, dy, dz) {
+            const proxy = side === 'out' ? _tanOutProxy : _tanInProxy;
+            if (!proxy || !_tanIsBezierSel()) return null;
+            _tanActiveSide = side;
+            if (proxy.parent !== scene) scene.add(proxy);
+            proxy.position.x += (+dx || 0);
+            proxy.position.y += (+dy || 0);
+            proxy.position.z += (+dz || 0);
+            proxy.updateMatrixWorld(true);
+            _tanWriteFromProxy(side);
+            const kf = _gzSelKfObj();
+            return kf ? {
+              in_tan: (kf.in_tan || []).slice(),
+              out_tan: (kf.out_tan || []).slice(),
+              interp: kf.interp || null,
+            } : null;
+          },
+          // The effective (explicit OR derived-default) tangent
+          // vectors for the selected key -- so the harness can
+          // assert the derived default == the `automatic` formula
+          // (handles appear ON the curve, no jump).
+          tanEffectiveVecs() { return _tanVecs(); },
+          tanHide() {
+            _tanHide();
+            return !(_tanGroup && _tanGroup.parent === scene &&
+              _tanGroup.visible);
+          },
+        };
+        // Preserve getters AS getters (Object.assign would freeze
+        // them -- same reasoning as the Task-17 extension).
+        Object.defineProperties(
+          window.__editor, Object.getOwnPropertyDescriptors(_gzApi));
+      }
+    } catch (e) {}
+  })();
+

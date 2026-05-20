@@ -1,0 +1,124 @@
+  // ============================================================
+  //  Intro controller (Task 13 -- cinematic loading-blur + fade)
+  // ------------------------------------------------------------
+  //  The END-USER reveal (plan SS-A3). Integrates through the
+  //  EXISTING scaffold, NOT a parallel mechanism:
+  //   * mode gate = ModeManager (Task 0): the cinematic fade runs
+  //     ONLY in usermode; embed/author keep the plain pre-Task-13
+  //     loading screen + immediate tour (CSS already hides
+  //     #loading-blur / #intro-fade outside usermode -- same
+  //     body-class gating as the Task-12 dual-UI roots).
+  //   * ready signal = the REAL one already in this viewer: the
+  //     loading panel hides by `#loading` gaining the `hidden`
+  //     class (set by the early-reveal IIFE on coarse coverage or
+  //     its ~4 s hard cap, and again by the preload IIFE). We do
+  //     NOT invent a splat-count threshold -- we observe that
+  //     exact existing signal (MutationObserver + an initial
+  //     check in case it already fired).
+  //   * tour auto-start = the SAME _introStartTour() the old
+  //     synchronous autostart became -- called once, here, after
+  //     the fade (or immediately when there is no fade). No
+  //     duplicate autostart path.
+  //
+  //  FAIL-SAFE (the single most important property -- a stuck
+  //  opaque #intro-fade would hide the whole scene, the worst
+  //  possible regression): the overlay is pointer-events:none in
+  //  CSS from the start (never blocks input even mid-fade); after
+  //  the fade it is ALSO set display:none; and a HARD FALLBACK
+  //  timer clears it + starts the tour even if the ready signal
+  //  never arrives. It can therefore NEVER permanently cover the
+  //  scene. Defensive config parse: cfg.intro absent ->
+  //  DEFAULT_INTRO {type:'fade',ms:900}; ms not a positive
+  //  finite number -> 900; any unknown type -> behave as 'fade';
+  //  type==='none' -> no fade, never show #intro-fade.
+  // ============================================================
+  (() => {
+    // --- defensive cfg.intro parse (mirrors core/scene_cuts.DEFAULT_INTRO)
+    const _intro = (cfg && cfg.intro && typeof cfg.intro === 'object')
+      ? cfg.intro : {};
+    const _introType = (_intro.type === 'none') ? 'none' : 'fade';
+    let _introMs = Number(_intro.ms);
+    if (!isFinite(_introMs) || _introMs <= 0) _introMs = 900;  // DEFAULT_INTRO
+    const _fadeEl = document.getElementById('intro-fade');
+    const _loadEl = document.getElementById('loading');
+    // The cinematic fade is the usermode-only end-user path. embed/author
+    // keep the pre-Task-13 behaviour: no fade, tour starts immediately
+    // (the CSS already keeps #intro-fade / #loading-blur hidden there).
+    const _cinematic = ModeManager.is('user') && _introType !== 'none' && !!_fadeEl;
+
+    if (!_cinematic) {
+      // No cinematic intro: belt-and-braces hide the overlay (type:'none'
+      // or non-usermode) and start the tour straight away -- exactly the
+      // old synchronous autostart timing for these modes.
+      if (_fadeEl) { _fadeEl.classList.remove('faded'); _fadeEl.style.display = 'none'; }
+      _introStartTour();
+      return;
+    }
+
+    // Match the CSS transition duration to cfg.intro.ms.
+    _fadeEl.style.setProperty('--intro-ms', _introMs + 'ms');
+
+    let _done = false;
+    // Clear the overlay so it can NEVER trap the scene, then start the
+    // tour. Idempotent (guarded) -- safe to call from transitionend, the
+    // post-fade timer AND the hard fallback.
+    function _finish() {
+      if (_done) return;
+      _done = true;
+      // pointer-events:none is already set in CSS; display:none fully
+      // removes it from hit-testing + paint. Both = unconditionally safe.
+      _fadeEl.style.pointerEvents = 'none';
+      _fadeEl.style.display = 'none';
+      _introStartTour();
+    }
+
+    // Begin the fade once the REAL ready signal has fired, then finish
+    // after the fade completes.
+    let _fadeStarted = false;
+    function _beginFade() {
+      if (_fadeStarted || _done) return;
+      _fadeStarted = true;
+      // Trigger the CSS opacity 1->0 transition.
+      _fadeEl.classList.add('faded');
+      // Finish on transitionend OR a timer (transitionend can be missed
+      // if the tab is backgrounded mid-fade / the property is coalesced);
+      // +120 ms slack over _introMs so the visual fade fully completes
+      // before we display:none it.
+      const _onEnd = (e) => {
+        if (e && e.propertyName && e.propertyName !== 'opacity') return;
+        _fadeEl.removeEventListener('transitionend', _onEnd);
+        _finish();
+      };
+      _fadeEl.addEventListener('transitionend', _onEnd);
+      setTimeout(_finish, _introMs + 120);
+    }
+
+    // The ready signal == `#loading` gaining the `hidden` class (the
+    // existing, real signal -- not invented). Observe it; also check
+    // immediately in case it already fired before this ran.
+    const _isReady = () =>
+      !_loadEl || _loadEl.classList.contains('hidden');
+    if (_isReady()) {
+      _beginFade();
+    } else {
+      const _obs = new MutationObserver(() => {
+        if (_isReady()) { _obs.disconnect(); _beginFade(); }
+      });
+      _obs.observe(_loadEl, { attributes: true, attributeFilter: ['class'] });
+    }
+
+    // HARD FALLBACK -- the absolute guarantee. If the ready signal never
+    // arrives (e.g. an upstream stall), clear the overlay + start the
+    // tour anyway so the scene is NEVER permanently covered. Generous
+    // (the loading panel's own hard cap is ~4 s; the preload outer cap
+    // ~12 s) -- this only fires on a genuine failure of the normal path.
+    setTimeout(() => {
+      if (!_done) {
+        console.warn('[Splatpipe] intro: hard fallback -- forcing fade clear');
+        _finish();
+      }
+    }, 20000);
+  })();
+
+  tick();
+
