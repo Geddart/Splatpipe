@@ -1,0 +1,183 @@
+<body>
+  <canvas id="app-canvas"></canvas>
+
+  <div id="header">
+    <div id="title">
+      <h1>@@PROJECT_NAME@@</h1>
+      <p>Splatpipe Viewer · Spark 2</p>
+    </div>
+    <div id="quality-buttons">
+      <select id="splat-budget" class="quality-btn" title="Splat budget (lodSplatCount) — auto-picked from device tier on load, override here. Capped at the 6 M resident pool.">
+        <option value="500000">500K</option>
+        <option value="1000000">1M</option>
+        <option value="1500000">1.5M</option>
+        <option value="2000000">2M</option>
+        <option value="3000000">3M</option>
+        <option value="4000000">4M</option>
+        <option value="6000000">6M</option>
+      </select>
+      <select id="move-speed" class="quality-btn" title="Camera fly speed (WASD / arrows). Live — your choice is remembered on this device, no reload or redeploy. ?moveSpeed=N forces a value.">
+        <option value="0.1">Speed: 0.1×</option>
+        <option value="0.25">Speed: 0.25×</option>
+        <option value="0.5">Speed: 0.5×</option>
+        <option value="0.75">Speed: 0.75×</option>
+        <option value="1">Speed: 1×</option>
+        <option value="1.5">Speed: 1.5×</option>
+        <option value="2">Speed: 2×</option>
+        <option value="4">Speed: 4×</option>
+      </select>
+      <select id="bench-mode" class="quality-btn" title="Which benchmark the Bench button runs. Probe = teleport → time-to-loaded. Rotate = yaw at each pose while loading → frame-times-while-loading. Orbit/Dolly/Cold = motion-fps traces.">
+        <option value="orbit">Bench: Orbit 360°</option>
+        <option value="probe">Bench: Probe (load time)</option>
+        <option value="rotate">Bench: Rotate (fps while loading)</option>
+        <option value="dolly">Bench: Dolly-in</option>
+        <option value="cold">Bench: Cold load</option>
+      </select>
+      <!-- v2-C Phase 1: the top-bar Camera selector. Perspective
+           (free-fly) + every animated/scene camera. End-user-visible
+           peer of the dropdowns above; hidden in ?embed=1 because it
+           is a child of #quality-buttons (the embed strip already
+           hides that whole container). "Perspective" is a RESERVED
+           non-persisted pseudo-camera sentinel (value
+           "__perspective__", always first, never in cfg / the SPCP
+           patch -- exactly like the 'idle-orbit'/'orbit' _activePathId
+           sentinels). JS (_camSelInit, inside the #path-* wiring
+           region) fills the rest from cfg.cameras / cfg.camera_paths
+           and mirrors the choice into the hidden #path-select. -->
+      <select id="camera-select" class="quality-btn" title="Camera. Perspective = free-fly (orbit / WASD). An animated camera binds the in-viewer editor to its path (author) or plays its tour (end-user).">
+        <option value="__perspective__">Perspective</option>
+      </select>
+      <!-- v2-C Phase 2 REFINE: AUTHOR-ONLY visible "+ Add camera" +
+           kebab (#cam-menu-btn) actions menu. Both visible chips and
+           the floating popup (#cam-menu-popup) are CSS-gated to
+           authormode (the existing T12-CSS dual-UI region adjacent to
+           body.authormode #path-mini) so an end-user never sees them.
+           JS handlers (in the T19-JS #camSel* block) call _camSelCreate
+           directly and open the kebab menu whose Rename item invokes
+           the existing _camSelRename(). Reuse class="quality-btn" --
+           NO new CSS for styling. ASCII-only source: the kebab glyph
+           is encoded as the HTML entity &#x22ee; (Unicode VERTICAL
+           ELLIPSIS U+22EE), so this added line stays ASCII in the
+           .py source and the rendered HTML still shows the kebab. -->
+      <button id="add-camera-btn" class="quality-btn"
+              title="Author only: add a new empty camera. The new camera is selected and bound; press Record-K (R) to capture keyframes.">+ Add camera</button>
+      <button id="cam-menu-btn" class="quality-btn"
+              title="Camera actions" aria-haspopup="true"
+              aria-expanded="false">&#x22ee;</button>
+      <div id="cam-menu-popup" role="menu" aria-hidden="true"
+           style="display:none; position:absolute; z-index:60;
+                  background:rgba(20,20,20,0.95);
+                  border:1px solid rgba(255,255,255,0.18);
+                  border-radius:6px; padding:4px;
+                  box-shadow:0 4px 16px rgba(0,0,0,0.5);
+                  min-width:120px;">
+        <button id="cam-menu-rename" class="quality-btn" role="menuitem"
+                style="display:block; width:100%; text-align:left;
+                       margin:0;"
+                title="Rename the currently-selected camera. Perspective cannot be renamed.">Rename</button>
+        <!-- v2-C Phase 3: AUTHOR-ONLY Delete action. Same role/class/
+             inline-style shape as Rename (single visual language).
+             Click handler in T19-JS closes the popup then calls
+             _camSelDelete(), which double-guards via
+             ModeManager.is('author') (defense-in-depth -- the kebab
+             is already CSS-hidden in usermode/embed via the T12-CSS
+             region's body.usermode/body.embed selectors). NO new CSS
+             needed (reuses .quality-btn). ASCII-only added line. -->
+        <button id="cam-menu-delete" class="quality-btn" role="menuitem"
+                style="display:block; width:100%; text-align:left;
+                       margin:0;"
+                title="Delete the currently-selected camera. Refused if the camera is referenced by any clip in the cut sequence, or if it is the last remaining camera. Perspective cannot be deleted.">Delete</button>
+      </div>
+      <button id="bench-btn" class="quality-btn"
+              title="Run the selected benchmark (dropdown at left). Click again to stop early; downloads a JSON trace (+ contact sheet for probe/rotate).">Bench</button>
+      <button id="setstart-btn" class="quality-btn"
+              title="Use the current camera as this scene's start view. Generates a token to send to Claude to save it for everyone.">Set start view</button>
+    </div>
+  </div>
+
+  <div id="stats">
+    <div id="splat-count">Loading…</div>
+  </div>
+
+  <div id="controls-hint">
+    <b>Left-drag</b> orbit · <b>Right-drag</b> look · <b>Middle-drag</b> pan ·
+    <b>Scroll</b> zoom · <b>WASD / Arrows</b> fly · <b>Q/E</b> up/down ·
+    <b>Shift</b> sprint · <b>Double-click / double-tap</b> set pivot ·
+    <b>Double-tap+drag</b> zoom (touch)
+  </div>
+
+  <div id="safari-hint" role="status">
+    <span>For the smoothest playback on Mac, open this scene in <b>Safari</b> — other browsers can stutter while detail streams in.</span>
+    <button id="safari-hint-close" title="Dismiss" aria-label="Dismiss">✕</button>
+  </div>
+
+  <div id="loading">
+    <!-- Task 13: blurred preview.jpg backdrop behind the spinner (the
+         cinematic loading screen, plan SS-A3). preview.jpg is the scene's
+         share-card image (same relative name html_for emits as og:image);
+         a missing file just yields a plain dark backdrop -- never an
+         error. usermode-only + embed-stripped via the body-class CSS
+         above (mirrors the Task-12 dual-UI gating; no JS toggle). -->
+    <div id="loading-blur" style="background-image: url('preview.jpg');"></div>
+    <div class="spinner"></div>
+    <p>Loading splats…</p>
+    <div id="loading-progress-bar"><div id="loading-progress-fill"></div></div>
+    <p id="loading-progress-text">Preparing…</p>
+  </div>
+
+  <div id="css2d-root"></div>
+
+  <div id="path-hud">
+    <select id="path-select"></select>
+    <button id="path-play">▶ Play</button>
+    <button id="path-stop">⏹</button>
+    <input type="range" class="scrub" id="path-scrub" min="0" max="1000" value="0">
+    <span class="time" id="path-time">0.00s</span>
+  </div>
+
+  <!-- A1/A5: the minimal END-USER transport (replaces the old
+       #path-hud pill). prev-key | tiny text-less play<->stop |
+       next-key. #path-hud above is the now-hidden host that still
+       carries #path-select/#path-scrub/#path-time/#path-play/
+       #path-stop for the ~30 call sites. SVG icons are ASCII-only;
+       the centre button's glyph is swapped by JS (_pathIconSync).
+       This block lands strictly INSIDE the Task-12 #path-time ->
+       importmap region so it is byte-lock recipe-2c (absorbed; the
+       pin is unaffected by it -- only A1's #path-hud CSS + DOM-
+       markup-free hide and the new #path-mini CSS need the
+       deliberate re-pin). Shown only when a path exists (JS adds
+       .shown); embed strips it. -->
+  <div id="path-mini">
+    <button id="path-mini-prev" type="button" title="Previous keyframe"
+      aria-label="Previous keyframe">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 5h2v14H7zM19 5l-9 7 9 7z"/></svg>
+    </button>
+    <button id="path-mini-pp" class="mini-pp" type="button"
+      title="Play/Stop" aria-label="Play or stop the camera path">
+      <span id="path-mini-pp-icon"></span>
+    </button>
+    <button id="path-mini-next" type="button" title="Next keyframe"
+      aria-label="Next keyframe">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M15 5h2v14h-2zM5 5l9 7-9 7z"/></svg>
+    </button>
+  </div>
+
+  <!-- Task 12 dual-UI roots. ALWAYS present, CSS-gated by the body mode
+       class ModeManager sets (body.usermode / body.authormode / the embed
+       strip) -- intentionally NOT JS add/removed so there is no layout
+       flash, mirroring the embed chrome strip. Empty placeholders now;
+       Tasks 16-18 populate them (#author-root = the in-viewer editor UI,
+       #user-transport = the end-user cinematic transport). -->
+  <div id="author-root"></div>
+  <div id="user-transport"></div>
+
+  <!-- Task 13: full-screen intro-fade overlay (the END-USER cinematic
+       reveal, plan SS-A3). ALWAYS in the DOM + CSS-gated by the body mode
+       class (usermode shows it, embed strips it, authormode keeps it
+       hidden) -- same no-JS-toggle / no-layout-flash approach as the
+       Task-12 roots above. The intro controller (JS, below) fades it
+       opacity 1->0 on the REAL ready signal then makes it permanently
+       non-blocking; a hard fallback guarantees it can NEVER trap the
+       scene. type:"none" leaves it untouched (never shown). -->
+  <div id="intro-fade"></div>
+

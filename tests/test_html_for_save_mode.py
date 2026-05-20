@@ -1093,6 +1093,18 @@ def _excise(text: str, start_anchor: str, end_token: str,
 #   baseline). Do NOT relax the assertion; the regression INTENT must
 #   remain enforced, and prior tasks' anchored blocks must stay
 #   asserted-surviving.
+#
+# Modularization note (2026-05-20, T1 of #118): this test reads the
+# GENERATED HTML output of ``html_for("HarnessScene")`` (line ~1230 below)
+# and excises regions from that output, NOT from the template.py source.
+# Therefore the modularization refactor -- which preserves output byte-
+# identity for every test fixture in ``test_html_for_output_pin.py`` --
+# leaves this test passing intact. The 14 region anchor constants below
+# still match the generated HTML's section boundaries (they live in JS /
+# CSS / HTML body content that the orchestrator concatenates verbatim).
+# The new ``test_html_for_output_pin.py`` provides a wider corpus (6
+# fixtures vs this test's single HarnessScene fixture); both are useful
+# regression guards and both stay.
 def test_defaults_are_regression_safe_existing_scenes_byte_identical():
     """Task 17 (author editor -- bottom timeline: scrub/diamonds/
     transport/zoom/multiselect/scale; plan H2/Task-13) is a PURE

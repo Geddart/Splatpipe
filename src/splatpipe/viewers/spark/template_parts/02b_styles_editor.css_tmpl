@@ -1,0 +1,57 @@
+    /* Task 12 -- dual-UI gate (CSS-only; ModeManager sets the body class).
+       #author-root (editor root) and #user-transport (end-user transport)
+       are ALWAYS in the DOM and shown/hidden purely by the mode class, so
+       there is no add/remove layout flash (same approach as the embed strip
+       above, which also hides both). usermode = the default end-user view;
+       authormode = ?author=1. Empty placeholders in Task 12 -- Tasks 16-18
+       populate them. */
+    body.usermode #author-root { display: none; }
+    body.authormode #user-transport { display: none; }
+    body.authormode #path-mini { display: none !important; }
+    /* v2-C Phase 2 REFINE: AUTHOR-ONLY +Add camera + kebab (#cam-menu-btn
+       opens #cam-menu-popup with Rename). CSS-only gate (mirrors the
+       body.authormode #path-mini pattern above) so the chips + popup are
+       always in the DOM (no layout flash) and hidden in every non-author
+       mode (default end-user view, embed). */
+    body:not(.authormode) #add-camera-btn,
+    body:not(.authormode) #cam-menu-btn,
+    body:not(.authormode) #cam-menu-popup { display: none !important; }
+
+    /* Task 13 -- cinematic loading-blur + intro fade (the END-USER shell,
+       plan SS-A3). Same CSS-gating mechanism as the Task-12 dual-UI roots
+       above: #loading-blur and #intro-fade are ALWAYS in the DOM and
+       shown/hidden purely by the body mode class ModeManager sets -- no JS
+       add/remove, no layout flash. They default to display:none and are
+       un-hidden ONLY in usermode (the cinematic end-user path); embed
+       strips them like all other chrome; authormode keeps the plain
+       (pre-Task-13) loading screen + immediate tour so the editor (Tasks
+       16-18) is never obstructed by an opaque fade. RATIONALE (do not
+       regress): the fade overlay is the single worst thing to get wrong --
+       a stuck opaque #intro-fade = the whole scene hidden. The JS makes it
+       fail-safe (fades, then pointer-events:none AND display:none, plus a
+       hard fallback); these rules only decide WHICH modes ever show it. */
+    #loading-blur {
+      position: absolute; inset: 0; z-index: -1;
+      background-position: center; background-size: cover;
+      background-repeat: no-repeat;
+      filter: blur(24px); transform: scale(1.08);
+      display: none;
+    }
+    #intro-fade {
+      position: fixed; inset: 0; z-index: 200;
+      background: #1a1a1a; opacity: 1;
+      transition: opacity var(--intro-ms, 900ms) ease;
+      pointer-events: none;            /* never blocks input, even mid-fade */
+      display: none;
+    }
+    #intro-fade.faded { opacity: 0; }
+    /* usermode = the cinematic end-user view: show both. */
+    body.usermode #loading-blur,
+    body.usermode #intro-fade { display: block; }
+    /* embed strips the cinematic layer too (clean canvas-only iframe). The
+       !important matches the embed strip above and beats the usermode rule
+       even though embed bodies also carry `usermode`. */
+    body.embed #loading-blur,
+    body.embed #intro-fade { display: none !important; }
+  </style>
+</head>

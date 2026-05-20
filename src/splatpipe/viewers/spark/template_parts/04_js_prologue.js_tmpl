@@ -1,0 +1,31 @@
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@@@THREE_VERSION@@/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@@@THREE_VERSION@@/examples/jsm/",
+      "@sparkjsdev/spark": "@@SPARK_FORK_URL@@"
+    }
+  }
+  </script>
+  <script type="module">
+  import * as THREE from 'three';
+  import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+  import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+  import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark';
+
+  const canvas = document.getElementById('app-canvas');
+  const PRIMARY_ASSET = '@@PRIMARY_ASSET@@';
+  const PAGED = @@PAGED_JSON@@;
+  // Save-backend plumbing (publish-time; see html_for). INERT - no code
+  // reads these yet; the Save UI (a later task) will branch on SAVE_MODE
+  // ('cli' = read-only; 'http' = POST edits to SAVE_ENDPOINT). The per-scene
+  // SECRET is NEVER here / in viewer-config.json (http-mode: URL fragment).
+  const SAVE_MODE = @@SAVE_MODE_JSON@@;
+  const SAVE_ENDPOINT = @@SAVE_ENDPOINT_JSON@@;
+
+  // ?stock=1 in the URL strips all Splatpipe perf modifications (no DPR cap,
+  // no mobile Spark-knob bundle, no maxSh cap, no processUploads throttle).
+  // Useful for A/B visual comparisons against pure Spark defaults.
+  const STOCK = new URLSearchParams(location.search).get('stock') === '1';
+  if (STOCK) console.info('[Splatpipe] STOCK mode: all perf mods disabled');
+

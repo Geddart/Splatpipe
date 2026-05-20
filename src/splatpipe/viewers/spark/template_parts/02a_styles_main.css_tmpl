@@ -1,0 +1,244 @@
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    /* iOS Safari: a long-press anywhere will, by default, trigger
+       text-selection / the magnifier loupe / the "Copy · Look up"
+       callout. Our double-tap-and-hold gesture sits exactly in that
+       window, so we have to opt out of all of it on the viewer
+       surface. Setting these on <body> covers the canvas + all
+       overlays (header, hint line, stats) without affecting the
+       label inside the splat-budget <select> dropdown. */
+    body {
+      overflow: hidden; background: #1a1a1a;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;          /* disable iOS long-press "Copy" callout */
+      -webkit-tap-highlight-color: transparent;  /* no grey flash on tap */
+    }
+    /* The <select> dropdown still needs to render its option list
+       normally — re-enable selection on form controls. */
+    select, option { user-select: auto; -webkit-user-select: auto; }
+    /* `touch-action: none` tells the browser we own all touch input
+       on the canvas: no native double-tap-zoom, no panning, no
+       pinch-zoom of the page. OrbitControls' pinch + our custom
+       gestures handle everything. The iOS-specific opts (callout /
+       user-select / tap-highlight) are repeated directly on the
+       canvas because iOS 15+ has regressed the body-level rules on
+       non-text elements — putting them on both is the only reliable
+       cure (Apple Developer Forums threads 691021 + 808606). */
+    canvas {
+      width: 100vw; height: 100vh; display: block;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    #header {
+      position: absolute; top: 0; left: 0; right: 0; z-index: 10;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 20px; pointer-events: none;
+      background: linear-gradient(180deg, rgba(0,0,0,0.7) 0%, rgba(0,0,0,0) 100%);
+    }
+    #header > * { pointer-events: auto; }
+    #title { color: #fff; }
+    #title h1 { font-size: 18px; font-weight: 600; }
+    #title p { font-size: 12px; color: #aaa; margin-top: 2px; }
+
+    #stats {
+      position: absolute; bottom: 0; left: 0; right: 0; z-index: 10;
+      text-align: center; padding: 16px; pointer-events: none;
+      background: linear-gradient(0deg, rgba(0,0,0,0.7) 0%, rgba(0,0,0,0) 100%);
+    }
+    #splat-count {
+      font-size: 28px; font-weight: 300; color: #fff;
+      text-shadow: 0 2px 8px rgba(0,0,0,0.8);
+    }
+    #splat-count .fps {
+      font-size: 14px; opacity: 0.55; margin-left: 12px; vertical-align: middle;
+      font-family: monospace; letter-spacing: 0.5px;
+    }
+
+    #quality-buttons { display: flex; gap: 6px; align-items: center; }
+    .quality-btn {
+      padding: 8px 14px; border: 1px solid rgba(255,255,255,0.3);
+      border-radius: 6px; background: rgba(0,0,0,0.5); color: #ccc;
+      font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.15s;
+    }
+    .quality-btn:hover { background: rgba(255,255,255,0.15); color: #fff; }
+    /* Make <select> visually consistent with the buttons — appearance:none
+       turns off the native chrome that otherwise renders a white control on
+       Chromium-Windows. The .quality-btn rule already provides the
+       semi-transparent background; we just add a caret SVG on top. Note the
+       `background:` shorthand below uses transparent fill so the .quality-btn
+       rgba(0,0,0,0.5) shorthand isn't clobbered — we layer the caret image
+       only, leaving background-color untouched. */
+    select.quality-btn {
+      appearance: none; -webkit-appearance: none; -moz-appearance: none;
+      padding-right: 26px;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M0 0l5 6 5-6z' fill='%23ccc'/></svg>");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+    }
+    /* The popup (option list) itself can't be styled in Chromium — the OS
+       renders it. Setting option colors at least helps in browsers that do. */
+    select.quality-btn option { background: #1a1a1a; color: #ccc; }
+    /* Bench button: solid red pulse when actively recording so the user
+       knows the trace is running and won't accidentally click away. */
+    #bench-btn.recording {
+      background: rgba(220,40,40,0.85); border-color: rgba(255,80,80,0.9); color: #fff;
+      animation: bench-pulse 1s ease-in-out infinite;
+    }
+    @keyframes bench-pulse { 50% { opacity: 0.65; } }
+
+    #loading {
+      position: absolute; inset: 0; z-index: 100;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      background: #1a1a1a; transition: opacity 0.5s;
+    }
+    #loading.hidden { opacity: 0; pointer-events: none; }
+    #loading p { color: #aaa; font-size: 16px; margin-top: 16px; }
+    .spinner {
+      width: 40px; height: 40px;
+      border: 3px solid rgba(255,255,255,0.1); border-top-color: #fff;
+      border-radius: 50%; animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    /* Front-load progress (pillar V): only visible during the initial chunk
+       prefetch phase. Bar width is driven by pager.pageFreelist + time. */
+    #loading-progress-bar {
+      width: 240px; height: 6px;
+      background: rgba(255,255,255,0.15);
+      border-radius: 3px;
+      margin-top: 18px;
+      overflow: hidden;
+    }
+    #loading-progress-fill {
+      height: 100%; background: #fff;
+      width: 0%; transition: width 200ms ease;
+    }
+    #loading-progress-text {
+      margin-top: 8px !important; font-size: 12px !important;
+      color: rgba(255,255,255,0.5) !important;
+    }
+
+    #controls-hint {
+      /* A2: lifted clear of (and z-ordered ABOVE) the author bottom
+         timeline (#editor-timeline is bottom:0, ~70px tall, z-index
+         48) so the keyboard hint is no longer occluded in author
+         mode. In usermode there is no timeline so the slightly
+         higher bottom is harmless. Still pointer-events:none.
+         B3: legibility over a BRIGHT scene -- a subtle semi-opaque
+         dark rounded backing + a stronger text shadow + a higher-
+         contrast colour so the hint is clearly readable in author
+         mode (where it sits over the merged control row) yet stays
+         unobtrusive for end users (small, dim, no pointer events;
+         still embed-hidden via body.embed). A tiny bottom nudge +
+         max-width keeps it from crowding the control row. */
+      position: absolute; bottom: 92px; left: 20px; z-index: 60;
+      color: rgba(255,255,255,0.78); font-size: 11px;
+      pointer-events: none; max-width: min(72vw, 760px);
+      padding: 5px 9px; border-radius: 6px;
+      background: rgba(0,0,0,0.42);
+      -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px);
+      text-shadow: 0 1px 3px rgba(0,0,0,0.85);
+    }
+
+    #css2d-root {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      pointer-events: none; z-index: 15;
+    }
+    .ann-marker { position: absolute; transform: translate(-50%, -100%); pointer-events: auto; cursor: pointer; }
+    .ann-dot {
+      width: 28px; height: 28px; border-radius: 50%; background: #ff6b35; color: white;
+      display: flex; align-items: center; justify-content: center; font-size: 13px;
+      font-weight: 700; border: 2px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+    }
+    .ann-dot.path-active {
+      background: #ff3300; box-shadow: 0 0 14px rgba(255,80,30,0.9);
+      transform: scale(1.15); transition: all 0.2s;
+    }
+    .ann-tooltip {
+      display: none; position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
+      background: rgba(0,0,0,0.9); color: white; padding: 8px 12px; border-radius: 8px;
+      white-space: nowrap; font-size: 12px; line-height: 1.4; max-width: 200px; pointer-events: none;
+    }
+    .ann-tooltip h4 { font-weight: 600; margin: 0 0 2px; }
+    .ann-tooltip p { margin: 0; opacity: 0.8; white-space: normal; }
+    .ann-marker:hover .ann-tooltip { display: block; }
+
+    /* A1: the old mid-screen transport pill is GONE for end users.
+       #path-hud is now a VISUALLY-HIDDEN HOST -- the elements
+       (#path-select / #path-scrub / #path-time / #path-play /
+       #path-stop) STAY in the DOM with their ids intact (~30
+       editor/cinematic/bench call sites resolve them) but are never
+       shown. `display:none !important` even when JS adds `.active`.
+       The visible end-user affordance is the tiny #path-mini cluster
+       below (one subtle text-less play<->stop icon flanked by
+       prev/next-keyframe skip icons). */
+    #path-hud, #path-hud.active { display: none !important; }
+    /* A1/A5: the minimal end-user transport -- prev-key, a tiny
+       subtle text-less play<->stop toggle, next-key. No pill, no
+       label, low opacity; sits where #path-hud used to (bottom-
+       centre). Shown only when a camera path exists (JS adds
+       .shown); the embed strip hides it like all chrome. */
+    #path-mini {
+      position: absolute; bottom: 56px; left: 50%;
+      transform: translateX(-50%);
+      z-index: 12; display: none; align-items: center; gap: 14px;
+      pointer-events: none;
+    }
+    #path-mini.shown { display: flex; }
+    #path-mini button {
+      pointer-events: auto; background: rgba(0,0,0,0.32);
+      border: 0; border-radius: 50%; padding: 0; margin: 0;
+      width: 30px; height: 30px; cursor: pointer;
+      color: rgba(255,255,255,0.62);
+      display: flex; align-items: center; justify-content: center;
+      opacity: 0.5; transition: opacity 0.16s, color 0.16s;
+      -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
+    }
+    #path-mini button:hover {
+      opacity: 0.95; color: rgba(255,255,255,0.95);
+    }
+    #path-mini button svg { width: 15px; height: 15px; display: block; }
+    #path-mini .mini-pp { width: 36px; height: 36px; }
+    #path-mini .mini-pp svg { width: 17px; height: 17px; }
+
+    /* Safari-on-Mac streaming hint (#78). Only ever shown on a Mac running a
+       non-Safari (ANGLE→Metal) browser — see the detector JS for why. */
+    #safari-hint {
+      position: absolute; top: 16px; left: 50%; transform: translateX(-50%);
+      z-index: 16; display: none; align-items: center; gap: 12px;
+      max-width: min(92vw, 580px);
+      background: rgba(0,0,0,0.72); color: rgba(255,255,255,0.82);
+      border: 1px solid rgba(255,255,255,0.16); border-radius: 8px;
+      padding: 8px 10px 8px 14px; font-size: 12px; line-height: 1.35;
+      backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+      box-shadow: 0 4px 18px rgba(0,0,0,0.45);
+    }
+    #safari-hint.show { display: flex; }
+    #safari-hint b { color: #fff; font-weight: 600; }
+    #safari-hint-close {
+      flex: none; width: 20px; height: 20px; line-height: 18px; text-align: center;
+      border: 1px solid rgba(255,255,255,0.22); border-radius: 50%;
+      background: transparent; color: rgba(255,255,255,0.7);
+      font-size: 11px; cursor: pointer; padding: 0;
+    }
+    #safari-hint-close:hover { background: rgba(255,255,255,0.15); color: #fff; }
+
+    /* ?embed=1 — clean canvas-only mode for <iframe> embedding (portfolio
+       sites). Hides every Splatpipe chrome element; the 3D scene,
+       annotations and camera-path playback are untouched. */
+    body.embed #header,
+    body.embed #quality-buttons,
+    body.embed #stats,
+    body.embed #controls-hint,
+    body.embed #safari-hint,
+    body.embed #path-hud,
+    body.embed #path-mini,
+    body.embed #sp-hud,
+    body.embed #author-root,
+    body.embed #user-transport { display: none !important; }
+
