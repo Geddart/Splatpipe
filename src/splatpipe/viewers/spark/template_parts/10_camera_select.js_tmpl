@@ -753,20 +753,19 @@
       _pausedAtPlayer === _player) ? _pausedAt : null;
     _player = buildPlayer(p);
     if (!_player) {
-      // UX-5 (2026-05-20): the prior alert "Path needs at least 2
-      // keyframes." was technically correct but did not tell the
-      // author WHAT TO DO. Reword to point at the K recorder + name
-      // the path + report the current keyframe count, mirroring the
-      // in-viewer wording the +Add-camera button title already uses
-      // ("press Record-K (R) to capture keyframes"). Behaviour is
-      // unchanged (still returns without starting playback) -- only
-      // the user-visible string is improved.
+      // UX hot-fix (2026-05-20): the prior alert nag interrupted the
+      // real authoring loop (the user kept iterating, hit Play, got
+      // the modal, lost focus on the K recorder). A <2-keyframe path
+      // cannot play -- bail silently. console.warn keeps the signal
+      // for devs / harnesses without disrupting the author.
+      // - 0 kf: Play silently no-ops (camera holds at start_view)
+      // - 1 kf: Play silently no-ops (camera holds at that pose)
+      // - >=2 kf: normal playback (existing branch below)
       const _pName = (p && p.name) ? p.name : (p && p.id) ? p.id : '?';
       const _pKfN = (p && Array.isArray(p.keyframes))
         ? p.keyframes.length : 0;
-      alert("Path '" + _pName + "' has only " + _pKfN +
-        " keyframe(s). Position the camera and press K to add " +
-        "more, then Play.");
+      console.warn("Path '" + _pName + "' has only " + _pKfN +
+        " keyframe(s) -- Play deferred until >=2 keyframes.");
       return;
     }
     // Clear paused state (we are starting/resuming playback now).

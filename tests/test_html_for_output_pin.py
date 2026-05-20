@@ -66,6 +66,11 @@ PIN UPDATES:
     so the cli-mode token continues to work; only http-mode was
     broken. All 6 fixtures shifted by the same +430 byte delta in
     lockstep; pins re-pinned to the new baseline.
+  * 2026-05-20 (#123 hot-fix): the ``startPath`` <2-keyframe alert
+    is now a silent ``console.warn`` + early-return (user feedback:
+    the modal interrupted the authoring loop). Identical behaviour
+    other than the suppressed alert. All 6 fixtures shifted by the
+    same -16 byte delta in lockstep; pins re-pinned.
 """
 
 from __future__ import annotations
@@ -83,42 +88,44 @@ from splatpipe.viewers.spark.template import html_for
 # re-pinned 2026-05-20 again (Phase 1 Q5: #author= -> #token= rename +
 # Save body shape correction; all 6 fixtures +1408 bytes in lockstep),
 # then re-pinned 2026-05-20 a third time (Phase 1 live-verify slug
-# lower-case fix; all 6 fixtures +430 bytes in lockstep).
+# lower-case fix; all 6 fixtures +430 bytes in lockstep), then re-pinned
+# 2026-05-20 (#123 hot-fix: startPath empty-path alert -> silent
+# console.warn; all 6 fixtures -16 bytes in lockstep).
 CORPUS: list[tuple[str, tuple, dict, int, str]] = [
     (
         "harness_defaults",
         ("HarnessScene",),
         {},
-        473692,
-        "796c2708f5843ec9a91612857ebc73947eb891f4a8ed3f0449dccb39a9c6ff5e",
+        473676,
+        "e53af081af2f2e6467abb5d6f345d35f5b3c5f204f16f11bb720973d27ed2b45",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        473664,
-        "5c2d949db94f0615240a31fdc43759f6ed688f1d9eddd521bec361dea00205db",
+        473648,
+        "55347f76630bf059c741e97e1ada0ba94fa7ef2b2470a342e0e0594c78bbc1a6",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        473659,
-        "6a7a10f131efd2e343b56858f5cd82a51ec9804de00d9712f9ee0fccda926e21",
+        473643,
+        "05c3191a48c5b4e11afea40d89bfc9036791894a72e2cf1aab77b774612ea7e5",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        473638,
-        "a6cdc6cac7b604ecb0a08198aeef5eb685a452a41919f57cd842df79bed0725b",
+        473622,
+        "0049361362770df4d8487098b1030cdf2bdc5ddba3fd2a6d176b76a7d3f5c2bb",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        473703,
-        "964bc62a9a05cc75349cd85df101a7bf56653e28de40eda66952b32733984212",
+        473687,
+        "bbf5a2fa515d85e708727fbae4e0c05f276c1b2b76efb4bd1b7fe859ad341404",
     ),
     (
         "share_card",
@@ -128,8 +135,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        473562,
-        "2088ddb8ef95b7f8dcda4c1382bbbf9522721fb384796ac3be4069dcc8c41706",
+        473546,
+        "1fe8a4ed9c4657ef12827c01d42f881a1b6327db2435f28c557a8bb2c103dfec",
     ),
 ]
 

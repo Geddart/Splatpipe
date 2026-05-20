@@ -610,9 +610,11 @@ _AUTHOR_UX_5_MARKERS = (
     # the second keyframe on a fresh 1-kf path (so the spline gains
     # a non-zero duration and becomes scrub-able after two K presses).
     "const _GZ_DEFAULT_KF_DT = 2.0;",
-    # Fix-3: startPath() reworded <2-kf alert text telling the author
-    # WHAT TO DO instead of just stating the precondition.
-    "Position the camera and press K to add",
+    # Fix-3 (#123 hot-fix 2026-05-20): the prior alert nag is now a
+    # silent ``console.warn`` + early-return. The deferred-play
+    # wording uniquely identifies the silent-no-op branch in
+    # ``startPath`` and is absent in the pre-UX-5 / pre-#123 HEAD.
+    "Play deferred until >=2 keyframes.",
 )
 
 
@@ -679,13 +681,34 @@ def test_2026_05_20_ux5_one_keyframe_path_authoring_unblock():
         "the kf #2 placement"
     )
 
-    # Fix-3 STRUCTURAL invariant: the prior alert literal "Path needs
-    # at least 2 keyframes." is REMOVED entirely from the rendered
-    # HTML; the new alert names the path + reports the keyframe count
-    # + tells the author what to do.
+    # Fix-3 STRUCTURAL invariant (#123 hot-fix 2026-05-20):
+    # the empty-path Play branch is a silent ``console.warn`` + early
+    # return -- the prior alert literals (both the original "Path needs
+    # at least 2 keyframes." nag AND the intermediate "Position the
+    # camera and press K to add" reword) are both fully removed.
     assert "Path needs at least 2 keyframes." not in html, (
-        "UX-5 fix-3: the prior un-actionable alert literal must be "
+        "Fix-3: the original un-actionable alert literal must be "
         "fully removed from the rendered HTML"
+    )
+    assert "Position the camera and press K to add" not in html, (
+        "Fix-3 (#123 hot-fix): the intermediate reworded alert must "
+        "also be fully removed (it became a silent console.warn)"
+    )
+    # The startPath empty-path branch now logs a console.warn instead
+    # of an alert. Bound the body by the closing `}` paired with the
+    # opening `function startPath(pathId) {` (the next `function`
+    # declaration is the simplest sibling boundary -- the body is
+    # ~2.8k chars so a 4k slice is safe and avoids a brittle exact-
+    # function-name follow-up that the next refactor might rename).
+    sp_i = html.index("function startPath(pathId) {")
+    sp_body = html[sp_i:sp_i + 4000]
+    assert "console.warn(\"Path '\"" in sp_body, (
+        "Fix-3 (#123): startPath empty-path branch must use "
+        "console.warn (not alert)"
+    )
+    assert "alert(\"Path '\"" not in sp_body, (
+        "Fix-3 (#123): startPath empty-path branch must NOT use "
+        "alert() anymore"
     )
 
     # (NEGATIVE CONTROL) the committed pre-UX-5 HEAD (2b92e75 -- the
