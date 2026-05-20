@@ -9,7 +9,7 @@ CLI-first Gaussian splatting pipeline. Takes COLMAP data through: auto-clean →
 ```bash
 cd H:\001_ProjectCache\1000_Coding\Splatpipe
 pip install -e ".[dev]"
-pytest tests/ -v                    # Run tests (686 collected; 660 passed, 26 skipped, ~27s)
+pytest tests/ -v                    # Run tests (713 collected; 687 passed, 26 skipped clean, ~26s)
 splatpipe --help                    # CLI commands
 splatpipe web                       # Launch dashboard
 ```
@@ -60,6 +60,7 @@ splatpipe/                    # repo root
       spcp_token.py           # SPCP1 camera-path token codec (CLI/viewer wire contract; JS port byte-identical; v0.8+)
       config_merge.py         # Shared camera-scope merge core (single source of truth; primary_asset force-kept; v0.8+)
       config_safety.py        # Public viewer-config sanitiser: allow-list top-level + save_backend sub-keys (bug-audit #3; v0.8+)
+      path_safety.py          # Shared path-containment helper: is_contained() / ensure_contained() via Path.resolve().relative_to(); replaces unsafe str.startswith (bug-audit #6; v0.8+)
       scene_cuts.py           # Multi-camera clip sequence validation + ordering helpers (cameras/cuts/intro/titles; v0.8+)
       sh_encoding.py          # ShEncoding enum (auto/paged/clamped); typed --sh-encoding CLI choice; bug-audit #1 + #2; v0.8+
 
@@ -147,6 +148,8 @@ splatpipe/                    # repo root
     test_cloudflare_save_oracle.py # Cloudflare Worker save cross-language merge oracle (v0.8+)
     test_publish_config_sanitize.py # Public viewer-config sanitiser + publish_scene secret-leak regression (bug-audit #3; v0.8+)
     test_web_cmd_security.py  # `splatpipe web` default-loopback + --unsafe-network opt-in (bug-audit #5; v0.8+)
+    test_path_safety.py       # Shared path-containment helper: sibling-prefix attack rejection (bug-audit #6; v0.8+)
+    test_serve_cmd_security.py # `splatpipe serve` preview server containment regression (bug-audit #6; v0.8+)
     manual/                   # Browser harnesses (not collected): keyframe-editor.html, pc-compare.html, etc.
 ```
 
@@ -370,7 +373,7 @@ Key config sections: `[tools]`, `[colmap_clean]`, `[postshot]` (profile, gpu, ma
 ## Tests
 
 ```bash
-pytest tests/ -v              # 686 collected (660 passed, 26 skipped)
+pytest tests/ -v              # 713 collected (687 passed, 26 skipped)
 pytest tests/ -k colmap       # Just COLMAP tests
 pytest tests/ -k integration  # End-to-end with tiny data
 pytest tests/ -k trainers     # Trainer abstraction tests

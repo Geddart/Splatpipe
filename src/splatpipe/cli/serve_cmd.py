@@ -16,6 +16,7 @@ import typer
 from rich.console import Console
 
 from ..core.constants import FOLDER_OUTPUT
+from ..core.path_safety import PathContainmentError, ensure_contained
 from ..core.project import Project
 from ..steps.lod_assembly import _VIEWER_TEMPLATE
 
@@ -82,9 +83,13 @@ def serve(
 
     @app.get("/{file_path:path}")
     def serve_file(file_path: str):
-        target = (output_dir / file_path).resolve()
-        out_resolved = output_dir.resolve()
-        if not str(target).startswith(str(out_resolved)):
+        # Audit #6: ``str(p).startswith(str(root))`` was vulnerable to a
+        # sibling-prefix attack (``output_evil`` matches ``output``).
+        # ``ensure_contained`` uses ``Path.resolve().relative_to()`` so
+        # only a real sub-path of ``output_dir`` is accepted.
+        try:
+            target = ensure_contained(output_dir / file_path, output_dir)
+        except PathContainmentError:
             return HTMLResponse("Forbidden", status_code=403)
         if not target.is_file():
             return HTMLResponse("Not found", status_code=404)

@@ -750,6 +750,61 @@ class TestPreviewRoute:
         r = web_env["client"].get(f"/projects/{path}/preview/nonexistent.html")
         assert r.status_code == 404
 
+    def test_preview_rejects_sibling_prefix_attack(self, web_env):
+        """Bug-audit #6: a sibling directory whose name shares the
+        textual prefix of ``05_output`` (e.g. ``05_output_evil``) must NOT
+        be reachable via the preview route.
+
+        The OLD ``str(target).startswith(str(output_dir.resolve()))``
+        check passed this attack (``05_output_evil`` literally starts
+        with ``05_output``); the new ``Path.resolve().relative_to``
+        primitive rejects it.
+        """
+        proj = web_env["project"]
+        # Create a sibling directory next to the project's 05_output.
+        # ``proj.root / "05_output_evil"`` shares the literal prefix with
+        # ``proj.root / "05_output"`` but is NOT inside it.
+        evil_dir = proj.root / "05_output_evil"
+        evil_dir.mkdir()
+        secret_file = evil_dir / "secrets.txt"
+        secret_file.write_text("VERY SECRET CONTENT")
+
+        path = str(proj.root)
+        # Try to escape via a parent-traversal that lands in the sibling.
+        r = web_env["client"].get(
+            f"/projects/{path}/preview/../05_output_evil/secrets.txt"
+        )
+        # Either 403 (route rejected) or 404 (URL normalised before
+        # routing). Crucially: the secret content MUST NOT be in the body.
+        assert r.status_code in (403, 404), r.text
+        assert "VERY SECRET CONTENT" not in r.text
+
+    def test_preview_route_uses_path_safety_helper(self):
+        """Lock the refactor: ``projects.py`` must import the shared
+        ``path_safety`` helper (regression guard for audit #6)."""
+        import re
+        from pathlib import Path
+
+        import splatpipe.web.routes.projects as projects_mod
+
+        source = Path(projects_mod.__file__).read_text(encoding="utf-8")
+        assert "path_safety" in source, (
+            "projects.py no longer imports path_safety -- audit #6 "
+            "refactor missing or regressed"
+        )
+        # And the OLD unsafe ``str(p).startswith(str(root))`` containment
+        # antipattern must be gone from EXECUTABLE code. Strip comment
+        # lines first so the literal description of the vulnerability in
+        # post-refactor docstrings does not trip this guard.
+        code_only = "\n".join(
+            line for line in source.splitlines()
+            if not re.match(r"\s*#", line)
+        )
+        assert ".startswith(str(" not in code_only, (
+            "Unsafe ``str(p).startswith(str(root))`` containment pattern "
+            "found in projects.py executable code -- audit #6 regression"
+        )
+
 
 class TestHistorySection:
     def test_detail_shows_history(self, web_env):

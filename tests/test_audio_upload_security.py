@@ -311,6 +311,26 @@ class TestAudioUploadHappyPath:
         assert data["path"] == "assets/audio/test.mp3"
         assert (_audio_dir(web_env) / "test.mp3").exists()
 
+    def test_uses_shared_path_safety_helper(self):
+        """Audit #6 follow-up: audio_upload's containment check must use
+        the shared ``core/path_safety`` helper (the TODO from #7 closed).
+
+        Lock the import + remove the old inline-relative_to pattern so a
+        future contributor cannot quietly re-introduce a divergent check.
+        """
+        import splatpipe.web.routes.projects as projects_mod
+
+        source = Path(projects_mod.__file__).read_text(encoding="utf-8")
+        # The shared helper must be referenced somewhere in the module.
+        assert "path_safety" in source
+        # The TODO that pointed at #110 must be gone (now closed). Use the
+        # exact ``TODO(task #110)`` form so factual references to the audit
+        # ticket in post-refactor comments don't trip the guard.
+        assert "todo(task #110)" not in source.lower(), (
+            "TODO(task #110) still open in projects.py -- audit #6 "
+            "refactor not yet complete"
+        )
+
     def test_writes_inside_audio_dir_only(self, web_env):
         """Defense-in-depth: every successful upload must resolve INSIDE the audio dir.
 

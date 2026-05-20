@@ -15,6 +15,7 @@ from ...core.constants import (
     STEP_CLEAN, STEP_TRAIN, STEP_REVIEW, STEP_ASSEMBLE, STEP_EXPORT,
     FOLDER_COLMAP_SOURCE, FOLDER_COLMAP_CLEAN, FOLDER_TRAINING, FOLDER_REVIEW, FOLDER_OUTPUT,
 )
+from ...core.path_safety import PathContainmentError, ensure_contained
 from ...core.project import Project
 from ..runner import get_runner
 
@@ -1225,9 +1226,9 @@ _AUDIO_UPLOAD_ALLOWED_EXTS = {
 # Defense-in-depth size cap for audio uploads. 50 MiB is well above any
 # normal scene-audio loop and far below any reasonable abuse vector.
 # (No project-wide audio size cap exists in config/defaults.toml; if one is
-# ever added, route this through it instead. TODO(task #110): factor the
-# path-safety + size-limit helpers into a single shared utility used by every
-# upload route.)
+# ever added, route this through it instead. The path-safety half of this
+# helper was extracted into ``core/path_safety.py`` -- the size-limit half
+# is still local to this route and can be moved alongside it later.)
 _AUDIO_UPLOAD_MAX_BYTES = 50 * 1024 * 1024
 
 
@@ -1309,12 +1310,14 @@ async def upload_audio(request: Request, project_path: str):
     dest = audio_dir / safe_name
 
     # --- Defense-in-depth containment check ---------------------------------
-    # Resolve both sides and require ``dest`` to live INSIDE ``audio_dir``.
-    # ``Path.relative_to`` raises ValueError on escape; we never write on
-    # ValueError. (TODO(task #110): centralise this in a shared helper.)
+    # Require ``dest`` to live INSIDE ``audio_dir`` after resolution. Uses
+    # the shared ``ensure_contained`` helper (audit #6) so the sibling-prefix
+    # attack vector is closed identically here and in every other containment
+    # callsite in the project. The earlier filename sanitiser already
+    # rejects path separators; this is the defense-in-depth second line.
     try:
-        dest.resolve().relative_to(audio_dir.resolve())
-    except ValueError:
+        ensure_contained(dest, audio_dir)
+    except PathContainmentError:
         return JSONResponse(
             {"ok": False, "error": "Resolved destination is outside the audio directory"},
             status_code=400,
@@ -1422,9 +1425,13 @@ async def preview_file(project_path: str, file_path: str):
     """Serve output files for local PlayCanvas viewer preview."""
     proj = Project(Path(project_path))
     output_dir = proj.get_folder(FOLDER_OUTPUT)
-    full = (output_dir / file_path).resolve()
-    # Security: ensure file is inside output_dir
-    if not str(full).startswith(str(output_dir.resolve())):
+    # Audit #6: the old ``str(p).startswith(str(root))`` containment check
+    # was vulnerable to a sibling-prefix attack (``05_output_evil`` literally
+    # starts with ``05_output``). ``ensure_contained`` uses
+    # ``Path.resolve().relative_to()`` so only a real sub-path is accepted.
+    try:
+        full = ensure_contained(output_dir / file_path, output_dir)
+    except PathContainmentError:
         return HTMLResponse("Forbidden", status_code=403)
     if not full.is_file():
         return HTMLResponse("Not found", status_code=404)
