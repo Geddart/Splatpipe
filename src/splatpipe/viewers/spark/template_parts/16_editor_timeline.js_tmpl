@@ -76,7 +76,14 @@
     // (was a hard-coded 24) and the strip grew to keep the same lane
     // height for the ruler/diamonds/playhead.
     const _TL_BAR_H = 30;          // transport-bar band height (px)
-    const _TL_H = 64 + (_TL_BAR_H - 24); // strip height (px)
+    // Base strip height (transport bar + ruler + diamond row) BEFORE
+    // any module lane bands. The strip GROWS by sum(lane.rows) *
+    // _TL_LANE_ROW_H once modules register their timeline lanes
+    // (UX-Phase11-R2 #11). _TL_H is the live (current) strip height,
+    // recomputed by _tlSyncHeight() whenever the lane set changes.
+    const _TL_H_BASE = 64 + (_TL_BAR_H - 24); // base strip height (px)
+    const _TL_LANE_ROW_H = 22;     // per-lane-ROW band height (px)
+    let _TL_H = _TL_H_BASE;        // live strip height (px)
     const _TL_RULER_H = 16;        // seconds-ruler band height (px)
     let _tlZoom = 80;              // px / second (wheel-tunable)
     let _tlScroll = 0;             // seconds at the lane's left edge
@@ -227,20 +234,31 @@
     _tlBar.appendChild(_tlDivider());
     _tlBar.appendChild(_tlLoop); _tlBar.appendChild(_tlFpsBtn);
 
-    // ---- Phase 2C (#122 \u00A74.1.1): Prev/Next-keyframe skip + total-time
-    //      input + auto toggle. Prev/Next consult the SORTED-by-t kf
-    //      view as the source of truth (the editor permits dragging a
-    //      diamond past its neighbours, so raw array order is NOT
-    //      chronological). Total-time edits the path's
-    //      `total_duration_s` (per spec \u00A73.7) and pushes ONE
-    //      EditHistory snapshot on commit (Enter/blur). The auto
-    //      toggle flips the field between `null` (auto -> derive from
-    //      last kf with a 10.0s floor) and the typed value (manual).
+    // ---- Phase 2C (#122 \u00A74.1.1): Prev/Next-keyframe skip + a single
+    //      always-editable LENGTH field. Prev/Next consult the
+    //      SORTED-by-t kf view as the source of truth (the editor
+    //      permits dragging a diamond past its neighbours, so raw
+    //      array order is NOT chronological).
+    //  UX-Phase11-R2 #5 (2026-05-21): the prior auto/manual toggle is
+    //      REMOVED. User: "I don't even know what auto/manual means.
+    //      It should just be length, nothing else." The field is now
+    //      ALWAYS editable + labelled "Length [N] s". It pre-fills
+    //      with `_effectiveScrubRange(p)[1]` (which is the kf-derived
+    //      ceiling -- max(last kf.t, 10) -- while total_duration_s is
+    //      null); the moment the user edits it, `total_duration_s` is
+    //      set to the typed value and sticks. Python
+    //      effective_scrub_range is UNCHANGED (positive
+    //      total_duration_s wins, null = derive); we simply stop ever
+    //      writing null from the UI.
     const _tlPrevKf = _tlBtn('\u25C0\uFE0F|', 'Prev keyframe (Ctrl+Left)');
     const _tlNextKf = _tlBtn('|\u25B6\uFE0F', 'Next keyframe (Ctrl+Right)');
-    // Total-time input -- numeric, narrow (4ch); editable only when
-    // the auto toggle is OFF. Always reflects the current scrub-range
-    // ceiling (`effectiveScrubRange[1]`).
+    // Length caption -- a small label so the field reads as "Length".
+    const _tlTotalLabel = document.createElement('span');
+    _tlTotalLabel.textContent = 'Length';
+    _tlTotalLabel.style.cssText = 'color:#9aa;font:11px monospace;';
+    // Length input -- numeric, narrow; ALWAYS editable. Always reflects
+    // the current scrub-range ceiling (`effectiveScrubRange[1]`) until
+    // the user types a value, after which it shows total_duration_s.
     const _tlTotalInput = document.createElement('input');
     _tlTotalInput.type = 'number';
     _tlTotalInput.min = '0';
@@ -249,16 +267,15 @@
       'background:rgba(255,255,255,0.10);color:#eee;border:0;' +
       'border-radius:5px;padding:3px 6px;font:12px monospace;' +
       'line-height:1;width:56px;';
-    _tlTotalInput.title = 'Total path duration (seconds)';
+    _tlTotalInput.title = 'Path length (seconds)';
     const _tlTotalUnit = document.createElement('span');
-    _tlTotalUnit.textContent = 's total';
+    _tlTotalUnit.textContent = 's';
     _tlTotalUnit.style.cssText = 'color:#9aa;font:11px monospace;';
-    const _tlAutoBtn = _tlBtn('auto', 'Auto-derive total time from keyframes');
     _tlBar.appendChild(_tlPrevKf);
     _tlBar.appendChild(_tlNextKf);
+    _tlBar.appendChild(_tlTotalLabel);
     _tlBar.appendChild(_tlTotalInput);
     _tlBar.appendChild(_tlTotalUnit);
-    _tlBar.appendChild(_tlAutoBtn);
 
     _tlStrip.appendChild(_tlBar);
     // A4: publish the transport row so _gzInit (runs AFTER this IIFE)
@@ -289,7 +306,35 @@
 
     const _tlCtx = _tlCanvas.getContext('2d');
     let _tlW = 0, _tlHpx = 0, _tlDpr = 1;
+    // UX-Phase11-R2 #11: total ROWS contributed by every registered
+    // module lane (each lane advertises a `rows` count). The strip
+    // grows by this * _TL_LANE_ROW_H so the lane bands are visible
+    // below the diamond row. TDZ-safe: _tlLaneList() reads the lane
+    // consts which are initialised later in this IIFE, but this is only
+    // ever CALLED at runtime (from _tlResize via rAF / on register),
+    // by which point they exist.
+    function _tlTotalLaneRows() {
+      let rows = 0;
+      try {
+        const lanes = _tlLaneList();
+        for (const e of lanes) {
+          const r = e && e.lane && (e.lane.rows | 0);
+          rows += (r && r > 0) ? r : 1;
+        }
+      } catch (e) {}
+      return rows;
+    }
+    // Recompute the live strip height from the base + lane rows and
+    // push it onto the strip + lane inline heights (they were created
+    // with the base height baked into cssText). The lane fills the
+    // strip below the transport bar.
+    function _tlSyncHeight() {
+      _TL_H = _TL_H_BASE + _tlTotalLaneRows() * _TL_LANE_ROW_H;
+      _tlStrip.style.height = _TL_H + 'px';
+      _tlLane.style.height = (_TL_H - _TL_BAR_H) + 'px';
+    }
     function _tlResize() {
+      _tlSyncHeight();
       const r = _tlLane.getBoundingClientRect();
       _tlDpr = Math.max(1, window.devicePixelRatio || 1);
       _tlW = Math.max(1, Math.floor(r.width));
@@ -373,16 +418,25 @@
         ctx.fillText(lbl, x + 3, 2);
       }
 
-      // Selection marquee (box-select in progress).
+      // Selection marquee (box-select in progress). Bounded to the
+      // diamond band (above the module lane bands) so a marquee never
+      // paints over the cuts/other lanes below.
       if (_tlDragMode === 'box') {
         const bx = Math.min(_tlBoxX0, _tlBoxX1);
         const bw = Math.abs(_tlBoxX1 - _tlBoxX0);
+        const diamBandBot = _tlLaneBandTop();
         ctx.fillStyle = 'rgba(53,224,255,0.14)';
         ctx.strokeStyle = 'rgba(53,224,255,0.6)';
-        ctx.fillRect(bx, _TL_RULER_H, bw, _tlHpx - _TL_RULER_H);
+        ctx.fillRect(bx, _TL_RULER_H, bw, diamBandBot - _TL_RULER_H);
         ctx.strokeRect(bx + 0.5, _TL_RULER_H + 0.5,
-          bw, _tlHpx - _TL_RULER_H - 1);
+          bw, diamBandBot - _TL_RULER_H - 1);
       }
+
+      // UX-Phase11-R2 #11: render the registered module lanes (Cuts +
+      // any future lane) in their own horizontal bands BELOW the
+      // diamond row. Drawn BEFORE the no-path early-return so a scene
+      // with clips but no active camera-path still shows its cuts lane.
+      _tlDrawLanes(ctx, _tlPlayheadT());
 
       if (!p || !p.keyframes || !p.keyframes.length) return;
       const cy = _tlDiamRowY();
@@ -435,6 +489,63 @@
         ctx.stroke();
       }
       void dur;
+    }
+
+    // ---- UX-Phase11-R2 #11: module-lane band rendering. The diamond
+    //      band occupies the BASE lane-canvas height (_TL_H_BASE -
+    //      _TL_BAR_H = ruler + diamond row); module lanes stack below
+    //      it, each in a band of (lane.rows * _TL_LANE_ROW_H) px with a
+    //      left gutter (_LABEL_W) carrying the lane's label and the
+    //      lane's own render() filling the rest of the width. The lane
+    //      render signature is the spec §4.10 contract the modules
+    //      implement: render(ctx, x, y, w, h, playhead).
+    function _tlLaneBandTop() {
+      // Canvas-y where the first module lane band starts (the bottom of
+      // the fixed ruler+diamond band).
+      return _TL_H_BASE - _TL_BAR_H;
+    }
+    function _tlDrawLanes(ctx, playheadT) {
+      if (!ctx) return;
+      let lanes;
+      try { lanes = _tlLaneList(); } catch (e) { return; }
+      if (!lanes || !lanes.length) return;
+      const laneW = Math.max(1, _tlW - _LABEL_W);
+      let y = _tlLaneBandTop();
+      for (const e of lanes) {
+        const lane = e && e.lane;
+        if (!lane) continue;
+        const rows = (lane.rows && lane.rows > 0) ? (lane.rows | 0) : 1;
+        const bandH = rows * _TL_LANE_ROW_H;
+        // Separator line above the band.
+        ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(0, y + 0.5);
+        ctx.lineTo(_tlW, y + 0.5);
+        ctx.stroke();
+        // Left-gutter label cell (its own faint background + the lane
+        // name, vertically centred, clipped to the gutter width).
+        ctx.fillStyle = 'rgba(255,255,255,0.05)';
+        ctx.fillRect(0, y, _LABEL_W, bandH);
+        ctx.fillStyle = '#9aa';
+        ctx.font = '9px monospace';
+        ctx.textBaseline = 'middle';
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(0, y, _LABEL_W - 2, bandH);
+        ctx.clip();
+        ctx.fillText(lane.label || e.name || '', 3, y + bandH / 2);
+        ctx.restore();
+        // The lane's own render fills the area to the right of the
+        // gutter. Fault-tolerant: a throwing/absent render must not
+        // break the diamond row or the playhead overlay.
+        if (typeof lane.render === 'function') {
+          try {
+            lane.render(ctx, _LABEL_W, y, laneW, bandH, playheadT);
+          } catch (err) {}
+        }
+        y += bandH;
+      }
     }
 
     // ---- Playhead position (px) from the live player clock if a
@@ -529,21 +640,37 @@
       }
       return [0.0, Math.max(last, 10.0)];
     }
-    function _tlIsAutoTotal(p) {
-      if (!p) return true;
-      const total = p.total_duration_s;
-      return !(total !== null && total !== undefined && +total > 0);
-    }
+    // UX-Phase11-R2 #5 (2026-05-21): the auto/manual concept is GONE
+    // from the UI. The Length field is a single always-editable input;
+    // refreshing it just mirrors the current effective ceiling (which
+    // is total_duration_s when set, else the kf-derived max(last, 10)).
     function _tlRefreshTotalUI() {
       const p = _tlActivePath();
-      const isAuto = _tlIsAutoTotal(p);
       const [, hi] = _effectiveScrubRange(p);
       _tlTotalInput.value = (Math.round(hi * 100) / 100).toString();
-      _tlTotalInput.disabled = !!isAuto;
-      _tlTotalInput.style.opacity = isAuto ? '0.55' : '1';
-      _tlAutoBtn.textContent = isAuto ? 'auto' : 'manual';
-      _tlAutoBtn.style.background = isAuto
-        ? 'rgba(53,224,255,0.32)' : 'rgba(255,255,255,0.10)';
+    }
+    // UX-Phase11-R2 #4 (2026-05-21): auto-fit the px mapping so the full
+    // 0..length range maps to the lane width. Recomputes _tlZoom from
+    // the effective scrub-range ceiling + resets the left-edge scroll
+    // to 0, then redraws so the diamonds reflow to fit. Called on a
+    // Length commit AND on initial path load / path-select so the
+    // default view always frames the whole path. Wheel-zoom still
+    // overrides afterwards (this only fits on a length/path change, not
+    // every frame). Guards a not-yet-measured lane (_tlW may be 0
+    // before the first _tlResize) + a degenerate range.
+    function _tlFitToPath() {
+      const p = _tlActivePath();
+      const [, hi] = _effectiveScrubRange(p);
+      const usable = _tlW - 2 * _TL_PAD;
+      if (usable > 1 && isFinite(hi) && hi > 1e-6) {
+        let nz = usable / hi;
+        if (nz < _TL_ZOOM_MIN) nz = _TL_ZOOM_MIN;
+        if (nz > _TL_ZOOM_MAX) nz = _TL_ZOOM_MAX;
+        _tlZoom = nz;
+      }
+      _tlScroll = 0;
+      _tlDraw();
+      _tlSyncPlayhead();
     }
     function _tlSortedKfTimes(p) {
       if (!p || !p.keyframes) return [];
@@ -1002,28 +1129,38 @@
       _tlDraw();                 // relabel only; NO _tlAfterEdit()
     });
 
-    // ---- Phase 2C handlers: Prev/Next-keyframe skip + total-time
-    //      input commit + auto toggle. Prev/Next are NAVIGATION
-    //      (no EditHistory snapshot). Total-time commit + auto toggle
-    //      are EDITS (one snapshot each, on commit -- never per
-    //      keystroke).
+    // ---- Phase 2C handlers: Prev/Next-keyframe skip + the Length
+    //      input commit. Prev/Next are NAVIGATION (no EditHistory
+    //      snapshot). The Length commit is an EDIT (one snapshot, on
+    //      commit -- never per keystroke).
+    //  UX-Phase11-R2 #5 (2026-05-21): no more auto/manual gate -- the
+    //      field is always editable. A commit writes the parsed value
+    //      to `total_duration_s` (positive only; a non-positive /
+    //      empty entry reverts to the last value rather than clearing
+    //      to null, so the field never falls back into "auto"). ONE
+    //      EditHistory snapshot on commit, labelled 'path-length'.
+    //  UX-Phase11-R2 #4 (2026-05-21): after writing the new length the
+    //      timeline auto-fits (_tlFitToPath recomputes _tlZoom so the
+    //      full 0..length range fills the lane width + resets scroll)
+    //      so the diamonds reflow to the new range instead of staying
+    //      pinned at the old pixel positions.
     _tlPrevKf.addEventListener('click', () => { _tlSkipPrev(); });
     _tlNextKf.addEventListener('click', () => { _tlSkipNext(); });
     function _tlCommitTotalInput() {
       const p = _tlActivePath();
       if (!p) return;
-      // Auto mode -> commit no-op (the input is disabled anyway).
-      if (_tlIsAutoTotal(p)) { _tlRefreshTotalUI(); return; }
       const v = parseFloat(_tlTotalInput.value);
-      const next = (isFinite(v) && v > 0) ? v : null;
       const prev = (p.total_duration_s !== undefined &&
         p.total_duration_s !== null) ? +p.total_duration_s : null;
-      if (next === prev) { _tlRefreshTotalUI(); return; }
-      _tlPushHistorySnap('path-total-time');
-      p.total_duration_s = next;
+      // A non-positive / non-finite entry is rejected -> revert the
+      // field to the current effective ceiling (no null write, so the
+      // length never silently reverts to the kf-derived auto value).
+      if (!(isFinite(v) && v > 0)) { _tlRefreshTotalUI(); return; }
+      if (v === prev) { _tlRefreshTotalUI(); return; }
+      _tlPushHistorySnap('path-length');
+      p.total_duration_s = v;
       _tlRefreshTotalUI();
-      _tlDraw();
-      _tlSyncPlayhead();
+      _tlFitToPath();
     }
     _tlTotalInput.addEventListener('change', _tlCommitTotalInput);
     _tlTotalInput.addEventListener('keydown', (ev) => {
@@ -1032,23 +1169,6 @@
         try { _tlTotalInput.blur(); } catch (e) {}
         _tlCommitTotalInput();
       }
-    });
-    _tlAutoBtn.addEventListener('click', () => {
-      const p = _tlActivePath();
-      if (!p) return;
-      _tlPushHistorySnap('path-auto-toggle');
-      const wasAuto = _tlIsAutoTotal(p);
-      if (wasAuto) {
-        // auto -> manual: bake the current effective ceiling.
-        const [, hi] = _effectiveScrubRange(p);
-        p.total_duration_s = hi;
-      } else {
-        // manual -> auto: clear the field.
-        p.total_duration_s = null;
-      }
-      _tlRefreshTotalUI();
-      _tlDraw();
-      _tlSyncPlayhead();
     });
 
     // ---- Phase 2C hotkeys: Ctrl+Left / Ctrl+Right -> Prev/Next-kf
@@ -1119,31 +1239,38 @@
     // synced from the ONE OverlayScene tick (no parallel rAF: we
     // fan a tiny per-frame playhead sync off the SAME tick the
     // Task-16 overlay already uses -- see the layer below).
-    requestAnimationFrame(() => { _tlResize(); _tlRefreshTotalUI(); });
+    //  UX-Phase11-R2 #4: fit the px mapping to the active path on the
+    //      first measured layout so the default view frames the whole
+    //      0..length range (not a fixed 80 px/s window). _tlResize runs
+    //      first so _tlW is non-zero before _tlFitToPath reads it.
+    requestAnimationFrame(() => {
+      _tlResize();
+      _tlRefreshTotalUI();
+      _tlFitToPath();
+    });
 
-    // ---- Phase 2D (#122 §4.10): multi-lane bottom-timeline registry
-    //      scaffold. The existing _tlDraw owns the single-lane
-    //      canvas; v1 ships only the REGISTRY infrastructure so a
-    //      module can advertise its timeline-lane intent
+    // ---- Phase 2D (#122 §4.10): multi-lane bottom-timeline registry.
+    //      A module advertises a timeline-lane intent
     //      (timelineLane = { rows, label, render(ctx, x, y, w, h, t) })
-    //      via EditorModuleRegistry. The actual visual integration
-    //      (multi-lane stacking + per-lane rendering + the left-
-    //      gutter labels) lands in Phases 3-7 alongside the modules
-    //      that own each lane. For Phase 2D the registry exposes:
+    //      via EditorModuleRegistry. The registry exposes:
     //        timelineLanes.register(module)  -- pulls module.timelineLane
     //        timelineLanes.list()            -- ordered Lane[]
     //        timelineLanes.unregister(name)  -- removes by module name
     //      and CameraPathModule is auto-registered via the
-    //      EditorModuleRegistry's 'register' event so its lane is
-    //      already in the list (the value is its `timelineLane` field
-    //      with rows=1 / label='Cameras' / a no-op render in Phase 2).
+    //      EditorModuleRegistry's 'register' event.
     //
-    //      Why "infrastructure now, visual integration later": the
-    //      single-lane canvas currently lives in _tlDraw and is wired
-    //      against _tlActivePath's diamond row. Refactoring it
-    //      pre-emptively (without modules to fill the new lanes)
-    //      would risk regressing the working keyframe authoring path
-    //      for zero immediate user-visible gain.
+    //      UX-Phase11-R2 #11 (2026-05-21): the VISUAL integration that
+    //      Phase 2D deferred ("lands in Phases 3-7" -- it never did) is
+    //      now wired. _tlDraw (above) calls _tlDrawLanes() which
+    //      iterates this registry + calls each lane's render() in its
+    //      own horizontal band below the diamond row, and the strip
+    //      grows (_tlSyncHeight) by sum(lane.rows) * _TL_LANE_ROW_H so
+    //      the bands are visible. Registering / unregistering a lane
+    //      re-syncs the height + redraws so a late-registered module
+    //      (the 15x modules register synchronously before this IIFE,
+    //      but a runtime register still grows the strip) appears
+    //      immediately. The diamond row + playhead overlay are
+    //      untouched -- the lanes stack strictly below them.
     const _tlLanesByName = Object.create(null);
     const _tlLanesOrder = [];
     const _LABEL_W = 36;            // left-gutter label width (px)
@@ -1155,6 +1282,10 @@
       const lane = mod.timelineLane;
       _tlLanesByName[mod.name] = lane;
       _tlLanesOrder.push(mod.name);
+      // Grow the strip for the new band + redraw (no-op before the
+      // first _tlResize measures _tlW; the rAF layout re-syncs anyway).
+      _tlSyncHeight();
+      _tlDraw();
       return true;
     }
     function _tlLaneUnregister(name) {
@@ -1164,6 +1295,8 @@
       delete _tlLanesByName[name];
       const i = _tlLanesOrder.indexOf(name);
       if (i !== -1) _tlLanesOrder.splice(i, 1);
+      _tlSyncHeight();
+      _tlDraw();
       return true;
     }
     function _tlLaneList() {
@@ -1446,62 +1579,52 @@
           // strip ends up genuinely EMPTY rather than showing stale
           // diamonds from the prior camera.
           tlRedraw() {
-            _tlDraw();
-            _tlSyncPlayhead();
             // Phase 2C: the active path may have changed; refresh
-            // the total-time UI off the new path's
+            // the Length field off the new path's
             // total_duration_s / kf-derived ceiling.
             _tlRefreshTotalUI();
+            // UX-Phase11-R2 #4: a path-select rebinds the timeline to a
+            // DIFFERENT path -- fit the px mapping to the new path's
+            // range so its diamonds frame the lane (instead of keeping
+            // the previous path's zoom/scroll). _tlFitToPath calls
+            // _tlDraw + _tlSyncPlayhead, so this still does the same
+            // refresh pair the prior body did.
+            _tlFitToPath();
           },
           // ---- Phase 2C test surface ----
           // The Python-mirror helper (tests assert against it).
           get tlEffectiveScrubRange() {
             return _effectiveScrubRange(_tlActivePath());
           },
-          get tlIsAutoTotal() {
-            return _tlIsAutoTotal(_tlActivePath());
-          },
           // Drive the REAL handler the click runs (so the harness can
           // assert the snapshot + cfg mutation without simulating a
           // pointer event).
           tlSkipPrev() { _tlSkipPrev(); return _tlPlayheadT(); },
           tlSkipNext() { _tlSkipNext(); return _tlPlayheadT(); },
-          // Drive the auto toggle as if the button was clicked.
-          tlToggleAuto() {
-            _tlPushHistorySnap('path-auto-toggle');
-            const p = _tlActivePath();
-            if (!p) return null;
-            const wasAuto = _tlIsAutoTotal(p);
-            if (wasAuto) {
-              const [, hi] = _effectiveScrubRange(p);
-              p.total_duration_s = hi;
-            } else {
-              p.total_duration_s = null;
-            }
-            _tlRefreshTotalUI();
-            _tlDraw();
-            _tlSyncPlayhead();
-            return _tlIsAutoTotal(p);
-          },
           // Phase 2D multi-lane registry test surface.
           get tlLaneCount() { return _tlLanesOrder.length; },
           get tlLaneNames() { return _tlLanesOrder.slice(); },
           get tlLabelGutterPx() { return _LABEL_W; },
-          // Set a total-duration value (the SAME path Enter/blur in
-          // the input runs). Returns the post-commit value.
+          // UX-Phase11-R2 #5: the always-on Length field's px-per-second
+          // zoom + scroll, so the harness can assert the #4 auto-fit
+          // reflow (diamonds move) after a length commit.
+          get tlZoomNow() { return _tlZoom; },
+          // Set the Length value (the SAME path Enter/blur in the input
+          // runs: one snapshot labelled 'path-length' + an auto-fit).
+          // Returns the post-commit value. A non-positive / non-finite
+          // value is rejected (no null write -- the field never reverts
+          // to "auto"); the prior value is returned.
           tlSetTotalDuration(v) {
             const p = _tlActivePath();
             if (!p) return null;
-            const next = (v === null || v === undefined || +v <= 0)
-              ? null : +v;
             const prev = (p.total_duration_s !== undefined &&
               p.total_duration_s !== null) ? +p.total_duration_s : null;
-            if (next === prev) return prev;
-            _tlPushHistorySnap('path-total-time');
-            p.total_duration_s = next;
+            if (!(isFinite(+v) && +v > 0)) return prev;
+            if (+v === prev) return prev;
+            _tlPushHistorySnap('path-length');
+            p.total_duration_s = +v;
             _tlRefreshTotalUI();
-            _tlDraw();
-            _tlSyncPlayhead();
+            _tlFitToPath();
             return p.total_duration_s;
           },
         };

@@ -32,10 +32,8 @@
   //      => pushUndo('kf-interp')                       (before mutation)
   //    Camera rename input FOCUS (NOT per keystroke)
   //      => pushUndo('cam-rename')                      (before commit)
-  //    Total-time input commit (Enter/blur, NOT per keystroke)
-  //      => pushUndo('path-total-time')                 (before commit)
-  //    Auto-toggle button click
-  //      => pushUndo('path-auto-toggle')                (before mutation)
+  //    Length input commit (Enter/blur, NOT per keystroke)
+  //      => pushUndo('path-length')                     (before commit)
   //
   //  Drag-END / value-change-FINALISED does NOT push -- the snapshot at
   //  drag-start IS the undo entry. WRONG pattern (per spec §6.3):

@@ -412,6 +412,30 @@ PIN UPDATES:
     preserved. All 6 fixtures shifted by the same +4917 code points in
     lockstep -- additive only (isolated to the 16/17 fragments). Pins
     re-pinned to the new baseline.
+  * 2026-05-21 (R2 Batch C #153 -- timeline #4/#5/#11): three cohesive
+    timeline changes in ``16_editor_timeline.js_tmpl`` (+ a 2-line
+    stale-label comment fixup in ``17a_edit_history``). (#5 Length
+    field) the auto/manual toggle (``_tlAutoBtn`` + ``_tlIsAutoTotal`` +
+    ``tlToggleAuto`` test hook + the 'path-auto-toggle' label) is
+    REMOVED; the total-time input is now a single ALWAYS-editable
+    "Length [N] s" field (caption ``_tlTotalLabel`` 'Length' + unit
+    's'); ``_tlCommitTotalInput`` drops the auto guard, writes
+    ``total_duration_s`` on a positive entry (never null -> the field
+    never falls back to auto), one EditHistory snapshot labelled
+    'path-length'. (#4 auto-fit) a new ``_tlFitToPath()`` recomputes
+    ``_tlZoom = (laneW - 2*PAD)/effectiveScrubRange[1]`` + resets
+    ``_tlScroll=0`` so the full 0..length range fills the lane width;
+    called after a Length commit AND on initial path load (rAF layout)
+    + path-select (``tlRedraw``) so diamonds reflow to fit (wheel-zoom
+    still overrides afterwards). (#11 lane render) ``_tlDraw`` now calls
+    a new ``_tlDrawLanes()`` that iterates ``_tlLaneList()`` + calls each
+    registered lane's ``render(ctx, _LABEL_W, y, w, rows*ROW_H,
+    playhead)`` in its own band below the diamond row with a left-gutter
+    label; the strip grows by ``sum(lane.rows) * _TL_LANE_ROW_H`` via a
+    new ``_tlSyncHeight()`` (re-run on lane register/unregister); the
+    diamond row + playhead overlay are untouched. All 6 fixtures shifted
+    by the same +6717 code points in lockstep -- additive only (isolated
+    to the 16/17a edits). Pins re-pinned to the new baseline.
 """
 
 from __future__ import annotations
@@ -497,36 +521,36 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
         "harness_defaults",
         ("HarnessScene",),
         {},
-        814344,
-        "0167525ed86a764a8abc18f9cb7da376c5258c5f6ed6ac46e90363963ccd7dce",
+        821061,
+        "62dc00154805f37a1e78375b1735d7e869b72a18eef030685c6c55e2483766bd",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        814316,
-        "a29756db1b2041472b3282c3e2e4dcbe147ac365714aff147f08612bcf1bb62f",
+        821033,
+        "f87dde89ac9e431674cad35c13eb6e9fe10cd08292016fe38b3fc928c91aa474",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        814311,
-        "c5b06498608113a4f5e185cc28124935688134d50e44bb004660baab95df4e82",
+        821028,
+        "a19b0600654ce94fd504ca8e9b6a3881f0aedc263184eded7f65db1c97d1d254",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        814290,
-        "8e88cbd1e92bbb6a07a44d3a1b9f276ce5c2a6e34ba1ada98c05f12026c2fc1c",
+        821007,
+        "251478971784ec5f8559c37e20ad0c2d4e694824cf468994c643528e41874fd9",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        814355,
-        "fcf512d71116f7bb479d4b0186e827dc00e2988557ad3da40ecb151b0731118c",
+        821072,
+        "ef87226fb9099e250ff5a702f85c81cc09ae5be7d4b71c01f855b3c95a006c23",
     ),
     (
         "share_card",
@@ -536,8 +560,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        814214,
-        "1bd0645843b611152f84441abfe15742f370960c7aa4885b7adcfe357df3844b",
+        820931,
+        "bc4400b33973fed8254a38ea8aa797f3b42c6af012d1774d57947e105363c834",
     ),
 ]
 

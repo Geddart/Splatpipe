@@ -161,9 +161,9 @@ def test_phase_2b_camera_path_module_and_save_dispatch_present():
 
 
 # --------------------------------------------------------------------------
-# Phase 2C (editor-arc-design #122 §3.7 + §4.1.1): 3 timeline addenda --
-# total-time input + auto toggle, Prev/Next-keyframe skip buttons,
-# Ctrl+Left/Right hotkeys.
+# Phase 2C (editor-arc-design #122 §3.7 + §4.1.1): timeline addenda --
+# the single Length field (R2 #5: auto/manual REMOVED), Prev/Next-keyframe
+# skip buttons, Ctrl+Left/Right hotkeys.
 # --------------------------------------------------------------------------
 
 _PHASE_2C_MARKERS = (
@@ -171,30 +171,52 @@ _PHASE_2C_MARKERS = (
     "function _effectiveScrubRange(p) {",
     "const total = p.total_duration_s;",
     "Math.max(last, 10.0)",  # 10s floor for empty paths
-    "function _tlIsAutoTotal(p) {",
-    # Total-time input + auto toggle DOM
+    # R2 #5: a single always-editable Length field (caption + input).
     "_tlTotalInput",
-    "_tlAutoBtn",
+    "_tlTotalLabel",
+    "'Length'",
     # Prev/Next skip buttons
     "_tlPrevKf",
     "_tlNextKf",
     "_tlSkipPrev",
     "_tlSkipNext",
-    # EditHistory commit labels (per spec §6.5.1)
-    "'path-total-time'",
-    "'path-auto-toggle'",
+    # EditHistory commit label for the Length commit (per spec §6.5.1;
+    # R2 #5 renamed 'path-total-time' -> 'path-length').
+    "'path-length'",
     # Ctrl+Left / Ctrl+Right hotkey wiring
     "ev.key === 'ArrowLeft'",
     "ev.key === 'ArrowRight'",
 )
 
+# R2 #5 (2026-05-21): the auto/manual concept is GONE from the timeline.
+# The user said "I don't even know what auto/manual means. It should just
+# be length, nothing else." These hooks/labels must NOT appear anywhere in
+# the generated HTML (negative control -- a regression that re-introduced
+# the toggle would fail here, not silently ship).
+_PHASE_2C_REMOVED_MARKERS = (
+    "_tlAutoBtn",
+    "function _tlIsAutoTotal",
+    "tlToggleAuto",
+    "'path-auto-toggle'",
+    "'path-total-time'",
+    # The old unit label literal ("s total"); the new unit is just "s".
+    "_tlTotalUnit.textContent = 's total'",
+)
+
 
 def test_phase_2c_timeline_addenda_present():
-    """The 3 timeline addenda (total-time UI, Prev/Next, Ctrl+Left/Right)
-    are wired into the rendered HTML."""
+    """The timeline addenda (single Length field, Prev/Next,
+    Ctrl+Left/Right) are wired into the rendered HTML, and the removed
+    auto/manual toggle is gone."""
     html = html_for("HarnessScene")
     for mk in _PHASE_2C_MARKERS:
         assert mk in html, f"Phase 2C marker missing: {mk!r}"
+    # R2 #5 negative control: the auto/manual toggle + its hooks/labels
+    # are removed.
+    for mk in _PHASE_2C_REMOVED_MARKERS:
+        assert mk not in html, (
+            f"R2 #5: auto/manual marker should be REMOVED but is present: {mk!r}"
+        )
     # Structural: the Ctrl+Left / Ctrl+Right keydown handler is gated on
     # the same author-mode + text-input checks the Ctrl+Z handler uses
     # (single convention). Locate the handler by its key checks.
@@ -213,7 +235,7 @@ def test_phase_2c_timeline_addenda_present():
         "Prev/Next-keyframe skip must consult a SORTED-by-t view, NOT "
         "raw keyframe-array order (the editor allows out-of-order kfs)"
     )
-    # Total-time commit on Enter/blur, NEVER per keystroke. The change
+    # Length commit on Enter/blur, NEVER per keystroke. The change
     # listener fires on blur; an explicit keydown handler triggers blur+
     # commit on Enter. There must be NO per-keystroke commit hook.
     ct_i = html.index("function _tlCommitTotalInput()")
@@ -221,8 +243,23 @@ def test_phase_2c_timeline_addenda_present():
     # ('input' would be per-keystroke; 'change' fires on blur.)
     ct_block = html[ct_i:ct_end + 200]
     assert "_tlTotalInput.addEventListener('input'" not in ct_block, (
-        "Total-time input must NOT commit per keystroke (would push 60+ "
+        "Length input must NOT commit per keystroke (would push 60+ "
         "EditHistory snapshots/s); commit only on blur/Enter."
+    )
+    # R2 #4: the Length commit auto-fits the timeline so diamonds reflow.
+    # _tlCommitTotalInput must call _tlFitToPath after writing the value.
+    commit_block = html[ct_i:ct_i + 900]
+    assert "_tlFitToPath()" in commit_block, (
+        "R2 #4: a Length commit must call _tlFitToPath() so the diamonds "
+        "reflow to the new range (not stay pinned at old pixel positions)"
+    )
+    # R2 #11: _tlDraw renders the registered module lanes via _tlDrawLanes.
+    assert "function _tlDrawLanes(" in html, (
+        "R2 #11: a _tlDrawLanes() helper must exist to render module lanes"
+    )
+    assert "_tlDrawLanes(ctx, _tlPlayheadT());" in html, (
+        "R2 #11: _tlDraw must call _tlDrawLanes() to stack the cuts/other "
+        "module lanes below the diamond row"
     )
 
 
