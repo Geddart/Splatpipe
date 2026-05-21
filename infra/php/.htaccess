@@ -1,10 +1,11 @@
 # Generic Apache rules for the save_backend="php" reference adapter.
-# Drop this next to save-camera.php and the scenes/<slug>/ tree on any
-# Apache + mod_php / php-fpm host. Host-agnostic — no geddart.de/Strato
-# specifics. (Nginx/Caddy users: replicate the two intents below — deny
-# the secret/scratch files, no-cache the two mutable text files.)
+# Drop this next to save-camera.php + upload-asset.php and the
+# scenes/<slug>/ tree on any Apache + mod_php / php-fpm host. Host-agnostic
+# — no geddart.de/Strato specifics. (Nginx/Caddy users: replicate the
+# intents below — deny the secret/scratch files, no-cache the two mutable
+# text files, and forward the Authorization header to PHP.)
 
-# Suppress PHP error output from this auth endpoint regardless of host defaults.
+# Suppress PHP error output from these auth endpoints regardless of host defaults.
 # (php_flag requires mod_php; for php-fpm set display_errors=Off in the pool's php.ini.)
 <IfModule mod_php.c>
     php_flag display_errors Off
@@ -46,3 +47,17 @@
         ExpiresDefault "access plus 0 seconds"
     </IfModule>
 </FilesMatch>
+
+# 3. Forward the Authorization header to PHP. Many shared hosts (Strato,
+#    several cPanel setups, ...) STRIP the Authorization header before
+#    handing the request to mod_php/php-fpm, which would break the
+#    Bearer-token auth in BOTH save-camera.php and upload-asset.php. Re-
+#    inject it via the rewrite engine. Scoped to the two endpoints only;
+#    no other request is affected. (The PHP also has an
+#    apache_request_headers() fallback, but this rule is the reliable path
+#    on hosts that drop HTTP_AUTHORIZATION entirely.)
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteCond %{HTTP:Authorization} ^(.+)$
+    RewriteRule ^(save-camera|upload-asset)\.php$ - [E=HTTP_AUTHORIZATION:%1,L]
+</IfModule>
