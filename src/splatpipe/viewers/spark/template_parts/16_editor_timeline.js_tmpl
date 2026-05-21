@@ -170,11 +170,18 @@
         'font:12px monospace;line-height:1;';
       return b;
     }
-    const _tlPlay = _tlBtn('\u25B6', 'Play');
-    const _tlPause = _tlBtn('\u23F8', 'Pause');
+    // UX-Phase11A Issue 5 (2026-05-21): unified Play/Pause toggle. The
+    // separate Pause button is REMOVED; _tlPlay is now a tri-state
+    // toggle (idle \u25B6 -> playing \u23F8 -> paused \u25B6 -> resume \u23F8 ...). The
+    // glyph + title are synced by _tlSyncPlayPauseIcon() off the
+    // window.__spTransport.playState() the 10_camera_select fragment
+    // exposes. User-requested: "get rid of the pause button and have
+    // the play button do that ... push it twice, it becomes a pause
+    // icon ... click it again, it becomes a play icon and it plays."
+    const _tlPlay = _tlBtn('\u25B6', 'Play / Pause');
     const _tlLoop = _tlBtn('\u21BB', 'Loop');
     const _tlFpsBtn = _tlBtn('fps', 'Toggle fps grid (relabels ruler only)');
-    _tlBar.appendChild(_tlPlay); _tlBar.appendChild(_tlPause);
+    _tlBar.appendChild(_tlPlay);
     _tlBar.appendChild(_tlLoop); _tlBar.appendChild(_tlFpsBtn);
 
     // ---- Phase 2C (#122 \u00A74.1.1): Prev/Next-keyframe skip + total-time
@@ -415,6 +422,13 @@
       _tlPlayhead.style.left = x + 'px';
       _tlPlayhead.style.display =
         (x >= -2 && x <= _tlW + 2) ? 'block' : 'none';
+      // UX-Phase11A Issue 5: keep the Play/Pause glyph in sync with the
+      // live play state every time the playhead syncs (incl. the
+      // per-frame timeline update() tick + a tour reaching its natural
+      // end -> _player goes null -> icon flips back to ▶). Defined
+      // below _tlSyncPlayPauseIcon? -> hoisted function declaration, so
+      // forward-reference is safe.
+      if (typeof _tlSyncPlayPauseIcon === 'function') _tlSyncPlayPauseIcon();
     }
 
     // ---- Phase 2C (#122 §3.7): effectiveScrubRange JS mirror of the
@@ -806,20 +820,46 @@
       _tlSyncPlayhead();
     }, { passive: false });
 
-    // ---- Transport. Reuse the EXISTING #path-play / #path-stop
-    //      handlers (no new play/stop). Loop toggles the active
-    //      path's loop flag + rebuilds (a temporal-ish edit on the
-    //      path object -- still in-memory, still no persistence).
+    // ---- Transport (UX-Phase11A Issue 5): unified Play/Pause toggle.
+    //      _tlPlay drives window.__spTransport.playPauseToggle (the
+    //      tri-state idle->playing->paused machine the 10_camera_select
+    //      fragment owns). Loop toggles the active path's loop flag +
+    //      rebuilds (in-memory, no persistence). The icon + title sync
+    //      via _tlSyncPlayPauseIcon() (called from _tlSyncPlayhead so
+    //      the glyph follows the live play state every frame, incl. a
+    //      tour reaching its natural end -> back to ▶).
+    function _tlSyncPlayPauseIcon() {
+      let st = 'idle';
+      try {
+        if (window.__spTransport &&
+            typeof window.__spTransport.playState === 'function') {
+          st = window.__spTransport.playState();
+        }
+      } catch (e) {}
+      // playing -> ⏸ (click pauses); idle/paused -> ▶ (click plays/resumes).
+      const playing = (st === 'playing');
+      _tlPlay.textContent = playing ? '⏸' : '▶';
+      _tlPlay.title = playing ? 'Pause' :
+        (st === 'paused' ? 'Resume' : 'Play');
+    }
     _tlPlay.addEventListener('click', () => {
+      // Bind the timeline's active path into selEl first so the toggle
+      // drives the path the user is editing (mirrors the old play
+      // handler's selEl bind).
       const p = _tlActivePath();
       if (p && p.id && selEl) {
         try { selEl.value = p.id; } catch (e) {}
       }
-      try { startPath(selEl ? selEl.value : (p && p.id)); }
-      catch (e) {}
-    });
-    _tlPause.addEventListener('click', () => {
-      try { stopPath(); } catch (e) {}
+      try {
+        if (window.__spTransport &&
+            typeof window.__spTransport.playPauseToggle === 'function') {
+          window.__spTransport.playPauseToggle();
+        } else {
+          // Defensive fallback (transport surface absent): old behaviour.
+          startPath(selEl ? selEl.value : (p && p.id));
+        }
+      } catch (e) {}
+      _tlSyncPlayPauseIcon();
       _tlSyncPlayhead();
     });
     _tlLoop.addEventListener('click', () => {
@@ -1196,6 +1236,24 @@
             _tlSyncPlayhead();
             return !_player;
           },
+          // UX-Phase11A Issue 5: the unified Play/Pause toggle test
+          // hooks. tlPlayPauseToggle drives the REAL _tlPlay click
+          // path (selEl bind + window.__spTransport.playPauseToggle +
+          // icon sync); tlPlayState reads the tri-state; tlPlayIcon
+          // reads the current glyph so the harness can assert the
+          // ▶/⏸ swap end-to-end.
+          tlPlayPauseToggle() {
+            try { _tlPlay.click(); } catch (e) {}
+            return (window.__spTransport &&
+                    typeof window.__spTransport.playState === 'function')
+              ? window.__spTransport.playState() : 'idle';
+          },
+          tlPlayState() {
+            return (window.__spTransport &&
+                    typeof window.__spTransport.playState === 'function')
+              ? window.__spTransport.playState() : 'idle';
+          },
+          tlPlayIcon() { return _tlPlay.textContent; },
           tlToggleLoop() {
             const p = _tlActivePath();
             if (!p) return null;

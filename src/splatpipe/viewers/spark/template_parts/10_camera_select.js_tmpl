@@ -820,6 +820,67 @@
     if (_benchActive && (_benchAutoMode === 'path' || _benchAutoMode === 'cold' || _benchAutoMode === 'probe' || _benchAutoMode === 'rotate')) _benchStop();
     _pathIconSync();   // A1: glyph -> PLAY (stopped; covers natural end)
   }
+  // UX-Phase11A Issue 5 (2026-05-21): unified Play/Pause toggle.
+  // User-requested: "we can totally get rid of the pause button and
+  // have the play button do that. So if you push the play button
+  // twice, it becomes a pause icon. And then you click it again, and
+  // it becomes a play icon again, and it plays." These helpers expose
+  // the play/pause/resume tri-state so the 16_editor_timeline transport
+  // can drive ONE toggle button. The pause mechanism reuses the
+  // EXISTING UX-3 paused-scrub state (_pausedAt + _pausedAtPlayer + the
+  // per-frame _trajLayer.update() rebase that PINS the camera at
+  // _pausedAt) -- a pause is "freeze _player at the current playhead",
+  // NOT a stopPath() (which clears _player). Resume reuses startPath's
+  // EXISTING UX-3 resume-from-_pausedAt branch.
+  //
+  //   _pathPlayState() -> 'idle' | 'playing' | 'paused'
+  //   _pathPlayPauseToggle() -> drives the tri-state transition
+  //
+  // _player / _pausedAt / _t0 are all scoped here (09/10); the timeline
+  // calls these functions instead of reaching into the closure.
+  function _pathPlayState() {
+    if (!_player) return 'idle';
+    return (_pausedAt !== null && _pausedAtPlayer === _player)
+      ? 'paused' : 'playing';
+  }
+  function _pathPauseHere() {
+    // Freeze the live player at the current playhead. Compute the
+    // current elapsed t from the SAME formula tick() uses, clamp to the
+    // player duration, set _pausedAt + _pausedAtPlayer so the per-frame
+    // rebase pins it. Does NOT clear _player (that would be a stop).
+    if (!_player) return;
+    const sp = _player.playSpeed || 1.0;
+    let tn = ((performance.now() - _t0) / 1000) * sp;
+    if (_player.loop && tn > _player.duration) tn = tn % _player.duration;
+    tn = Math.max(0, Math.min(tn, _player.duration));
+    _pausedAt = tn;
+    _pausedAtPlayer = _player;
+    if (selEl && selEl.value) _activePathId = selEl.value;
+    _pathIconSync();
+  }
+  function _pathPlayPauseToggle() {
+    const st = _pathPlayState();
+    if (st === 'playing') {
+      _pathPauseHere();
+    } else {
+      // idle OR paused -> (re)start. startPath's UX-3 branch resumes
+      // from _pausedAt when _activePathId + _pausedAtPlayer match THIS
+      // path; otherwise it is a fresh t=0 start. Use selEl.value (the
+      // active path the timeline edits) as the path id.
+      startPath(selEl ? selEl.value : _activePathId);
+    }
+  }
+  // Expose for the 16_editor_timeline transport (loaded AFTER this
+  // fragment). Window-level so the timeline IIFE reads ONE surface
+  // (mirrors the existing _camSelReflect / startPath / stopPath
+  // cross-fragment access pattern; these are plain functions, not the
+  // test-only window.__editor getters).
+  try {
+    window.__spTransport = window.__spTransport || {};
+    window.__spTransport.playState = _pathPlayState;
+    window.__spTransport.playPauseToggle = _pathPlayPauseToggle;
+    window.__spTransport.pauseHere = _pathPauseHere;
+  } catch (e) {}
   playBtn.addEventListener('click', () => startPath(selEl.value));
   stopBtn.addEventListener('click', stopPath);
   scrubEl.addEventListener('input', () => {

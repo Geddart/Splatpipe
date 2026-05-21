@@ -143,6 +143,18 @@ PIN UPDATES:
     pose (09 line 30) -- the extension is a "hold at end" segment,
     safe + DCC-standard. All 6 fixtures shifted by the same +2091
     byte delta in lockstep; pins re-pinned.
+  * 2026-05-21 (Phase 11A Issue 5): unified Play/Pause toggle. The
+    separate timeline Pause button is REMOVED; ``_tlPlay`` is now a
+    tri-state toggle (idle ▶ -> playing ⏸ -> paused ▶ -> resume).
+    ``10_camera_select`` exposes ``window.__spTransport.{playState,
+    playPauseToggle, pauseHere}`` (the pause reuses the EXISTING
+    UX-3 ``_pausedAt``/``_pausedAtPlayer`` per-frame rebase; a pause
+    freezes ``_player`` at the current playhead, NOT a stopPath);
+    ``16_editor_timeline``'s ``_tlPlay`` click drives the toggle +
+    syncs the glyph via ``_tlSyncPlayPauseIcon()`` (called from
+    ``_tlSyncPlayhead`` so the icon follows the live state every
+    frame, incl. a tour reaching its natural end). All 6 fixtures
+    shifted by the same +6054 byte delta in lockstep; pins re-pinned.
   * 2026-05-21 (Phase 11A Issue 9): two new editor module fragments.
     ``15h_intro_module.js_tmpl`` (IntroModule -- type dropdown +
     ms input populating the Scene Settings drawer's Intro section)
@@ -234,42 +246,44 @@ from splatpipe.viewers.spark.template import html_for
 # button removed + open-card helper exposed; +1390 in lockstep), then
 # re-pinned 2026-05-21 (Phase 11A Issue 9: IntroModule 15h +
 # StartViewModule 15i populate the drawer's last two placeholders;
-# +19614 in lockstep).
+# +19614 in lockstep), then re-pinned 2026-05-21 (Phase 11A Issue 5:
+# unified Play/Pause toggle -- _tlPause removed, _tlPlay tri-state +
+# window.__spTransport surface; +6054 in lockstep).
 CORPUS: list[tuple[str, tuple, dict, int, str]] = [
     (
         "harness_defaults",
         ("HarnessScene",),
         {},
-        746848,
-        "3ffae54804dd0630d93dc1bab379f6eb6e9c052a1bf4a07d9fbbce71453b81f0",
+        752902,
+        "c2f93d81bf382c481404ab049af9e0c44f2567b6e7f40a4c8df0f99f5c7b55fb",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        746820,
-        "fb72ba80da192c2e7be793500d83b5f9915c1daf439137667d1580bb7facb89a",
+        752874,
+        "477cd5a122b84643a7dff36eae7e26195bfb056b90b695f2eb3dd61b358036fa",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        746815,
-        "45a507b70314b5d5cea4211a32ad7ff7ad056108b6961cc4c58a338a78775745",
+        752869,
+        "16a4e1803bc40ad58c859e2d8b45014a13807f7822f365ed4941c12a3c21d140",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        746794,
-        "2603d55c07a402fd4d28f79560b84d03076dbb79096ff625095a59bd0cdbf874",
+        752848,
+        "a36f5d9c7dcfdda47b9f9dc7d97ccad6f86564a4b10ffd98ec2033d4812becd6",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        746859,
-        "7acf48d14a31205d43817560b37c8822971d3bb11a5292ac166e52730cd50f3f",
+        752913,
+        "9105c9f3243a9df5e501a753ee93d23d526b9d9d3c43db2fafffe40b8b4a9ada",
     ),
     (
         "share_card",
@@ -279,8 +293,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        746718,
-        "9803531d8ada7681509d72bdf2ccc9d09e7efde58c13d5d458d584b5fc5a47c0",
+        752772,
+        "e13528e21bb51289e1426b82ea1cac3e07f3cd4bb9245719fa7c16c35693a2d2",
     ),
 ]
 
