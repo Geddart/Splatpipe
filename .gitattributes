@@ -1,0 +1,62 @@
+# Normalize line endings across platforms.
+#
+# WHY: the Spark viewer template fragments in
+# src/splatpipe/viewers/spark/template_parts/*.{js,html,css}_tmpl are
+# concatenated byte-for-byte into the generated viewer HTML, and a large
+# family of tests assert each fragment is LF-only (`b"\r" not in raw` --
+# "CRLF corruption") + the output-pin hashes the assembled HTML. Without a
+# .gitattributes, git applies the per-machine `core.autocrlf`: the Windows
+# CI runner (autocrlf=true) checks these LF-committed files out as CRLF,
+# which fails every `*_fragment_file_exists` / `test_no_bom_in_fragments`
+# assert and would also shift the output-pin. Forcing LF on checkout for all
+# text files makes the working tree identical on Windows + Linux + macOS.
+
+# Treat every auto-detected text file as LF in the working tree on all OSes.
+# `text=auto` still lets git auto-detect + leave binary files untouched.
+* text=auto eol=lf
+
+# Be explicit for the template fragments (the byte-sensitive surface) so the
+# intent is unmissable even if the glob above is ever narrowed.
+*.js_tmpl   text eol=lf
+*.html_tmpl text eol=lf
+*.css_tmpl  text eol=lf
+
+# Common source/text types -> LF.
+*.py    text eol=lf
+*.php   text eol=lf
+*.js    text eol=lf
+*.mjs   text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf
+*.json  text eol=lf
+*.toml  text eol=lf
+*.md    text eol=lf
+*.txt   text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.htaccess text eol=lf
+
+# Binary assets -- never touch line endings (and never diff as text).
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.webp binary
+*.ply  binary
+*.psht binary
+*.rad  binary
+*.radc binary
+*.sog  binary
+*.wav  binary
+*.mp3  binary
+*.ogg  binary
+*.opus binary
+*.m4a  binary
+*.aac  binary
+*.flac binary
+*.webm binary
+*.mp4  binary
+*.woff binary
+*.woff2 binary
+*.ttf  binary

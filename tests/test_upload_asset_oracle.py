@@ -42,6 +42,7 @@ import json
 import shutil
 import socket
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -62,6 +63,28 @@ pytestmark = pytest.mark.skipif(
         "skips this). Verify on a PHP host: "
         "`php -l infra/php/upload-asset.php && pytest "
         "tests/test_upload_asset_oracle.py`."
+    ),
+)
+
+# Windows-only skip for the cases that AUTHENTICATE successfully and proceed
+# DEEP into the script (FS stat of scenes/<slug>/.author-token, the size/empty
+# checks, and the Bunny-storage 503 step). The single-threaded `php -S` dev
+# server hangs on Windows for these back-to-back authenticated requests --
+# `urllib.request.urlopen(timeout=20)` times out for every one of them on
+# windows-latest, while the EARLY-REJECT cases (CORS / method / bad-bearer /
+# bad-slug / traversal-filename) return before the FS-touching path and pass
+# fast. This is the SAME Windows PHP-CLI hang already skipped for the VALID-slug
+# cases in tests/test_php_save_oracle.py (commit 5190301); the Strato PHP 8.4
+# deploy target + CI-Ubuntu run every case, so server behaviour stays covered.
+_WIN_PHP_HANG_SKIP = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "PHP-CLI `php -S` hangs on Windows for authenticated POSTs that reach "
+        "the scenes/<slug>/.author-token FS stat + storage step (urlopen times "
+        "out, all parametrized cases). Same Windows-only hang skipped in "
+        "tests/test_php_save_oracle.py::test_valid_slug_charset_accepted "
+        "(5190301). Ubuntu CI + Strato PHP 8.4 cover the full server behaviour; "
+        "the early-reject gates (auth/slug/traversal) still run on Windows."
     ),
 )
 
@@ -265,6 +288,7 @@ def test_filename_traversal_rejected_400(php_server, bad_name):
     assert isinstance(payload, dict) and payload.get("ok") is False
 
 
+@_WIN_PHP_HANG_SKIP
 @pytest.mark.parametrize("bad_ext_name", ["evil.exe", "script.php", "x.svg", "noext"])
 def test_wrong_extension_is_415(php_server, bad_ext_name):
     """Anything not on the image/audio allow-list -> 415 (deny-by-default)."""
@@ -275,6 +299,7 @@ def test_wrong_extension_is_415(php_server, bad_ext_name):
     assert isinstance(payload, dict) and payload.get("ok") is False
 
 
+@_WIN_PHP_HANG_SKIP
 def test_oversize_image_is_413(php_server):
     """An image over the 5 MiB cap -> 413 (the cap is enforced on the real
     received file size, not the client-reported size)."""
@@ -286,6 +311,7 @@ def test_oversize_image_is_413(php_server):
     assert isinstance(payload, dict) and payload.get("ok") is False
 
 
+@_WIN_PHP_HANG_SKIP
 def test_empty_file_is_400(php_server):
     base = php_server
     body = _multipart_body(slug=SLUG, filename="empty.jpg", content=b"")
@@ -296,6 +322,7 @@ def test_empty_file_is_400(php_server):
     assert isinstance(payload, dict) and payload.get("ok") is False
 
 
+@_WIN_PHP_HANG_SKIP
 @pytest.mark.parametrize(
     "ok_name",
     [
@@ -324,6 +351,7 @@ def test_valid_upload_passes_all_gates_then_503_without_bunny(php_server, ok_nam
     assert "storage" in json.dumps(payload).lower()
 
 
+@_WIN_PHP_HANG_SKIP
 def test_unique_named_uploads_all_reach_storage_step(php_server):
     """Sanity that the gate ordering is stable across distinct filenames
     (a fresh random name each call still passes validation -> 503)."""
