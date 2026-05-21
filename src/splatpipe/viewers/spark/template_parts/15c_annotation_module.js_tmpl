@@ -117,7 +117,20 @@
     //      4-field entries (`{label, title, text, pos}`) get every Q6
     //      field defaulted at READ time. The input is never mutated.
     function _upgradeAnnotation(ann) {
-      const out = Object.assign({}, ann || {});
+      // UX-Phase11G WF-M (#145): upgrade IN PLACE (mutate + return the SAME
+      // object) instead of returning an Object.assign copy. _buildFromCfg
+      // calls this over the LIVE cfg.annotations slice and stores the result
+      // as the card's `s.ann`; if it were a copy, every drawer-card edit
+      // (title/text -- AND the pre-existing kind/radius/t_in/t_out/fade_ms
+      // handlers) would mutate the COPY while cfg.annotations[i] kept the old
+      // value, so the edit was LOST on the next _rebuild() (the panel rebuilt
+      // from the stale cfg entry -> empty) AND on save (collectPatch reads
+      // cfg.annotations). Mutating in place keeps s.ann === cfg.annotations[i]
+      // so an edit persists to cfg + survives a rebuild. Idempotent: it only
+      // fills MISSING default keys + assigns a missing id (defaults never
+      // overwrite an existing value), so re-upgrading an already-upgraded
+      // entry is a no-op.
+      const out = ann || {};
       if (typeof out.id !== 'string' || !out.id) out.id = _newAnnotationId();
       for (const k in ANNOTATION_DEFAULTS) {
         if (!Object.prototype.hasOwnProperty.call(out, k) ||

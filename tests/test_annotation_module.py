@@ -464,6 +464,38 @@ process.stdout.write(JSON.stringify({ out, idShape }));
 
 
 @pytest.mark.skipif(_NODE is None, reason="node not available")
+def test_js_upgrade_annotation_mutates_in_place_same_identity():
+    """WF-M persist (#145) regression. _upgradeAnnotation must mutate +
+    return the SAME object (not an Object.assign copy) so the drawer card's
+    s.ann === cfg.annotations[i] -- otherwise a title/text (or kind/radius/
+    t_in/...) edit mutates a copy and is lost on the next _rebuild()/save.
+    Identity is the load-bearing property: assert the returned object IS the
+    input object, with defaults filled on that same object."""
+    js = _shim_preamble() + _extract_helpers_js() + r"""
+const live = { label: '1', title: '', text: '', pos: [0, 0, 0] };
+const out = _upgradeAnnotation(live);
+// Now mutate the returned object as a card edit would, and confirm the
+// ORIGINAL live object sees it (same identity).
+out.title = 'Edited';
+process.stdout.write(JSON.stringify({
+  sameIdentity: out === live,
+  liveTitleReflectsEdit: live.title === 'Edited',
+  defaultsFilledOnLive: live.kind === 'dot_unfold' &&
+    live.unfold_radius_m === 5.0,
+  idAssignedOnLive: typeof live.id === 'string' && live.id.startsWith('ann_'),
+}));
+"""
+    r = _run_node(js)
+    assert r["sameIdentity"] is True, (
+        "_upgradeAnnotation must return the SAME object (in-place), so the "
+        "card's s.ann is the live cfg entry -- a copy loses edits on rebuild"
+    )
+    assert r["liveTitleReflectsEdit"] is True
+    assert r["defaultsFilledOnLive"] is True
+    assert r["idAssignedOnLive"] is True
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not available")
 def test_js_upgrade_annotation_preserves_existing_kind_field():
     """An entry already carrying `kind: title3d_overlay` is NOT
     overwritten by the default `dot_unfold`. Mirror of

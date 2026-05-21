@@ -346,6 +346,18 @@ PIN UPDATES:
     sequence plays (the 6 live single-tour scenes have NO clips so they are
     byte-behaviourally unchanged). All 6 fixtures shifted by the same +3421
     code points in lockstep; pins re-pinned.
+  * 2026-05-21 (Phase 11G WF-M annotation persist #145): ``15c``'s
+    ``_upgradeAnnotation`` now upgrades the cfg annotation IN PLACE (mutate +
+    return the SAME object) instead of returning an ``Object.assign`` copy.
+    Live Playwright verify of the WF-M annotation-text fix exposed that the
+    drawer card's ``s.ann`` was a COPY (the upgrade cloned), so a title/text
+    edit mutated the copy while ``cfg.annotations[i]`` kept the old value ->
+    the edit was lost on the next ``_rebuild()`` (empty panel) AND on save.
+    In-place upgrade keeps ``s.ann === cfg.annotations[i]`` so the edit
+    persists + survives a rebuild; idempotent (fills only missing defaults +
+    a missing id). Also repairs the same latent loss for the pre-existing
+    kind/radius/t_in/t_out/fade_ms card edits. All 6 fixtures shifted by the
+    same +930 code points in lockstep; pins re-pinned.
 """
 
 from __future__ import annotations
@@ -427,36 +439,36 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
         "harness_defaults",
         ("HarnessScene",),
         {},
-        801601,
-        "c0c5127d552159fef516e367d6c3f6919952351717343b9689ad9570c85c67bd",
+        802531,
+        "783a5cd0587cea64136efa14a3479a6f5bbb479b3c6ac3b00e606ca00da68052",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        801573,
-        "94b9137e6ffaf14218343b37eb39896f7e9fcd99adb90d32a056209cb8cf805e",
+        802503,
+        "e2b779c08934bd91e11ac64e54f397f3b33837e633a2e8ee48541f81a70a8562",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        801568,
-        "c4e4db71fa77fad8f64a454350a9df9bc64dedcc4b3fa7dd15935f357f8c091b",
+        802498,
+        "2f08ca792881f0d859291305742efe375eb6bdaa0afb900c7fa1f5b5b90120c3",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        801547,
-        "77fecbda1fbd516ddfa1dfe970b6674b88a2231785e44a33227ea9534d4f3d60",
+        802477,
+        "e16da15d3a4405685ab34a08c0060c81eaa693a3ea0179f90f4197951c28d694",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        801612,
-        "30e6040cc5f25c8e4f86ded4400bd57346ba0f403777371e3028d1f5b49b339e",
+        802542,
+        "78008970238ebefb99ffffb9516a2ad3873caf6f9b605a56a37eb5b0e5e98201",
     ),
     (
         "share_card",
@@ -466,8 +478,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        801471,
-        "d65a567812a86234dafb4e37612bc8a0ec7d979c3efe6653a757226895417db4",
+        802401,
+        "942cd9ddc309ba505ffbf84014d6b49afe437f0fb083bd7ebd7f7555069b020f",
     ),
 ]
 
