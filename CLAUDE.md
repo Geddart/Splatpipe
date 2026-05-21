@@ -9,7 +9,7 @@ CLI-first Gaussian splatting pipeline. Takes COLMAP data through: auto-clean →
 ```bash
 cd H:\001_ProjectCache\1000_Coding\Splatpipe
 pip install -e ".[dev]"
-pytest tests/ -v                    # Run tests (819 collected; ~787 passed, 26 skipped, ~30s; #122 Phase 1 added 29 init-php-auth tests)
+pytest tests/ -v                    # Run tests (944 collected; 918 passed, 26 skipped, ~36s)
 splatpipe --help                    # CLI commands
 splatpipe web                       # Launch dashboard
 ```
@@ -70,27 +70,39 @@ splatpipe/                    # repo root
       playcanvas/             # Skeleton; current PC viewer still lives in steps/lod_assembly.py
       spark/
         template.py             # Orchestrator (~190 lines): reads template_parts/, @@NAME@@ substitution, html_for() (modularized v0.8+, T1-T6 of #118)
-        template_parts/         # Modularized Spark viewer (v0.8+, T1-T6 of #118): 21 fragments per concern, byte-identical generated HTML proven via 6-fixture output-pin
+        template_parts/         # Modularized Spark viewer (v0.8+, T1-T6 of #118): fragments per concern, byte-identical generated HTML proven via 6-fixture output-pin
           01_head.html_tmpl     # HTML head + share-meta @@SHARE_META@@ slot
           02a_styles_main.css_tmpl
           02b_styles_editor.css_tmpl
-          03_body_chrome.html_tmpl  # body shell + camera-select + HUD + loading
+          03_body_chrome.html_tmpl  # body shell + camera-select + HUD + loading (Set-start-view top-bar btn REMOVED in Phase 11A Issue 8)
           04_js_prologue.js_tmpl    # importmap (host-pinned Three + Spark fork) + SAVE_* / STOCK consts
-          05_framework.js_tmpl  # ModeManager / OverlayScene / InteractionManager / HudLayer
+          04a_editor_module_registry.js_tmpl  # EditorModuleRegistry coordinator (Phase 2A #122)
+          05_framework.js_tmpl  # ModeManager / OverlayScene / InteractionManager / HudLayer + _bootMount
           06_cfg.js_tmpl        # viewer cfg + _DEFAULTS
           07_setup_three_spark.js_tmpl  # THREE + Spark + sparkOpts + paged_ext_splats
           08_input.js_tmpl      # URL overrides + WASD + look + pivot + focus + HUD + touch + iOS callout + annotations
-          09_playback_spline.js_tmpl   # CubicSpline + buildPlayer
-          10_camera_select.js_tmpl     # camera-select / kebab / dropdown wiring
+          09_playback_spline.js_tmpl   # CubicSpline + buildPlayer (honours total_duration_s past last kf, Phase 11A Issue 6)
+          10_camera_select.js_tmpl     # camera-select / kebab / dropdown wiring (Perspective unconditional controls re-enable, Phase 11A Issue 1)
           11_clip_player.js_tmpl       # ClipPlayer
           12_user_transport.js_tmpl    # End-user transport + _orbitPathAround
           13_bench.js_tmpl      # Bench launchers + ?bench= auto-trigger
           14_splat_budget.js_tmpl      # Splat budget dropdown
-          15_editor_trajectory.js_tmpl # Author editor -- trajectory overlay
-          16_editor_timeline.js_tmpl   # Author editor -- bottom timeline
-          17_editor_gizmo.js_tmpl      # Author editor -- gizmo + Save + SPCP
-          18_frame_loop.js_tmpl        # Frame loop + bench recorder + setstart + preload IIFE
-          19_intro_controller.js_tmpl  # Intro controller
+          15_editor_trajectory.js_tmpl # Author editor -- trajectory overlay (Perspective fallback prefers >=2-kf paths, Phase 11A Issue 2)
+          15a_camera_path_module.js_tmpl  # CameraPathModule wrapper (Phase 2B #122)
+          15b_panorama_module.js_tmpl     # PanoramaModule (Phase 3)
+          15c_annotation_module.js_tmpl   # AnnotationModule (Phase 5)
+          15d_cuts_module.js_tmpl         # CutsModule (Phase 6)
+          15e_postfx_module.js_tmpl       # PostFXModule (Phase 4)
+          15f_audio_module.js_tmpl        # AudioModule (Phase 7)
+          15g_titles_module.js_tmpl       # TitlesModule (Phase 8)
+          15h_intro_module.js_tmpl        # IntroModule -- Scene Settings Intro section (Phase 11A Issue 9)
+          15i_startview_module.js_tmpl    # StartViewModule -- Scene Settings Start View section (Phase 11A Issue 9)
+          16_editor_timeline.js_tmpl   # Author editor -- bottom timeline + total-time UI + multi-lane registry
+          17_editor_gizmo.js_tmpl      # Author editor -- gizmo + interp popover (multi-select, Phase 11A Issue 4) + Save (visible feedback, Phase 11A Issue 7) + SPCP
+          17a_edit_history.js_tmpl     # EditHistory undo/redo ring + hotkeys (Phase 2A #122)
+          17b_scene_settings_drawer.js_tmpl  # Scene Settings drawer scaffold + 6 sections (Phase 2D #122)
+          18_frame_loop.js_tmpl        # Frame loop + bench recorder + _openStartViewCard helper + preload IIFE
+          19_intro_controller.js_tmpl  # Intro controller (runtime fade)
           99_closing.html_tmpl  # _spDebug + </script></body></html>
         assembler.py          # SparkAssembler: build_lod -> scene.rad + viewer-config + index.html
         build_lod.py          # Wrapper around the Rust build-lod CLI
@@ -172,6 +184,7 @@ splatpipe/                    # repo root
     test_init_php_auth_cli.py # splatpipe init-php-auth CLI (token gen + sha256 + SFTP-push; 29 tests, SFTP mocked; #122 Phase 1)
     test_html_for_save_mode.py     # Generated viewer save_mode/save_endpoint plumbing + NEGATIVE-CONTROL author-mode UX/gizmo/overlay tests (v0.8+)
     test_html_for_output_pin.py    # Output-pin byte-lock: html_for() len+SHA-256 for 6 corpus fixtures + UTF-8 LF fragment sanity (modularization-safe replacement for the retired excised-region source-level lock; T6 of #118)
+    test_intro_startview_modules.py # IntroModule (15h) + StartViewModule (15i) Scene Settings sections: contract markers + fragment ordering + openStartViewCard helper (Phase 11A Issue 9)
     test_php_save_oracle.py        # PHP save adapter cross-language merge oracle (v0.8+)
     test_cloudflare_save_oracle.py # Cloudflare Worker save cross-language merge oracle (v0.8+)
     test_publish_config_sanitize.py # Public viewer-config sanitiser + publish_scene secret-leak regression (bug-audit #3; v0.8+)
@@ -408,7 +421,7 @@ Key config sections: `[tools]`, `[colmap_clean]`, `[postshot]` (profile, gpu, ma
 ## Tests
 
 ```bash
-pytest tests/ -v              # 819 collected (~787 passed, 26 skipped; #122 Phase 1 added 29 init-php-auth tests)
+pytest tests/ -v              # 944 collected (918 passed, 26 skipped)
 pytest tests/ -k colmap       # Just COLMAP tests
 pytest tests/ -k integration  # End-to-end with tiny data
 pytest tests/ -k trainers     # Trainer abstraction tests

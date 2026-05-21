@@ -143,6 +143,19 @@ PIN UPDATES:
     pose (09 line 30) -- the extension is a "hold at end" segment,
     safe + DCC-standard. All 6 fixtures shifted by the same +2091
     byte delta in lockstep; pins re-pinned.
+  * 2026-05-21 (Phase 11A Issue 9): two new editor module fragments.
+    ``15h_intro_module.js_tmpl`` (IntroModule -- type dropdown +
+    ms input populating the Scene Settings drawer's Intro section)
+    + ``15i_startview_module.js_tmpl`` (StartViewModule -- "Save
+    current as start view" button calling
+    ``window.__editor.openStartViewCard`` from the Issue 8 refactor,
+    plus a read-only preview of cfg.start_view's pos/target/fov).
+    Both modules use the standard 15a/15b/15f shape (mount sets
+    ``setTimeout(_attachToDrawer, 0)``, ``renderSceneSettings`` is
+    the fallback path) so the Scene Settings drawer's six
+    placeholder sections finally populate end-to-end. All 6
+    fixtures shifted by the same +19614 byte delta in lockstep;
+    pins re-pinned.
   * 2026-05-21 (Phase 11A Issue 8): the top-bar "Set start view"
     button is REMOVED from ``03_body_chrome`` (it migrates to the
     Scene Settings drawer's Start View section in Phase 11A Issue
@@ -218,42 +231,45 @@ from splatpipe.viewers.spark.template import html_for
 # then re-pinned 2026-05-21 (Phase 11A Issue 4: interp popover applies
 # to multi-selection from the bottom timeline; +9027 in lockstep),
 # then re-pinned 2026-05-21 (Phase 11A Issue 8: top-bar Set-start-view
-# button removed + open-card helper exposed; +1390 in lockstep).
+# button removed + open-card helper exposed; +1390 in lockstep), then
+# re-pinned 2026-05-21 (Phase 11A Issue 9: IntroModule 15h +
+# StartViewModule 15i populate the drawer's last two placeholders;
+# +19614 in lockstep).
 CORPUS: list[tuple[str, tuple, dict, int, str]] = [
     (
         "harness_defaults",
         ("HarnessScene",),
         {},
-        727234,
-        "d347662cdc3efcd0c4ccf2fb6da31a0145e7ba8b3e6313061cd044f0d5e30eb0",
+        746848,
+        "3ffae54804dd0630d93dc1bab379f6eb6e9c052a1bf4a07d9fbbce71453b81f0",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        727206,
-        "e541406f6fe50499d3420c88712d879f43996ee8a294bb4c14700225e8db97cd",
+        746820,
+        "fb72ba80da192c2e7be793500d83b5f9915c1daf439137667d1580bb7facb89a",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        727201,
-        "0524ec04e221cf656f07c4ae83fa39ec6746e68dbaf9248025e3b0a671af5cc1",
+        746815,
+        "45a507b70314b5d5cea4211a32ad7ff7ad056108b6961cc4c58a338a78775745",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        727180,
-        "86f91475fb1c69729e3b08318363e1ab60d147bffefb4c3a498942bca07d4968",
+        746794,
+        "2603d55c07a402fd4d28f79560b84d03076dbb79096ff625095a59bd0cdbf874",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        727245,
-        "5fd63697684f879636fee2c2e9110e9525a65b2276b75ffdf2d78a291ba72ea7",
+        746859,
+        "7acf48d14a31205d43817560b37c8822971d3bb11a5292ac166e52730cd50f3f",
     ),
     (
         "share_card",
@@ -263,8 +279,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        727104,
-        "fe5f29062800466940d4c44a91dba38057d63742e1bfec6e6dc0010a95c99563",
+        746718,
+        "9803531d8ada7681509d72bdf2ccc9d09e7efde58c13d5d458d584b5fc5a47c0",
     ),
 ]
 
