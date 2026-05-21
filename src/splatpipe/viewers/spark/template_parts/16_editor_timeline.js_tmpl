@@ -221,11 +221,25 @@
     // per-frame _tlSyncUndoRedo() enable/disable sync.
     const _tlUndo = _tlBtn('\u21B6 undo', 'Undo (Ctrl+Z)');
     const _tlRedo = _tlBtn('redo \u21B7', 'Redo (Ctrl+Y)');
+    // R2 Batch G (2026-05-21): the FLOATING undo/redo buttons (Batch F
+    // lifted them out of the dark transport row into #editor-undo-float,
+    // which sits over the live scene) read too faint -- their old
+    // translucent rgba(255,255,255,0.10) fill let the scene show straight
+    // through. Give the ENABLED state a SOLID, near-opaque dark pill that
+    // matches the transport block's own rgba(16,16,16,0.82) backing, a
+    // brighter border + text, and a subtle drop shadow so they read clearly
+    // against any scene behind them. The DISABLED-state dim is the
+    // affordance that undo/redo is unavailable and is UNCHANGED: it stays
+    // `opacity:0.35` applied by _tlApplyBtnEnabled (which only touches
+    // opacity/pointer-events/cursor, never background) -- so this solid bg
+    // dims correctly when disabled and reads solid when enabled.
     const _UNDO_BTN_CSS =
-      'background:rgba(255,255,255,0.10);color:#eee;border:0;' +
+      'background:rgba(20,20,22,0.94);color:#f3f3f3;' +
+      'border:1px solid rgba(255,255,255,0.28);' +
       'border-radius:5px;padding:5px 10px;cursor:pointer;' +
       'font:12px monospace;line-height:1;letter-spacing:0.2px;' +
-      'display:inline-flex;align-items:center;gap:4px;';
+      'display:inline-flex;align-items:center;gap:4px;' +
+      'box-shadow:0 1px 4px rgba(0,0,0,0.45);';
     _tlUndo.style.cssText = _UNDO_BTN_CSS;
     _tlRedo.style.cssText = _UNDO_BTN_CSS;
     // R2 Batch F (Layout 3, 2026-05-21): the Undo / Redo pair is FLOATED

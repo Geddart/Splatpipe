@@ -43,14 +43,22 @@
     const _SS_DRAWER_W = 320;       // px
     const _SS_KEY = 'spcp:scene-settings:open';
 
-    // Cog button -- positioned top-right of #author-root just left
-    // of the bench launcher / camera-select cluster (which lives
-    // higher up via inline CSS in 03_body_chrome / 10_camera_select).
-    // Inline-styled like the existing kebab in 10_camera_select for
-    // visual consistency without a new CSS region.
+    // R2 Batch G (2026-05-21): the cog is now a PROPER CHILD of the
+    // top-bar header row (#quality-buttons), not a corner-floated button.
+    // User: "it should become part of the top bar". It is appended at the
+    // RIGHT END of the row (after the Bench button, mirroring the
+    // +Add-camera / kebab author-only chips) and reuses the SAME
+    // `.quality-btn` class as its siblings so it matches their look without
+    // a new CSS region. The absolute top:8/right:8 positioning is GONE.
+    // Author-only gating no longer rides on the #author-root parent (the
+    // cog left that container) -- a CSS rule in 02b_styles_editor
+    // (body:not(.authormode) #scene-settings-cog{display:none}, alongside
+    // #add-camera-btn / #cam-menu-btn) is the no-flash gate, and the
+    // HudLayer registration below stays as the framework-level mode hook.
     const _ssCog = document.createElement('button');
     _ssCog.id = 'scene-settings-cog';
     _ssCog.type = 'button';
+    _ssCog.className = 'quality-btn';
     _ssCog.title = 'Scene settings';
     _ssCog.setAttribute('aria-haspopup', 'true');
     _ssCog.setAttribute('aria-expanded', 'false');
@@ -58,12 +66,11 @@
     // ASCII-safe cog glyph (U+2699 GEAR via numeric HTML entity is
     // resolved at parse time; here as a UTF-8 string).
     _ssCog.textContent = '⚙';
-    _ssCog.style.cssText =
-      'position:absolute;top:8px;right:8px;width:32px;height:32px;' +
-      'background:rgba(255,255,255,0.10);color:#eee;border:0;' +
-      'border-radius:5px;cursor:pointer;font-size:18px;line-height:1;' +
-      'z-index:51;';
-    root.appendChild(_ssCog);
+    // Append into the top-bar row. Fall back to #author-root only if the
+    // header container is somehow absent (defensive -- it always exists in
+    // the rendered chrome), so the cog is never orphaned.
+    const _ssTopBar = document.getElementById('quality-buttons');
+    (_ssTopBar || root).appendChild(_ssCog);
 
     // Drawer -- right-side floating panel; full viewport height
     // minus the timeline strip (the strip lives at bottom:0). We
@@ -222,8 +229,12 @@
       _ssDrawer.style.display = _ssIsOpen ? '' : 'none';
       _ssDrawer.setAttribute('aria-hidden', _ssIsOpen ? 'false' : 'true');
       _ssCog.setAttribute('aria-expanded', _ssIsOpen ? 'true' : 'false');
-      _ssCog.style.background = _ssIsOpen
-        ? 'rgba(53,224,255,0.28)' : 'rgba(255,255,255,0.10)';
+      // R2 Batch G: the cog now wears the `.quality-btn` class, so the
+      // CLOSED state clears the inline background and lets the class style
+      // (the same rgba(0,0,0,0.5) pill as its top-bar siblings) show
+      // through; the OPEN state keeps the cyan active tint as a clear
+      // "drawer is open" affordance.
+      _ssCog.style.background = _ssIsOpen ? 'rgba(53,224,255,0.28)' : '';
     }
     function _ssDoOpen() {
       if (_ssIsOpen) return;

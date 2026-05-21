@@ -13,8 +13,16 @@
        body.authormode #path-mini pattern above) so the chips + popup are
        always in the DOM (no layout flash) and hidden in every non-author
        mode (default end-user view, embed). */
+    /* R2 Batch G (2026-05-21): the Scene Settings cog (#scene-settings-cog)
+       moved from a corner-float on #author-root into the top-bar row
+       (#quality-buttons), so it no longer inherits #author-root's
+       usermode/embed hide. Gate it author-only here with the SAME
+       body:not(.authormode) pattern as the +Add-camera / kebab chips so an
+       end-user / embed never sees it (the HudLayer registration in 17b is
+       the framework-level peer of this CSS gate). */
     body:not(.authormode) #add-camera-btn,
     body:not(.authormode) #cam-menu-btn,
+    body:not(.authormode) #scene-settings-cog,
     body:not(.authormode) #cam-menu-popup { display: none !important; }
 
     /* Task 13 -- cinematic loading-blur + intro fade (the END-USER shell,

@@ -550,6 +550,24 @@ PIN UPDATES:
     ``kf-interp`` snapshot (prior behaviour). All 6 fixtures shifted by the
     same +8659 code points in lockstep -- additive only (isolated to the
     02a/15/16/17/17b edits). Pins re-pinned to the new baseline.
+  * 2026-05-21 (R2 Batch G #159 -- HUD layout): two small visual edits.
+    (cog into top bar) ``17b_scene_settings_drawer``'s ``#scene-settings-cog``
+    moves from a corner-float (``position:absolute;top:8px;right:8px`` on
+    ``#author-root``) into the top-bar header row (``#quality-buttons``) as
+    a proper sibling button reusing the ``.quality-btn`` class; its CLOSED
+    state now clears the inline background (lets the class pill show) while
+    OPEN keeps the cyan tint; a new ``body:not(.authormode)
+    #scene-settings-cog{display:none}`` rule in ``02b_styles_editor`` is the
+    no-flash author-only gate (the cog left ``#author-root``'s
+    usermode/embed hide). (undo/redo more opaque) ``16_editor_timeline``'s
+    ``_UNDO_BTN_CSS`` (the floating ``#editor-undo-float`` undo/redo
+    buttons, Batch F) gains a SOLID near-opaque dark pill
+    (``rgba(20,20,22,0.94)``) matching the transport block + a brighter
+    border/text + a subtle drop shadow so the ENABLED state reads clearly
+    over the scene; the DISABLED dim (``opacity:0.35`` via
+    ``_tlApplyBtnEnabled``) is UNCHANGED. All 6 fixtures shifted by the same
+    +2399 code points in lockstep -- additive only (isolated to the
+    02b/16/17b edits). Pins re-pinned to the new baseline.
 """
 
 from __future__ import annotations
@@ -639,36 +657,36 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
         "harness_defaults",
         ("HarnessScene",),
         {},
-        880703,
-        "aaef5a4c12918f34262b883dfe8286fdc0f1ec474bc261f1c1297f2599a3384d",
+        883102,
+        "fe1d68d6e8d06b9afe8efd8da090591c95d5405ac9c3358dbc05385428e3b658",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        880675,
-        "55010699af16cde12be3e6c24a5d449dc59c779a77d844cac1b0bdd45b5260b2",
+        883074,
+        "d7eec6d8b141511aac2e24c718878a2b2bdea60ad0131d6524462c2b6392e783",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        880670,
-        "c8904a2c5fe9b4f61fb3d2ad614768667923f94b8c87970fe05d3df6db823479",
+        883069,
+        "57858e995f6e60fbbe60b62fd5644e9b347ecd4dd0789e6862c311ff2ec8845e",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        880649,
-        "49cf308f9d2c6f9a0ea8020348fb3b031d1bc808b9f7dc097771707500e4de5c",
+        883048,
+        "2f6ec721e4c3938a64b059c8d4cc27bdcce9b62aa23a0f468884ab83c3d57253",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        880714,
-        "b16d1142c5400ab18f0821d69597ddd272ae5d61d299549633a34effab825478",
+        883113,
+        "9dc62ea181d7831d084cd0c9c00e9d89dd23807a1939ef42cb4f1b31d547d1b5",
     ),
     (
         "share_card",
@@ -678,8 +696,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        880573,
-        "0751946191f18a7b7100a979b6f18b399fb2e1b1e2f45c024e799a0262e77b4e",
+        882972,
+        "1a7aeadb07f6f23fcd23b245b3e824a8eb9ea734cae1325ff2568ce0ad753d10",
     ),
 ]
 
