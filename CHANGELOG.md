@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Phase 11A Issues 1+2 (v0.8.0 UX bug-fix sprint): Perspective free-fly + trajectory overlay.** Two regressions in the live `?author=1` editor on kf-fehmarn reported via Telegram 2026-05-21 00:32:
+  - **Issue 1 -- Perspective controls leaked-disabled.** After scrubbing the timeline (which sets `controls.enabled = false` via the `#path-scrub` `input` handler), then switching to Perspective via the top-bar dropdown, OrbitControls stayed dead because `_camSelApply`'s Perspective branch only re-enabled controls when `_player` was truthy (via the `stopPath()` it calls). A fresh scrub-then-perspective workflow could leave `_player` null while `controls.enabled` was still false. Fix in `template_parts/10_camera_select.js_tmpl::_camSelApply`: the Perspective branch now UNCONDITIONALLY sets `controls.enabled = true` and clears `_pausedAt` / `_pausedAtPlayer` so the per-frame `_trajLayer.update()` rebase no longer pins the camera at the last scrub frame.
+  - **Issue 2 -- Trajectory disappeared in Perspective.** The author-mode fallback in `_trajActivePath` walked `selEl.value` -> `cfg.default_path_id` -> first cameraPath. After "+ Add camera" the new empty camera (0 keyframes) became BOTH the selEl value AND `cfg.default_path_id`, so the fallback returned the empty path and `_trajRebuild` drew nothing. Fix in `template_parts/15_editor_trajectory.js_tmpl::_trajActivePath`: prefer paths with >=2 keyframes (renderable) in the fallback walk so the Fehmarn Cinematic trajectory still shows in Perspective when the current bind is a fresh empty camera. Original fallback chain is preserved as the no-renderable-path safety net.
+  - Test surface: re-pinned the output-pin lockstep (all 6 fixtures shifted by +2720 bytes uniformly; verified live in the harness on `_viewer_t18` -- scrub+Perspective gives `controls.enabled=true`, +Add camera + Perspective gives `groupVisible=true, activePathId='gzPath', frustumCount=3`).
+
 ## [0.8.0] - 2026-05-21
 
 ### Added

@@ -367,10 +367,41 @@
     // before (the original guard literal below is preserved verbatim
     // so the byte-lock discriminator stays).
     if (_cs && _cs.value === _CAM_PERSP && ModeManager.is('author')) {
-      const fb = (selEl && selEl.value && selEl.value !== _CAM_PERSP)
-        ? selEl.value : (cfg.default_path_id || null);
-      let pf = fb ? cameraPaths.find(x => x && x.id === fb) : null;
-      if (!pf && cameraPaths.length) pf = cameraPaths[0];
+      // UX-Phase11A Issue 2 (2026-05-21): when the prior camera bind
+      // was an EMPTY camera (0/1 kfs -- e.g. a freshly-added Camera 1
+      // before any Record-K), the original fallback returned that
+      // empty path so the trajectory rebuild drew NOTHING (no spline
+      // = no polyline = no frusta). Result: user switches to
+      // Perspective expecting to see all cameras' trajectories, sees
+      // nothing. Fix: prefer paths with >=2 keyframes in the fallback.
+      // Walk preference: selEl.value (if real + non-empty) ->
+      // cfg.default_path_id (if real + non-empty) -> first non-empty
+      // cameraPaths -> first cameraPaths (legacy fallback when ALL
+      // are empty -- still ok, trajectory just renders empty).
+      function _pathIsRenderable(p) {
+        return p && Array.isArray(p.keyframes) && p.keyframes.length >= 2;
+      }
+      const _selFb = (selEl && selEl.value && selEl.value !== _CAM_PERSP)
+        ? selEl.value : null;
+      let pf = _selFb ? cameraPaths.find(x => x && x.id === _selFb) : null;
+      if (!_pathIsRenderable(pf) && cfg.default_path_id) {
+        const cand = cameraPaths.find(x => x && x.id === cfg.default_path_id);
+        if (_pathIsRenderable(cand)) pf = cand;
+      }
+      if (!_pathIsRenderable(pf)) {
+        for (const cand of cameraPaths) {
+          if (_pathIsRenderable(cand)) { pf = cand; break; }
+        }
+      }
+      // Final fallback: if no renderable path exists at all, keep the
+      // original selEl/default/first-camera chain so empty-scene render
+      // (no spline, no frusta) is at least consistent with the legacy
+      // behaviour. Otherwise return the renderable selection.
+      if (!pf) {
+        const fb = _selFb || (cfg.default_path_id || null);
+        pf = fb ? cameraPaths.find(x => x && x.id === fb) : null;
+        if (!pf && cameraPaths.length) pf = cameraPaths[0];
+      }
       return pf || null;
     }
     if (_cs && _cs.value === '__perspective__') return null;

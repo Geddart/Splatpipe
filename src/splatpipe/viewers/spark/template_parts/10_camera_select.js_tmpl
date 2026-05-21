@@ -151,6 +151,24 @@
       if (typeof _cancelIdleOrbit === 'function') {
         try { _cancelIdleOrbit({ silent: true }); } catch (e) {}
       }
+      // UX-Phase11A Issue 1 (2026-05-21): the AUTHOR branch above
+      // does not call stopPath()/_stopTour() when _player===null
+      // (e.g. user scrubbed the timeline -- which sets _player +
+      // controls.enabled=false -- then released; no subsequent Play,
+      // so _player stays truthy AT scrub release but later transitions
+      // can leave it null while controls.enabled is STILL false).
+      // The original conditional re-enable above only fires when
+      // _player was truthy. Reproduced live: scrub on Fehmarn
+      // Cinematic, switch to Perspective via dropdown -> OrbitControls
+      // mouse drag does nothing because controls.enabled is false.
+      // Always re-enable on a Perspective switch + clear any paused-
+      // scrub state so the per-frame _trajLayer.update() rebase does
+      // not keep pinning the camera at the last scrub frame.
+      controls.enabled = true;
+      try {
+        if (typeof _pausedAt !== 'undefined') _pausedAt = null;
+        if (typeof _pausedAtPlayer !== 'undefined') _pausedAtPlayer = null;
+      } catch (e) {}
       return;
     }
     // A real camera: mirror into the hidden #path-select (selEl)

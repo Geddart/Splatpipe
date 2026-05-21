@@ -116,6 +116,19 @@ PIN UPDATES:
     byte delta in lockstep -- perfect proof the module additions are
     additive only (no spooky-action elsewhere). Pins re-pinned to the
     new baseline.
+  * 2026-05-21 (Phase 11A Issues 1+2): two UX fixes in the
+    Perspective / camera-switch hot path. (1) ``_camSelApply``'s
+    Perspective branch now UNCONDITIONALLY re-enables OrbitControls
+    and clears any paused-scrub state -- the prior conditional
+    re-enable only fired when ``_player`` was truthy, so a
+    scrub-then-Perspective workflow left the controls dead and the
+    user could not orbit-drag. (2) ``_trajActivePath`` (author
+    mode, Perspective) now prefers paths with >=2 keyframes over an
+    empty kf path in its fallback walk, so the trajectory overlay
+    stays visible when the last-bound camera was a freshly-added
+    empty one. Both regions are interior to existing T16-TRAJ-via-
+    10-camera-select / T16-TRAJ excisions. All 6 fixtures shifted
+    by the same +2720 byte delta in lockstep; pins re-pinned.
 """
 
 from __future__ import annotations
@@ -147,42 +160,44 @@ from splatpipe.viewers.spark.template import html_for
 # fixtures +16029 bytes in lockstep), then re-pinned 2026-05-21
 # (Phases 3-8 integration #122: six editor module fragments --
 # Panorama + PostFX + Annotations + Cuts + Audio + Titles3D -- all 6
-# fixtures +180878 bytes in lockstep; modules are additive only).
+# fixtures +180878 bytes in lockstep; modules are additive only), then
+# re-pinned 2026-05-21 (Phase 11A Issues 1+2: Perspective controls
+# re-enable + trajectory fallback skips empty paths; +2720 in lockstep).
 CORPUS: list[tuple[str, tuple, dict, int, str]] = [
     (
         "harness_defaults",
         ("HarnessScene",),
         {},
-        714097,
-        "4b35fba4d9eb1048542357d28dd40523542cf683f530d22ac99ce87ece2ae64e",
+        716817,
+        "1d7bca6e5ffb1d22ccc5f68e6d41bbcceaf1bd38c3462fb541feea5fa9927e51",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        714069,
-        "e2028a5d2d02557e9e735df8088f8aad45728f012042f1a0f4e0725bea645303",
+        716789,
+        "79d09fc985599a825b9206605d7fd727281d5be15549dfa06e7dcf71e640f452",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        714064,
-        "3fa94cad8223dbf21124103ef20bad28702f0c089fa1a5c32ebc5e92e79dcb99",
+        716784,
+        "2a40fa683e6cd1a1d62bab9490443db931f3ec8c7eec18512cafb4ceb5f7d867",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        714043,
-        "e7e446bbbd423faa2a8c658481571c1db2e69594ade0e0916517f1f81dbc8971",
+        716763,
+        "d3e3ec0fc9dfd05b1c899f780f8f870d7cca7a83ba83f826d6f2984baf0002af",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        714108,
-        "1898c6bf8cf296033a2439dae838e6ddc35965cb81e549bb004210fd13e10578",
+        716828,
+        "4dcc916b56306bd68acd7b125eaea635dfbd39979220669d339d4f962a024915",
     ),
     (
         "share_card",
@@ -192,8 +207,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        713967,
-        "1d38db221930d102a907842b3666ef6c6aa0a80828c1ab2e8fb559bad4bb7848",
+        716687,
+        "3136ec9b38641d339fefc98dffc00b934e2b4e9a59f63e42d3285bf370fed9eb",
     ),
 ]
 
