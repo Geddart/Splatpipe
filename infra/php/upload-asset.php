@@ -299,22 +299,47 @@ if ($tmp_upload === '' || !is_uploaded_file($tmp_upload)) {
  *   - basename(raw) must EQUAL raw (else the sanitiser rewrote it -> reject)
  *   - reject empty / '.' / '..' / leading-dot (dotfile)
  *   - allow-list the extension (case-insensitive)
- * PHP's basename() resolves '/' on all platforms and '\\' on Windows; we
- * additionally hard-reject both separators + ':' up front so the rejection
- * is OS-uniform (matching the Python route's explicit pre-checks).
+ *
+ * CRITICAL -- read the UNSTRIPPED client filename, not $_FILES[..]['name'].
+ * PHP's multipart SAPI strips BOTH '/' and '\\' directory components from
+ * $_FILES[..]['name'] *before* the script runs, so a payload of
+ * `../evil.jpg` / `a/b.png` / `a\b.png` arrives here as a clean `evil.jpg`
+ * / `b.png` and would sail past a separator check on ['name'] straight to
+ * the CDN-push step. The Python route never sees this stripping because
+ * Starlette keeps UploadFile.filename verbatim. PHP 8.1+ exposes the raw,
+ * pre-strip client path as $_FILES[..]['full_path'] -- THAT is the value we
+ * must screen for separators so traversal names are rejected with 400
+ * BEFORE any credential load / network op (and never silently land at
+ * <slug>/<basename>). We screen ['full_path'] for traversal, then derive
+ * the safe basename and run the remaining checks on it. (Fallback to
+ * ['name'] keeps the check sane on a pre-8.1 SAPI where full_path is
+ * absent -- the colon / dotfile / control / extension gates still apply.)
  */
+$raw_full = (string) ($f['full_path'] ?? ($f['name'] ?? ''));
 $raw_name = (string) ($f['name'] ?? '');
-if ($raw_name === '') {
+if ($raw_full === '' || $raw_name === '') {
     fail(400, 'uploaded file has no name');
 }
-if (strpos($raw_name, '/') !== false || strpos($raw_name, '\\') !== false) {
+// Screen the UNSTRIPPED client path: any separator (either OS) / drive-colon
+// is a hard reject -- this is the gate PHP's name-stripping would otherwise
+// hide. Both '/' and '\\' are treated as separators regardless of host OS,
+// matching the Python route's explicit pre-checks.
+if (strpos($raw_full, '/') !== false || strpos($raw_full, '\\') !== false) {
     fail(400, 'filename must not contain path separators');
 }
-if (strpos($raw_name, ':') !== false) {
+if (strpos($raw_full, ':') !== false) {
     fail(400, 'filename must not contain path separators');
 }
-$safe_name = basename($raw_name);
-if ($safe_name !== $raw_name) {
+// After the separator gate, full_path must already be a bare basename --
+// if basename() changes it, the SAPI hid a separator we did not catch
+// (defence in depth), so reject rather than recover.
+$safe_name = basename($raw_full);
+if ($safe_name !== $raw_full) {
+    fail(400, 'filename was rewritten by sanitiser');
+}
+// The SAPI-stripped ['name'] must agree with the basename of the raw path;
+// any divergence means a separator survived only in one of the two views.
+if ($raw_name !== '' && $safe_name !== basename($raw_name)) {
     fail(400, 'filename was rewritten by sanitiser');
 }
 if ($safe_name === '' || $safe_name === '.' || $safe_name === '..'

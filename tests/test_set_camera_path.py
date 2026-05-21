@@ -30,6 +30,7 @@ Cases:
 """
 
 import json
+import re
 
 from typer.testing import CliRunner
 
@@ -38,6 +39,17 @@ from splatpipe.core.events import ProgressEvent, StepResult
 from splatpipe.core.spcp_token import encode_spcp
 
 runner = CliRunner()
+
+# Strip SGR/ANSI colour escapes so `--help` substring asserts are robust to
+# whether Rich colourises (CI/TTY) or not (Windows runner). Rich highlights
+# option flags with a colour escape INSIDE the token, splitting literal
+# substrings like ``--scene`` when colour is on. (See the same guard in
+# tests/test_init_php_auth_cli.py.)
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
 
 # Live viewer-config the (stubbed) fetch returns: it already has a
 # primary_asset (the locked Bunny pointer) + an unrelated key. The merge
@@ -346,7 +358,7 @@ def test_deploy_target_failure_exits_nonzero(monkeypatch):
 def test_help_lists_command():
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    assert "set-camera-path" in result.output
+    assert "set-camera-path" in _strip_ansi(result.output)
 
 
 def test_command_help_text():
@@ -357,5 +369,6 @@ def test_command_help_text():
     # (main.py stdout.reconfigure errors='replace') handles those at the
     # real console. The cp1252-safety of *this command's own status lines*
     # is asserted by the case (a)-(d) runs above (result.output.isascii()).
-    # Here we only assert the docstring content is present.
-    assert "SPCP1" in result.output
+    # Here we only assert the docstring content is present (ANSI-stripped so
+    # the check is colour-mode-independent across platforms).
+    assert "SPCP1" in _strip_ansi(result.output)

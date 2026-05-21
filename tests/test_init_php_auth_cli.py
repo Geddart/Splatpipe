@@ -41,6 +41,20 @@ from splatpipe.cli.main import app
 
 runner = CliRunner()
 
+# Strip SGR/ANSI colour escapes so substring asserts on `--help` output are
+# robust to whether Rich colourises (CI/TTY) or not (Windows runner, no
+# colour). Typer+Rich highlights option flags like ``--scene`` with a colour
+# escape INSIDE the token (``-\x1b[1;36m-scene\x1b[0m``), which splits the
+# literal ``--scene`` substring when colour is on -- the green-on-Windows /
+# red-on-ubuntu split that broke this test in CI. Stripping first makes the
+# check deterministic on every platform.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
+
+
 # 32 lowercase hex chars (`secrets.token_hex(16)`).
 TOKEN_RE = re.compile(r"^[0-9a-f]{32}$")
 
@@ -123,16 +137,21 @@ def test_help_lists_command():
     """The init-php-auth subcommand is registered on the shared app."""
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    assert "init-php-auth" in result.output
+    # ANSI-robust: command names are not split by Rich today, but stripping
+    # keeps every help-text substring check uniform + future-proof.
+    assert "init-php-auth" in _strip_ansi(result.output)
 
 
 def test_command_help_text_documents_scene_arg():
     result = runner.invoke(app, ["init-php-auth", "--help"])
     assert result.exit_code == 0
+    # Strip ANSI first: Rich injects a colour escape INSIDE the ``--scene``
+    # flag when colour is on (CI/ubuntu), splitting the literal substring.
+    clean = _strip_ansi(result.output)
     # The headline doc string should call out the scene slug, the
     # bookmark URL contract, and the password-manager hint.
-    assert "--scene" in result.output
-    assert "token" in result.output.lower()
+    assert "--scene" in clean
+    assert "token" in clean.lower()
 
 
 # ---------------------------------------------------------------------------
