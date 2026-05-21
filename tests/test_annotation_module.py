@@ -109,7 +109,42 @@ _ANNOTATION_MODULE_MARKERS = (
     "'ann-t-in'",
     "'ann-t-out'",
     "'ann-fade-ms'",
+    # WF-M (#145): editable title + text inputs feeding the dot's unfold
+    # panel (the card was stuck "(untitled)" with an empty panel before).
+    "'ann-title'",
+    "'ann-text'",
+    "titleIn.dataset.field = 'title';",
+    "textIn.dataset.field = 'text';",
 )
+
+
+def test_annotation_title_and_text_editable():
+    """WF-M (#145): the annotation drawer card carries a title <input> and a
+    text <textarea> that commit on change (gesture-end -- ONE EditHistory
+    snapshot per gesture, NEVER per keystroke) and rebuild so the dot's
+    unfold panel (which renders ann.title + ann.text) reflects the edit."""
+    html = html_for("HarnessScene")
+    ann_i = html.index("//  AnnotationModule (Phase 5")
+    # Find the renderSceneSettings list-row builder where the inputs live.
+    seg = html[ann_i:ann_i + 60000]
+    # Title input: text type, bound to ann.title, commit pushes 'ann-title'.
+    assert "titleIn.value = ann.title || ''" in seg
+    assert "ann.title = titleIn.value;" in seg
+    assert "_pushUndo('ann-title');" in seg
+    # Text input: a textarea bound to ann.text, commit pushes 'ann-text'.
+    assert "ann.text = textIn.value;" in seg
+    assert "_pushUndo('ann-text');" in seg
+    # Both commit on CHANGE (gesture-end), not per keystroke (no 'input' bind
+    # that mutates the cfg on each character).
+    assert "titleIn.addEventListener('change'" in seg
+    assert "textIn.addEventListener('change'" in seg
+    # The commit triggers _rebuild() so the panel DOM is recreated with the
+    # new title/text (a first-time fill needs the h/p elements built).
+    t_i = seg.index("_pushUndo('ann-title');")
+    t_end = seg.index("titleIn.addEventListener('keydown'", t_i)
+    assert "_rebuild();" in seg[t_i:t_end], (
+        "title commit must _rebuild() so the unfold panel shows the new title"
+    )
 
 
 def test_annotation_module_markers_present_in_rendered_html():

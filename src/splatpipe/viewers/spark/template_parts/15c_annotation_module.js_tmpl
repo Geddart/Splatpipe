@@ -500,6 +500,69 @@
           ann.pos[2].toFixed(2) : '0';
         posLine.textContent = 'pos:  [' + px + ', ' + py + ', ' + pz + ']';
         body.appendChild(posLine);
+        // UX-Phase11G WF-M (#145): editable Title + Text. The dot's unfold
+        // panel (_buildPanelEl) renders BOTH ann.title (bold heading) and
+        // ann.text (body), and the summary shows ann.title -- but there was
+        // NO input for either, so every annotation was stuck "(untitled)"
+        // with an empty panel. Commit on change/Enter (gesture-end -- ONE
+        // EditHistory snapshot per gesture per R8 §4.2, NEVER per keystroke;
+        // mirrors 15g_titles_module's text input). A _rebuild() after the
+        // commit re-creates the panel DOM so the new title/text shows (the
+        // panel only builds the h/p elements when the field is non-empty AT
+        // BUILD TIME, so a live textContent poke is insufficient for a
+        // first-time fill).
+        const titleWrap = document.createElement('label');
+        titleWrap.style.cssText = 'display:flex;flex-direction:column;gap:2px;';
+        const titleLbl = document.createElement('span');
+        titleLbl.textContent = 'title';
+        titleLbl.style.cssText = 'font-size:9px;color:#888;';
+        titleWrap.appendChild(titleLbl);
+        const titleIn = document.createElement('input');
+        titleIn.type = 'text';
+        titleIn.value = ann.title || '';
+        titleIn.dataset.field = 'title';
+        titleIn.placeholder = 'Heading (bold)';
+        titleIn.style.cssText = 'background:#222;color:#ddd;border:1px ' +
+          'solid #444;font-size:11px;padding:3px 5px;width:100%;' +
+          'box-sizing:border-box;';
+        titleIn.addEventListener('change', () => {
+          _pushUndo('ann-title');
+          ann.title = titleIn.value;
+          _writeBack();
+          _rebuild();
+          // Keep the drawer-row summary in sync (matches the build-time
+          // format) -- _rebuild only touches the 3D dots/panels, not the
+          // drawer list, so refresh this row's heading directly.
+          sm.textContent = (i + 1) + '. ' +
+            ((ann.label || '?') + '  ' + (ann.title || '(untitled)'));
+        });
+        titleIn.addEventListener('keydown', (ev) => {
+          if (ev.key === 'Enter') { ev.preventDefault(); titleIn.blur(); }
+        });
+        titleWrap.appendChild(titleIn);
+        body.appendChild(titleWrap);
+        const textWrap = document.createElement('label');
+        textWrap.style.cssText = 'display:flex;flex-direction:column;gap:2px;';
+        const textLbl = document.createElement('span');
+        textLbl.textContent = 'text';
+        textLbl.style.cssText = 'font-size:9px;color:#888;';
+        textWrap.appendChild(textLbl);
+        const textIn = document.createElement('textarea');
+        textIn.value = ann.text || '';
+        textIn.dataset.field = 'text';
+        textIn.rows = 2;
+        textIn.placeholder = 'Body text';
+        textIn.style.cssText = 'background:#222;color:#ddd;border:1px ' +
+          'solid #444;font-size:11px;padding:3px 5px;width:100%;' +
+          'box-sizing:border-box;resize:vertical;font-family:inherit;';
+        textIn.addEventListener('change', () => {
+          _pushUndo('ann-text');
+          ann.text = textIn.value;
+          _writeBack();
+          _rebuild();
+        });
+        textWrap.appendChild(textIn);
+        body.appendChild(textWrap);
         // Kind dropdown.
         const kindWrap = document.createElement('label');
         kindWrap.style.cssText = 'display:flex;gap:6px;' +

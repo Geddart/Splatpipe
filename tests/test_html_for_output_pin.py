@@ -327,6 +327,15 @@ PIN UPDATES:
     destructive single-key hotkeys (T/R/X/K/V/B) keep the broad guard so H6
     stays intact. All 6 fixtures shifted by the same +5959 code points in
     lockstep; pins re-pinned.
+  * 2026-05-21 (Phase 11G WF-M annotation text #145): the annotation drawer
+    card (``15c_annotation_module``) gains an editable title ``<input>`` + a
+    text ``<textarea>`` (commit on change -- ONE EditHistory snapshot per
+    gesture via ``ann-title`` / ``ann-text``, NEVER per keystroke; a
+    ``_rebuild()`` after the commit re-creates the dot's unfold panel so the
+    new title/text shows). The card previously had kind/radius/t_in/t_out/
+    fade_ms but NO text input, so every annotation was stuck "(untitled)"
+    with an empty panel. All 6 fixtures shifted by the same +3248 code points
+    in lockstep; pins re-pinned.
 """
 
 from __future__ import annotations
@@ -408,36 +417,36 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
         "harness_defaults",
         ("HarnessScene",),
         {},
-        794932,
-        "03b65cd6dd6ed333b1488424dc98e45781d3d5b2457f0948d7ba5fa01ae33312",
+        798180,
+        "ed85c9bdfb6387c75f01f91e17261731c523ea3ad78ea4f0f8a4f26336602c31",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        794904,
-        "b374e1f7d09608eef807d8ed6b6143bb98f3ee2b61068d14b84016b4afa3397e",
+        798152,
+        "4301f4a74a62f11c2157b3c65960a641b47d157f341c088f8492a20b44cbd8aa",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        794899,
-        "671cae613ad1b7f2672f281287c0541b0063780942ffc7b374c2c538e72913c1",
+        798147,
+        "514edfcecfc99d6980643465fcf89b950bf0616dee69cdf3075e3eb23234dcb5",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        794878,
-        "f7753190d7c0b588bc7957d88423f40b470c726478a1923ad97ee370516b317d",
+        798126,
+        "e8226cf17e6ab42fb5da1906ebd7be800d95d0fbed5c1340e25e10048a52afce",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        794943,
-        "83e197e204c24384cdcd0018f6d4ecae1d04d058202405aa1b99db3cb73ce4b4",
+        798191,
+        "8837ea22ca7a1319245b8cc6ed913a589885b6dd2d6873da735b4ca4e43d36e4",
     ),
     (
         "share_card",
@@ -447,8 +456,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        794802,
-        "b7138e86dd3c83ad41b24b11dc7f13e66d1690c2c5d5969d5ac62390a6a36b68",
+        798050,
+        "bed493cbd90a796ca115149c920f52a432577e698f71ec72aaaf87385f2dd0c2",
     ),
 ]
 
