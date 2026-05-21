@@ -384,6 +384,34 @@ PIN UPDATES:
     and orbits from the held pose. All 6 fixtures shifted by the same
     +6896 code points in lockstep -- additive only (isolated to the
     edited fragments). Pins re-pinned to the new baseline.
+  * 2026-05-21 (R2 Batch B #152 -- undo snapshot gaps #3): FIVE keyframe
+    mutations that pushed NO EditHistory snapshot (so they could not be
+    undone + the undo button greyed out wrongly) now snapshot the
+    pre-gesture cfg BEFORE the mutation, once per gesture. (1) keyframe
+    DELETE -- ``16_editor_timeline``'s X/Delete keydown handler + the
+    ``tlDeleteSelection`` test-surface both ``_tlPushHistorySnap(
+    'kf-delete')`` past the >=2 clamp. (2) keyframe RECORD --
+    ``17_editor_gizmo::_gzRecordKeyframe`` (reached by both the K hotkey
+    and the Rec button) ``EditorModuleRegistry.pushUndo('kf-record')``
+    before the ``p.keyframes.push(kf)``. (3) diamond time-DRAG --
+    ``16``'s ``_tlOnDown`` snapshots ``kf-timeline-drag`` on the
+    pointerdown that begins a diamond drag (ONCE at gesture start, never
+    per pointermove) + the ``tlDragKf`` test-surface mirrors it. (4)
+    scale-edge DRAG -- ``16``'s ``_tlOnDown`` snapshots ``kf-scale`` on
+    the edge-handle pointerdown + the ``tlScaleSelection`` test-surface
+    mirrors it. (5) single-keyframe INTERP -- ``17_editor_gizmo::
+    _gzSetInterp``'s single-target branch ``pushUndo('kf-interp')`` before
+    ``kf.interp = val`` (the multi-write branch already pushed
+    'interp-multi', untouched). PLUS a clearer undo/redo affordance in
+    ``16``'s transport row: the buttons gain a larger hit target (more
+    padding + a short "undo"/"redo" text label beside the ``↶``/``↷``
+    glyph) and a thin ``_tlDivider()`` flanking the pair so the history
+    group reads visually apart from Play/Loop; the per-frame
+    ``_tlSyncUndoRedo()`` enable/disable sync + the exact
+    ``_tlBar.appendChild(_tlUndo); _tlBar.appendChild(_tlRedo);`` line are
+    preserved. All 6 fixtures shifted by the same +4917 code points in
+    lockstep -- additive only (isolated to the 16/17 fragments). Pins
+    re-pinned to the new baseline.
 """
 
 from __future__ import annotations
@@ -469,36 +497,36 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
         "harness_defaults",
         ("HarnessScene",),
         {},
-        809427,
-        "bc917977f6135c3c4b809d71e1f6fdcf7f6a99937eb7faf3317aac04f60d9065",
+        814344,
+        "0167525ed86a764a8abc18f9cb7da376c5258c5f6ed6ac46e90363963ccd7dce",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        809399,
-        "c1a3d42e1bc6130e55005949328001c18f6111a4f9e49088ab0551da43fa6c4a",
+        814316,
+        "a29756db1b2041472b3282c3e2e4dcbe147ac365714aff147f08612bcf1bb62f",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        809394,
-        "2ca7d4e5794aa956ab660010eee213d42f81f76f4771caa53e8785751f52ddd4",
+        814311,
+        "c5b06498608113a4f5e185cc28124935688134d50e44bb004660baab95df4e82",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        809373,
-        "f81ca47de89ea8316154142996b5d9736861f670c88ee434c867ce8b199f0337",
+        814290,
+        "8e88cbd1e92bbb6a07a44d3a1b9f276ce5c2a6e34ba1ada98c05f12026c2fc1c",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        809438,
-        "5329f66e4d9cabf1c7da14df4dfe766a7e32ed857303bd075bc55ad08d62ce46",
+        814355,
+        "fcf512d71116f7bb479d4b0186e827dc00e2988557ad3da40ecb151b0731118c",
     ),
     (
         "share_card",
@@ -508,8 +536,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        809297,
-        "6cd78d16e4d0b08e33db348f509b0aaf2d7af5c5220e7068ae40a79a3d53f356",
+        814214,
+        "1bd0645843b611152f84441abfe15742f370960c7aa4885b7adcfe357df3844b",
     ),
 ]
 

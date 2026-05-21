@@ -170,6 +170,19 @@
         'font:12px monospace;line-height:1;';
       return b;
     }
+    // UX-Phase11-R2 #3 (2026-05-21): thin vertical divider to visually
+    // SEPARATE the undo/redo history group from the Play/Loop transport
+    // controls in the same flex row (R2 #3: the buttons were "awkwardly
+    // positioned" -- wedged glyph-only between Play and Loop with no
+    // grouping cue). Pure inline-styled span, no new CSS region.
+    function _tlDivider() {
+      const d = document.createElement('span');
+      d.setAttribute('aria-hidden', 'true');
+      d.style.cssText =
+        'flex:0 0 auto;width:1px;height:18px;margin:0 3px;' +
+        'background:rgba(255,255,255,0.18);';
+      return d;
+    }
     // UX-Phase11A Issue 5 (2026-05-21): unified Play/Pause toggle. The
     // separate Pause button is REMOVED; _tlPlay is now a tri-state
     // toggle (idle \u25B6 -> playing \u23F8 -> paused \u25B6 -> resume \u23F8 ...). The
@@ -192,10 +205,26 @@
     // -- synced every frame by _tlSyncUndoRedo() off _tlSyncPlayhead (same
     // per-frame path the Play glyph uses) so a programmatic edit / hotkey
     // undo keeps the buttons accurate without a manual refresh.
-    const _tlUndo = _tlBtn('\u21B6', 'Undo (Ctrl+Z)');
-    const _tlRedo = _tlBtn('\u21B7', 'Redo (Ctrl+Y)');
+    // R2 #3 (2026-05-21): clearer undo/redo affordance. The buttons were
+    // 28px glyph-only and easy to miss; give them a LARGER hit target
+    // (more padding + bigger glyph), a short text label so they read as
+    // "undo"/"redo" (not just an ambiguous arrow), and group them between
+    // dividers so they sit visually apart from Play/Loop. They stay in the
+    // transport row (the always-reachable author surface) and keep the
+    // per-frame _tlSyncUndoRedo() enable/disable sync.
+    const _tlUndo = _tlBtn('\u21B6 undo', 'Undo (Ctrl+Z)');
+    const _tlRedo = _tlBtn('redo \u21B7', 'Redo (Ctrl+Y)');
+    const _UNDO_BTN_CSS =
+      'background:rgba(255,255,255,0.10);color:#eee;border:0;' +
+      'border-radius:5px;padding:5px 10px;cursor:pointer;' +
+      'font:12px monospace;line-height:1;letter-spacing:0.2px;' +
+      'display:inline-flex;align-items:center;gap:4px;';
+    _tlUndo.style.cssText = _UNDO_BTN_CSS;
+    _tlRedo.style.cssText = _UNDO_BTN_CSS;
     _tlBar.appendChild(_tlPlay);
+    _tlBar.appendChild(_tlDivider());
     _tlBar.appendChild(_tlUndo); _tlBar.appendChild(_tlRedo);
+    _tlBar.appendChild(_tlDivider());
     _tlBar.appendChild(_tlLoop); _tlBar.appendChild(_tlFpsBtn);
 
     // ---- Phase 2C (#122 \u00A74.1.1): Prev/Next-keyframe skip + total-time
@@ -705,6 +734,12 @@
       // (1) selection-span edge handle -> proportional scale.
       const edge = _tlHitEdge(xy.x, xy.y);
       if (edge) {
+        // UX-Phase11-R2 #3 (2026-05-21): scale-edge DRAG mutates every
+        // selected kf.t in _tlOnMove('scale') but pushed NO EditHistory
+        // snapshot, so a rescale could not be undone. Snapshot the pre-
+        // gesture cfg HERE on pointerdown (ONCE, before any pointermove
+        // mutation) -- never per-move (that yields 60 entries/s).
+        _tlPushHistorySnap('kf-scale');
         const p = _tlActivePath();
         let lo = Infinity, hi = -Infinity;
         _tlSel.forEach((i) => {
@@ -728,6 +763,13 @@
       // (2) diamond -> temporal drag of THAT keyframe.
       const ki = _tlHitKf(xy.x, xy.y);
       if (ki >= 0) {
+        // UX-Phase11-R2 #3 (2026-05-21): a diamond time-drag mutates
+        // keyframes[idx].t in _tlOnMove('kf') but pushed NO EditHistory
+        // snapshot, so dragging a keyframe to a new time could not be
+        // undone + the undo button greyed out wrongly. Snapshot the pre-
+        // gesture cfg HERE on pointerdown (ONCE, before any pointermove
+        // mutation) -- never per-move.
+        _tlPushHistorySnap('kf-timeline-drag');
         _tlDragMode = 'kf';
         _tlDragKf = ki;
         // Click selects just this kf unless shift-extends; a
@@ -1058,6 +1100,12 @@
         // the path).
         return;
       }
+      // UX-Phase11-R2 #3 (2026-05-21): keyframe DELETE was NOT pushing an
+      // EditHistory snapshot, so a delete could not be undone + the undo
+      // button greyed out wrongly. Snapshot the pre-mutation cfg BEFORE the
+      // reassign (gesture-start; a single X/Delete press, once per gesture).
+      // Pushed only past the >=2 clamp so a no-op delete leaves no entry.
+      _tlPushHistorySnap('kf-delete');
       p.keyframes = keep;
       _tlSel.clear();
       _tlAfterEdit();
@@ -1218,6 +1266,10 @@
             let t = +newT;
             if (!isFinite(t)) return false;
             if (t < 0) t = 0;
+            // UX-Phase11-R2 #3 (2026-05-21): mirror the pointerdown diamond-
+            // drag snapshot so a programmatic/harness time-drag is undoable
+            // too (one snapshot at the gesture start, before the mutation).
+            _tlPushHistorySnap('kf-timeline-drag');
             p.keyframes[idx].t = t;
             _tlAfterEdit();
             return true;
@@ -1263,6 +1315,10 @@
             });
             if (!isFinite(lo) || !isFinite(hi) || lo === hi)
               return null;
+            // UX-Phase11-R2 #3 (2026-05-21): mirror the pointerdown scale-
+            // edge snapshot so a programmatic/harness rescale is undoable
+            // too (one snapshot at the gesture start, before the mutation).
+            _tlPushHistorySnap('kf-scale');
             const anchor = (edge === 'right') ? lo : hi;
             let base0 = Math.abs(((edge === 'right') ? hi : lo) -
               anchor);
@@ -1294,6 +1350,10 @@
               if (!_tlSel.has(i)) keep.push(p.keyframes[i]);
             }
             if (keep.length < 2) return false;
+            // UX-Phase11-R2 #3 (2026-05-21): mirror the keydown X-handler's
+            // pre-mutation snapshot so the harness/test-surface delete is
+            // undoable too (once per gesture, past the >=2 clamp).
+            _tlPushHistorySnap('kf-delete');
             p.keyframes = keep;
             _tlSel.clear();
             _tlAfterEdit();

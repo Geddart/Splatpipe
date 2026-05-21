@@ -1543,6 +1543,18 @@
       // Single-target fallback (no multi-select): gizmo target only.
       const kf = _gzSelKfObj();
       if (!kf) return false;
+      // UX-Phase11-R2 #3 (2026-05-21): the single-target interp write was
+      // NOT pushing an EditHistory snapshot (only the multi-write branch
+      // above did 'interp-multi'), so changing ONE keyframe's interp could
+      // not be undone + the undo button greyed out wrongly. Snapshot the
+      // pre-mutation cfg BEFORE the write (gesture-start, once-per-gesture
+      // -- this is a single popover-button click, not a drag).
+      try {
+        if (typeof EditorModuleRegistry !== 'undefined' &&
+            typeof EditorModuleRegistry.pushUndo === 'function') {
+          EditorModuleRegistry.pushUndo('kf-interp');
+        }
+      } catch (e) {}
       kf.interp = val;
       // Picking `bezier` from the interp popover is the same
       // intent as the tangents button: seed the derived defaults
@@ -1673,6 +1685,17 @@
           _GZ_R(camera.quaternion.z), _GZ_R(camera.quaternion.w)],
         fov: _GZ_R(camera.fov),
       };
+      // UX-Phase11-R2 #3 (2026-05-21): record (K hotkey OR Rec button, both
+      // reach here) was NOT pushing an EditHistory snapshot, so a freshly
+      // recorded keyframe could not be undone + the undo button greyed out
+      // wrongly. Snapshot the pre-mutation cfg BEFORE the append (gesture-
+      // start, once-per-gesture -- a single discrete K/Rec action).
+      try {
+        if (typeof EditorModuleRegistry !== 'undefined' &&
+            typeof EditorModuleRegistry.pushUndo === 'function') {
+          EditorModuleRegistry.pushUndo('kf-record');
+        }
+      } catch (e) {}
       p.keyframes.push(kf);
       _gzAfterEdit();
       return kf;
