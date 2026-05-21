@@ -669,8 +669,68 @@
         });
         body.appendChild(delBtn);
         row.appendChild(body);
+        // R2 #2 (#156): right-click an annotation row -> the ONE
+        // openContextMenu primitive (04b) with Edit / Delete / Go to.
+        // Edit expands the <details> (where the title/text/kind/radius
+        // fields live); Delete reuses the SAME delete handler (delBtn);
+        // Go to flies the orbit pivot to the annotation's pos so the
+        // author can see it. Author-only (the drawer is author chrome);
+        // preventDefault so no browser menu. The closures capture this
+        // row's `s`/`ann`/`row`/`delBtn` so the menu always targets the
+        // right annotation.
+        row.addEventListener('contextmenu', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const items = [
+            {
+              label: 'Edit',
+              title: 'Expand this annotation’s fields',
+              onSelect: () => {
+                try { row.open = true; } catch (e) {}
+                try { row.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+              },
+            },
+            {
+              label: 'Go to',
+              title: 'Move the orbit pivot to this annotation',
+              onSelect: () => { _ssGoToAnnotation(ann); },
+            },
+            { separator: true },
+            {
+              label: 'Delete',
+              danger: true,
+              title: 'Delete this annotation',
+              onSelect: () => { try { delBtn.click(); } catch (e) {} },
+            },
+          ];
+          try { openContextMenu(ev.clientX, ev.clientY, items); } catch (e) {}
+        });
         _ssListEl.appendChild(row);
       }
+    }
+    // R2 #2 (#156): fly the orbit pivot (+ a gentle camera nudge) to an
+    // annotation's world pos so "Go to" gives visible feedback. Reuses
+    // the live `controls` / `camera` (07/08 scope). Sets controls.target
+    // to the annotation pos and pulls the camera to a sensible distance
+    // along its current view direction if it is very far; never throws.
+    function _ssGoToAnnotation(ann) {
+      try {
+        if (!ann || !Array.isArray(ann.pos) || ann.pos.length < 3) return;
+        if (typeof controls === 'undefined' || !controls ||
+            !controls.target) return;
+        controls.target.set(ann.pos[0], ann.pos[1], ann.pos[2]);
+        // If the camera is implausibly far from the new pivot, draw it in
+        // along its current forward so the annotation is in frame.
+        if (typeof camera !== 'undefined' && camera && camera.position) {
+          const d = camera.position.distanceTo(controls.target);
+          if (isFinite(d) && d > 30) {
+            const fwd = new THREE.Vector3(0, 0, -1)
+              .applyQuaternion(camera.quaternion);
+            camera.position.copy(controls.target).addScaledVector(fwd, -8);
+          }
+        }
+        controls.update();
+      } catch (e) {}
     }
     // Small numeric-input factory (reused for t_in / t_out / fade_ms).
     function _ssNumInput(label, val, min, max, step, onCommit) {

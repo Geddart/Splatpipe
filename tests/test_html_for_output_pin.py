@@ -482,6 +482,38 @@ PIN UPDATES:
     edit persists, mirroring the WF-M annotation fix). Isolated to the
     15g fragment: all 6 fixtures shifted by the same +9100 code points
     in lockstep -- additive only. Pins re-pinned to the new baseline.
+  * 2026-05-21 (R2 Batch E2 #156 -- right-click context menus): ONE
+    reusable ``openContextMenu(x, y, items, opts)`` primitive added as a
+    new early fragment ``04b_context_menu.js_tmpl`` (a [role=menu] popup
+    of [role=menuitem] .quality-btn buttons, viewport-clamped, closed by
+    capture-phase outside-click / Escape / scroll / resize / item-select
+    with all listeners removed on close, single-instance + coordinated
+    with the Save / Set-start-view cards via _closeAllEditorOverlays,
+    keyboard nav focus + ArrowUp/Down/Home/End/Enter). Wired to FIVE
+    surfaces, ALL author-gated: (1) ``16_editor_timeline`` -- a
+    contextmenu on _tlLane hit-tests _tlHitKf and opens Delete keyframe
+    (X-delete mutation + 'kf-delete' snapshot, >=2 clamp) / flattened
+    Set-interp (5 _VALID_INTERP keys, 'kf-interp' snapshot) / Go to
+    keyframe (_tlScrubToTime). (2) ``17_editor_gizmo`` -- a contextmenu
+    on renderer.domElement reuses _gzPickFrustum + _gzAttach to select
+    the hit keyframe then offers the same Delete / Set-interp (via
+    _gzSetInterp) / Go to (window.__editor.tlScrub). (3)
+    ``10_camera_select`` -- a contextmenu on #camera-select offers
+    Rename / Set-as-default / Delete for the selected camera (reuses
+    _camSelRename/_camSelDelete + a new _camSelSetDefault writing
+    cfg.default_path_id). (4) ``15c_annotation_module`` + (5)
+    ``15g_titles_module`` rows -- Edit (expand <details>) / Go to (fly
+    the orbit pivot to pos) / Delete (reuse the row delBtn); plus
+    ``15d_cuts_module`` clip cards -- Edit / Move earlier / Move later /
+    Delete. The canvas's 08:223 ``preventDefault`` is UNCHANGED (it
+    still suppresses the browser menu for non-author + on a frustum
+    miss). All 6 fixtures shifted by the same +33997 code points in
+    lockstep -- additive only (new 04b fragment + region-interior wiring
+    in 10/15c/15d/15g/16/17; includes a +553 follow-up that fixed the
+    primitive's Home/End keyboard nav -- a huge wrapping offset
+    mis-wrapped to a negative index so End left focus on the first item,
+    caught in the live Playwright verify; replaced with a direct
+    _ctxFocusEdge first/last jump). Pins re-pinned to the new baseline.
 """
 
 from __future__ import annotations
@@ -571,36 +603,36 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
         "harness_defaults",
         ("HarnessScene",),
         {},
-        838047,
-        "b487072d623f4724c91c513d1aee63ef385dbc35a8f81e42ef700cf906d63ea1",
+        872044,
+        "6400ef16d5a65368f477886ac6d63cd02fea2b00ed91151ebdbe191f69e1459c",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        838019,
-        "a5244a9b8926c25ede8d9393d7fbf3f401c477db4194778e595f31d187aaff6f",
+        872016,
+        "1babed563ddf48f13bae959b47e71c45cc4acdddf569fbf047b33fe5a70486df",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        838014,
-        "d4d6aacbdb407a84fb5001b0ca5d3b7c7c5c7a70f66b9e80ebb9af992d380e08",
+        872011,
+        "b0c1ebc1fea9cdcc3ce82c2cb71b7fca6d4462eec9646204ec3382e1af1e2301",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        837993,
-        "336abf94b740be38da242573531a4d72b207c787086c31a00c2c8cd143afa83b",
+        871990,
+        "f6dd439859083568e0a359ec4826e00c1433dc856ee13a374fddb9420e525e42",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        838058,
-        "9853ea0b6d9832983bd5bae3642f3d6190b3c3051ebc3cada15619d61fc114dd",
+        872055,
+        "722aa2c68a15070dabf05e3595d561e03ea87de75f54406c8cb71099a1552fa3",
     ),
     (
         "share_card",
@@ -610,8 +642,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        837917,
-        "496aaba7299983671da28b2ef90682ad6e6a6ebc14a070cb5f69cfdad77d046f",
+        871914,
+        "e3fd6e09d4fc2bc10fbef636e8bfed27fa625f960c6ab4325270f376a1d6c30a",
     ),
 ]
 

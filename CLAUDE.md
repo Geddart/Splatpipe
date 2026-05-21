@@ -9,7 +9,7 @@ CLI-first Gaussian splatting pipeline. Takes COLMAP data through: auto-clean →
 ```bash
 cd H:\001_ProjectCache\1000_Coding\Splatpipe
 pip install -e ".[dev]"
-pytest tests/ -v                    # Run tests (1013 collected; 951 passed, 62 skipped, ~32s)
+pytest tests/ -v                    # Run tests (1019 collected; 957 passed, 62 skipped, ~32s)
 splatpipe --help                    # CLI commands
 splatpipe web                       # Launch dashboard
 ```
@@ -77,6 +77,7 @@ splatpipe/                    # repo root
           03_body_chrome.html_tmpl  # body shell + camera-select + HUD + loading (Set-start-view top-bar btn REMOVED in Phase 11A Issue 8)
           04_js_prologue.js_tmpl    # importmap (host-pinned Three + Spark fork) + SAVE_* / STOCK consts
           04a_editor_module_registry.js_tmpl  # EditorModuleRegistry coordinator (Phase 2A #122)
+          04b_context_menu.js_tmpl  # openContextMenu reusable right-click menu primitive (R2 #2 / #156)
           05_framework.js_tmpl  # ModeManager / OverlayScene / InteractionManager / HudLayer + _bootMount
           06_cfg.js_tmpl        # viewer cfg + _DEFAULTS
           07_setup_three_spark.js_tmpl  # THREE + Spark + sparkOpts + paged_ext_splats
@@ -185,6 +186,7 @@ splatpipe/                    # repo root
     test_html_for_save_mode.py     # Generated viewer save_mode/save_endpoint plumbing + NEGATIVE-CONTROL author-mode UX/gizmo/overlay tests (v0.8+)
     test_html_for_output_pin.py    # Output-pin byte-lock: html_for() len+SHA-256 for 6 corpus fixtures + UTF-8 LF fragment sanity (modularization-safe replacement for the retired excised-region source-level lock; T6 of #118)
     test_intro_startview_modules.py # IntroModule (15h) + StartViewModule (15i) Scene Settings sections: contract markers + fragment ordering + openStartViewCard helper (Phase 11A Issue 9)
+    test_context_menu.py      # openContextMenu primitive (04b) contract markers + 5 author-gated surfaces wired (timeline/3D/camera/annotation+title+clip rows) + 08:223 non-author suppressor preserved + fragment ordering (R2 #2 / #156)
     test_undo_redo_ui.py           # WF-H3 (#144): visible Undo/Redo transport buttons + narrow _editorUndoHotkeyBlocked() guard (Ctrl+Z works in the drawer; text-entry-only block matrix; Phase 11G)
     test_edit_history.py           # EditHistory snapshot ring-buffer (pre-gesture convention; WF-H2 #143 first-edit-undoable + per-gesture undo/redo; 200-cap; Phase 2A/11G)
     test_php_save_oracle.py        # PHP save adapter cross-language merge oracle (v0.8+)
@@ -425,7 +427,7 @@ Key config sections: `[tools]`, `[colmap_clean]`, `[postshot]` (profile, gpu, ma
 ## Tests
 
 ```bash
-pytest tests/ -v              # 1013 collected (951 passed, 62 skipped)
+pytest tests/ -v              # 1019 collected (957 passed, 62 skipped)
 pytest tests/ -k colmap       # Just COLMAP tests
 pytest tests/ -k integration  # End-to-end with tiny data
 pytest tests/ -k trainers     # Trainer abstraction tests

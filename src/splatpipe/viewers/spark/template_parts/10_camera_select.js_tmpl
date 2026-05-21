@@ -753,6 +753,69 @@
         _camSelDelete();
       });
     }
+    // R2 #2 (#156): AUTHOR-ONLY "Set as default" -- point
+    // cfg.default_path_id at the currently-selected camera's path id so
+    // the EXISTING _buildPatch / SPCP token round-trips it as the
+    // scene's default tour (the SAME wire key _camSelCreate writes; no
+    // new key). The Perspective sentinel is never a default. Used by the
+    // right-click context menu below.
+    function _camSelSetDefault() {
+      if (!ModeManager.is('author')) return;
+      if (!_camSel) return;
+      const val = _camSel.value;
+      if (!val || val === _CAM_PERSP) return;
+      cfg.default_path_id = val;
+    }
+    // R2 #2 (#156): right-click the camera dropdown -> the SAME actions
+    // the kebab offers (Rename / Delete / Set as default), per-row. The
+    // native <select> cannot reliably surface a per-<option> contextmenu,
+    // so the menu acts on the CURRENTLY-SELECTED camera (the dropdown's
+    // value) -- which is what the kebab already does, now reachable via
+    // right-click. Author-gated + preventDefault (no browser menu). Items
+    // are disabled on the Perspective sentinel (it is not a real camera).
+    if (_camSel) {
+      _camSel.addEventListener('contextmenu', (ev) => {
+        if (!ModeManager.is('author')) return;
+        ev.preventDefault();
+        const val = _camSel.value;
+        const isPersp = (!val || val === _CAM_PERSP);
+        // The selected camera's display label (for the menu title).
+        let label = 'camera';
+        try {
+          for (const o of _camSel.options) {
+            if (o.value === val) { label = o.textContent || label; break; }
+          }
+        } catch (e) {}
+        const isDefault = (cfg && cfg.default_path_id === val);
+        const items = [
+          {
+            label: 'Rename',
+            disabled: isPersp,
+            title: isPersp ? 'Perspective cannot be renamed'
+              : 'Rename ' + label,
+            onSelect: () => { _camSelRename(); },
+          },
+          {
+            label: 'Set as default',
+            disabled: isPersp || isDefault,
+            title: isPersp ? 'Perspective cannot be the default camera'
+              : (isDefault ? 'Already the default camera'
+                 : 'Make ' + label + ' the scene’s default tour'),
+            onSelect: () => { _camSelSetDefault(); },
+          },
+          { separator: true },
+          {
+            label: 'Delete',
+            danger: true,
+            disabled: isPersp,
+            title: isPersp ? 'Perspective cannot be deleted'
+              : 'Delete ' + label,
+            onSelect: () => { _camSelDelete(); },
+          },
+        ];
+        try { openContextMenu(ev.clientX, ev.clientY, items); } catch (e) {}
+      });
+    }
     // UX-Phase11A Issue 3 (2026-05-21): rebuild the dropdown options
     // whenever the EditHistory restores cfg (undo/redo) or any module
     // broadcasts a wholesale cfg change. WITHOUT this, an undo that

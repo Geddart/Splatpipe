@@ -1035,6 +1035,96 @@
       _tlSyncPlayhead();
     }, { passive: false });
 
+    // ---- R2 #2 (#156): right-click a keyframe DIAMOND -> context menu.
+    //      Hit-test via the EXISTING _tlHitKf(_tlLaneXY) (the SAME pixel
+    //      diamond test the pointerdown router uses), then open the ONE
+    //      openContextMenu primitive (04b) at the cursor with:
+    //        * Delete keyframe -- reuses the X-delete mutation + the
+    //          'kf-delete' EditHistory snapshot (Batch B); honours the
+    //          >=2-keyframe spline clamp (disabled when it would drop
+    //          below 2 so the path stays a valid spline).
+    //        * Set interpolation -> FLATTENED: one menu item per
+    //          _VALID_INTERP key (auto_clamped / automatic / linear /
+    //          bezier / stepped). Writes kf.interp + a 'kf-interp'
+    //          snapshot + _tlAfterEdit (NO gizmo dependency; the spline
+    //          honours per-keyframe interp via _kfMeta). The current
+    //          interp is shown disabled (a no-op highlight).
+    //        * Go to keyframe -- _tlScrubToTime(kf.t) (the real scrub).
+    //      Author-gated (ModeManager.is('author')) + preventDefault so
+    //      the browser menu never shows. Single keyframe target = the
+    //      hit diamond's index (NOT the box-selection); selecting it
+    //      first keeps the visual feedback consistent.
+    _tlLane.addEventListener('contextmenu', (ev) => {
+      if (!ModeManager.is('author')) return;
+      // Always suppress the browser menu over the lane in author mode
+      // (the canvas's own 08:223 suppressor does not cover this DOM).
+      ev.preventDefault();
+      const xy = _tlLaneXY(ev);
+      const ki = _tlHitKf(xy.x, xy.y);
+      if (ki < 0) return;          // not on a diamond -> no menu
+      const p = _tlActivePath();
+      if (!p || !p.keyframes || !p.keyframes[ki]) return;
+      // Select the right-clicked diamond (single) so the menu target is
+      // visually obvious (mirrors the left-click select-on-down).
+      _tlSel.clear(); _tlSel.add(ki); _tlDraw();
+      const kf = p.keyframes[ki];
+      const curInterp = (kf && typeof kf.interp === 'string' &&
+        _VALID_INTERP[kf.interp]) ? kf.interp : 'automatic';
+      // Delete clamp: refuse below 2 keyframes (same rule as the X
+      // keydown handler) -> the item is shown disabled in that case.
+      const canDelete = (p.keyframes.length - 1) >= 2;
+      const items = [];
+      items.push({
+        label: 'Delete keyframe',
+        danger: true,
+        disabled: !canDelete,
+        title: canDelete ? 'Remove this keyframe (undoable)'
+          : 'A path needs at least 2 keyframes',
+        onSelect: () => {
+          const pp = _tlActivePath();
+          if (!pp || !pp.keyframes || !pp.keyframes[ki]) return;
+          const keep = [];
+          for (let i = 0; i < pp.keyframes.length; i++) {
+            if (i !== ki) keep.push(pp.keyframes[i]);
+          }
+          if (keep.length < 2) return;     // belt-and-braces clamp
+          _tlPushHistorySnap('kf-delete');
+          pp.keyframes = keep;
+          _tlSel.clear();
+          _tlAfterEdit();
+        },
+      });
+      items.push({ separator: true });
+      // FLATTENED interp choices (one per _VALID_INTERP key). The
+      // current value is shown disabled (a labelled no-op).
+      for (const nm of Object.keys(_VALID_INTERP)) {
+        items.push({
+          label: (nm === curInterp ? '✓ ' : '  ') +
+            'Interp: ' + nm,
+          disabled: (nm === curInterp),
+          title: 'Set this keyframe’s interpolation to ' + nm,
+          onSelect: () => {
+            const pp = _tlActivePath();
+            if (!pp || !pp.keyframes || !pp.keyframes[ki]) return;
+            _tlPushHistorySnap('kf-interp');
+            pp.keyframes[ki].interp = nm;
+            _tlAfterEdit();
+          },
+        });
+      }
+      items.push({ separator: true });
+      items.push({
+        label: 'Go to keyframe',
+        title: 'Scrub the playhead to this keyframe',
+        onSelect: () => {
+          const pp = _tlActivePath();
+          if (!pp || !pp.keyframes || !pp.keyframes[ki]) return;
+          _tlScrubToTime(Math.max(0, pp.keyframes[ki].t || 0));
+        },
+      });
+      try { openContextMenu(ev.clientX, ev.clientY, items); } catch (e) {}
+    });
+
     // ---- Transport (UX-Phase11A Issue 5): unified Play/Pause toggle.
     //      _tlPlay drives window.__spTransport.playPauseToggle (the
     //      tri-state idle->playing->paused machine the 10_camera_select

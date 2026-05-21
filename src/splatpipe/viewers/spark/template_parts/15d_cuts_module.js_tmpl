@@ -510,6 +510,49 @@
       sub.appendChild(inLbl); sub.appendChild(inInput);
       sub.appendChild(durLbl); sub.appendChild(durInput);
       card.appendChild(sub);
+      // R2 #2 (#156): right-click a clip card -> the ONE openContextMenu
+      // primitive (04b) with Edit / Move earlier / Move later / Delete.
+      // A clip references a CAMERA (not a world point), so "Go to" is a
+      // reorder pair instead (matching the card's own ▲/▼ buttons); Edit
+      // brings the card into view + focuses the camera <select>; Delete
+      // reuses the SAME delBtn. Author-only drawer chrome; preventDefault.
+      // Closures capture this card's clip id / idx / buttons.
+      card.addEventListener('contextmenu', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const items = [
+          {
+            label: 'Edit',
+            title: 'Focus this clip’s camera + timing fields',
+            onSelect: () => {
+              try { card.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+              try { camSel.focus(); } catch (e) {}
+            },
+          },
+          {
+            label: 'Move earlier',
+            disabled: (idx === 0),
+            title: (idx === 0) ? 'Already first'
+              : 'Move this clip earlier in the cut sequence',
+            onSelect: () => { _reorderClipUp(clip.id); },
+          },
+          {
+            label: 'Move later',
+            disabled: (idx >= total - 1),
+            title: (idx >= total - 1) ? 'Already last'
+              : 'Move this clip later in the cut sequence',
+            onSelect: () => { _reorderClipDown(clip.id); },
+          },
+          { separator: true },
+          {
+            label: 'Delete',
+            danger: true,
+            title: 'Delete this clip',
+            onSelect: () => { try { delBtn.click(); } catch (e) {} },
+          },
+        ];
+        try { openContextMenu(ev.clientX, ev.clientY, items); } catch (e) {}
+      });
       return card;
     }
     function _smallBtn(txt, title) {

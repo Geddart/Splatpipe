@@ -669,8 +669,61 @@
         });
         body.appendChild(delBtn);
         row.appendChild(body);
+        // R2 #2 (#156): right-click a title row -> Edit / Delete / Go to
+        // via the ONE openContextMenu primitive (04b). Edit expands the
+        // <details>; Delete reuses _delete(t3d.id); Go to flies the orbit
+        // pivot to the title pos. Author-only drawer chrome; preventDefault
+        // so no browser menu. Closures capture this row's `t3d`/`row`.
+        row.addEventListener('contextmenu', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const _tid = t3d.id;
+          const items = [
+            {
+              label: 'Edit',
+              title: 'Expand this title’s fields',
+              onSelect: () => {
+                try { row.open = true; } catch (e) {}
+                try { row.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+              },
+            },
+            {
+              label: 'Go to',
+              title: 'Move the orbit pivot to this title',
+              onSelect: () => { _ssGoToTitle(t3d); },
+            },
+            { separator: true },
+            {
+              label: 'Delete',
+              danger: true,
+              title: 'Delete this title',
+              onSelect: () => { _delete(_tid); },
+            },
+          ];
+          try { openContextMenu(ev.clientX, ev.clientY, items); } catch (e) {}
+        });
         _ssListEl.appendChild(row);
       }
+    }
+    // R2 #2 (#156): fly the orbit pivot to a title's world pos (mirrors
+    // 15c's _ssGoToAnnotation). Reuses the live `controls`/`camera`;
+    // never throws.
+    function _ssGoToTitle(t3d) {
+      try {
+        if (!t3d || !Array.isArray(t3d.pos) || t3d.pos.length < 3) return;
+        if (typeof controls === 'undefined' || !controls ||
+            !controls.target) return;
+        controls.target.set(t3d.pos[0], t3d.pos[1], t3d.pos[2]);
+        if (typeof camera !== 'undefined' && camera && camera.position) {
+          const d = camera.position.distanceTo(controls.target);
+          if (isFinite(d) && d > 30) {
+            const fwd = new THREE.Vector3(0, 0, -1)
+              .applyQuaternion(camera.quaternion);
+            camera.position.copy(controls.target).addScaledVector(fwd, -8);
+          }
+        }
+        controls.update();
+      } catch (e) {}
     }
     // Small numeric-input factory (mirrors 15c's `_ssNumInput`).
     function _ssNumInput(label, val, min, max, step, onCommit) {

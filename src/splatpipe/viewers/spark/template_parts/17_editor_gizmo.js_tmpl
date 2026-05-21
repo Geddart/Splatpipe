@@ -1454,6 +1454,111 @@
     renderer.domElement.addEventListener(
       'pointerdown', _gzOnCanvasDown, true);
 
+    // ---- R2 #2 (#156): right-click a trajectory FRUSTUM (a keyframe
+    //      in the 3D view) -> the SAME context menu the bottom-timeline
+    //      diamond offers. Reuses the EXISTING author pick path
+    //      (_gzPickFrustum -- the screen-space keyframe-pivot hit test
+    //      the left-click select uses) so a frustum right-click selects
+    //      that keyframe (_gzAttach) then opens openContextMenu (04b) at
+    //      the cursor with Delete keyframe / Set interp (flattened) /
+    //      Go to keyframe. Author-gated; preventDefault is ALSO done by
+    //      the 08:223 canvas suppressor (kept for non-author), but we
+    //      preventDefault here too so the browser menu never shows over
+    //      a frustum hit. A right-click that misses every frustum does
+    //      nothing (no menu) -> the 08 suppressor still ate the browser
+    //      menu, byte-behaviourally consistent with before.
+    function _gzGoToKeyframe(idx) {
+      // Reuse the REAL #path-scrub mechanism via the timeline's
+      // _tlScrubToTime surface (window.__editor.tlScrub, frac in 0..1)
+      // -- the single source of truth that takes _player over + rebases
+      // _t0. Compute the frac from the keyframe's t over the player
+      // duration (buildPlayer is the one spline impl). The timeline IIFE
+      // (16) loads AFTER this fragment but the surface exists by the time
+      // a user right-clicks, so the lookup is safe at runtime.
+      const p = _gzActivePath();
+      if (!p || !Array.isArray(p.keyframes) || !p.keyframes[idx]) return;
+      let dur = 0;
+      try { const pl = buildPlayer(p); if (pl) dur = pl.duration || 0; }
+      catch (e) {}
+      const t = Math.max(0, p.keyframes[idx].t || 0);
+      const frac = (dur > 0) ? Math.max(0, Math.min(1, t / dur)) : 0;
+      try {
+        if (window.__editor && typeof window.__editor.tlScrub === 'function') {
+          window.__editor.tlScrub(frac);
+        }
+      } catch (e) {}
+    }
+    function _gzDeleteKeyframe(idx) {
+      // Mirror the timeline X-delete: refuse below 2 keyframes (the
+      // spline-validity clamp) + ONE 'kf-delete' EditHistory snapshot
+      // before the mutation (Batch B convention). Detach the gizmo
+      // (the selected index is gone) + _gzAfterEdit (rebuild trajectory
+      // / timeline / live player).
+      const p = _gzActivePath();
+      if (!p || !Array.isArray(p.keyframes) || !p.keyframes[idx]) return;
+      if (p.keyframes.length - 1 < 2) return;     // >=2 clamp
+      try {
+        if (typeof EditorModuleRegistry !== 'undefined' &&
+            typeof EditorModuleRegistry.pushUndo === 'function') {
+          EditorModuleRegistry.pushUndo('kf-delete');
+        }
+      } catch (e) {}
+      const keep = [];
+      for (let i = 0; i < p.keyframes.length; i++) {
+        if (i !== idx) keep.push(p.keyframes[i]);
+      }
+      p.keyframes = keep;
+      _gzDetach();
+      _gzAfterEdit();
+    }
+    function _gzOnCanvasContextMenu(ev) {
+      if (!ModeManager.is('author')) return;
+      const idx = _gzPickFrustum(ev.clientX, ev.clientY);
+      if (idx < 0) return;          // no frustum under the cursor
+      // A frustum hit: suppress the browser menu + select the keyframe
+      // (the SAME _gzAttach a left-click runs) so the gizmo + tangents
+      // reflect the menu target.
+      ev.preventDefault();
+      _gzAttach(idx);
+      const p = _gzActivePath();
+      if (!p || !Array.isArray(p.keyframes) || !p.keyframes[idx]) return;
+      const kf = p.keyframes[idx];
+      const curInterp = (kf && typeof kf.interp === 'string' &&
+        _VALID_INTERP[kf.interp]) ? kf.interp : 'automatic';
+      const canDelete = (p.keyframes.length - 1) >= 2;
+      const items = [];
+      items.push({
+        label: 'Delete keyframe',
+        danger: true,
+        disabled: !canDelete,
+        title: canDelete ? 'Remove this keyframe (undoable)'
+          : 'A path needs at least 2 keyframes',
+        onSelect: () => { _gzDeleteKeyframe(idx); },
+      });
+      items.push({ separator: true });
+      // FLATTENED interp choices. Each writes via the EXISTING
+      // _gzSetInterp (single-target branch -> 'kf-interp' snapshot +
+      // bezier seeds tangents). The gizmo is attached to `idx` so
+      // _gzSetInterp's _gzSelKfObj() targets the right keyframe.
+      for (const nm of Object.keys(_VALID_INTERP)) {
+        items.push({
+          label: (nm === curInterp ? '✓ ' : '  ') + 'Interp: ' + nm,
+          disabled: (nm === curInterp),
+          title: 'Set this keyframe’s interpolation to ' + nm,
+          onSelect: () => { _gzSetInterp(nm); },
+        });
+      }
+      items.push({ separator: true });
+      items.push({
+        label: 'Go to keyframe',
+        title: 'Scrub the playhead to this keyframe',
+        onSelect: () => { _gzGoToKeyframe(idx); },
+      });
+      try { openContextMenu(ev.clientX, ev.clientY, items); } catch (e) {}
+    }
+    renderer.domElement.addEventListener(
+      'contextmenu', _gzOnCanvasContextMenu);
+
     // ---- The 5-type interp popover (V). A segmented control over
     //      the EXISTING _VALID_INTERP set (auto_clamped / automatic
     //      / linear / bezier / stepped -- the real constant, not a
