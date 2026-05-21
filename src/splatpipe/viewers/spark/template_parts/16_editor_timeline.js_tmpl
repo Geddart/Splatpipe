@@ -116,7 +116,20 @@
       let acc = 0;
       for (const e of sk) acc += (e.k.hold_s && e.k.hold_s > 0)
         ? e.k.hold_s : 0;
-      return (sk[sk.length - 1].t || 0) + acc;
+      const kfDur = (sk[sk.length - 1].t || 0) + acc;
+      // UX-Phase11A Issue 6 (2026-05-21): honour total_duration_s when
+      // it extends past the kf-derived range -- mirrors the same lift
+      // in buildPlayer (09_playback_spline) so the timeline scrub
+      // ruler / playhead<->scrub mapping align with the player's
+      // duration. Without this the timeline canvas would stop drawing
+      // at the last kf even though the player + scrub can reach the
+      // extended range, leaving a "phantom" scrub past the visible
+      // ruler. Mirrors _effectiveScrubRange() below.
+      if (p && typeof p.total_duration_s === 'number' &&
+          isFinite(p.total_duration_s) && p.total_duration_s > kfDur) {
+        return p.total_duration_s;
+      }
+      return kfDur;
     }
     // time (seconds) -> x within the lane (px); inverse for hit-test
     // / drag. Pure display math (zoom/scroll) -- never a stored t.

@@ -231,7 +231,27 @@
     }
     const smoothness = (typeof p.smoothness === 'number') ? p.smoothness : 1.0;
     const playSpeed = (typeof p.play_speed === 'number' && p.play_speed > 0) ? p.play_speed : 1.0;
-    const duration = times[times.length - 1];
+    const kfDuration = times[times.length - 1];
+    // UX-Phase11A Issue 6 (2026-05-21): honour `path.total_duration_s`
+    // as the effective playback/scrub duration when it is a positive
+    // number > kfDuration. The author UI (`16_editor_timeline`'s
+    // total-time input) writes this to extend the timeline past the
+    // last keyframe -- e.g. a 25 s kf range with total_duration_s=40
+    // gives the scrub slider room to drag to 40 s, and playback holds
+    // at the last kf pose for the extra 15 s. The spline itself only
+    // knows about `times[]`; past the last knot it returns the last
+    // pose (CubicSpline.evaluate clamp; see 09 line 30) so extending
+    // `duration` here is sufficient + safe. For the loop branch, the
+    // looping wrap-length now lands at `duration` so the "hold at
+    // end" segment is included in the loop. The cinematic player
+    // clock + the scrubEl handler both read `_player.duration`, so
+    // ONE change here threads through every consumer (no per-callsite
+    // edit). Mirrors the JS-side `_effectiveScrubRange` helper in
+    // 16_editor_timeline + the Python `core/path_io.effective_scrub_range`.
+    const totalDur = (typeof p.total_duration_s === 'number' &&
+                      isFinite(p.total_duration_s) &&
+                      p.total_duration_s > kfDuration) ? p.total_duration_s : kfDuration;
+    const duration = totalDur;
     // Pass `meta` ONLY when at least one keyframe has a recognised interp;
     // otherwise pass undefined so the spline takes the byte-identical legacy
     // path (no behavior change for the existing scenes).

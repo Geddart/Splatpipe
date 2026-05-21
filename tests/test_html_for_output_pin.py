@@ -129,6 +129,20 @@ PIN UPDATES:
     empty one. Both regions are interior to existing T16-TRAJ-via-
     10-camera-select / T16-TRAJ excisions. All 6 fixtures shifted
     by the same +2720 byte delta in lockstep; pins re-pinned.
+  * 2026-05-21 (Phase 11A Issue 6): ``total_duration_s`` now lifts
+    the player + timeline ``duration`` past the last keyframe. The
+    Phase 2C total-time UI wrote ``path.total_duration_s`` but only
+    the Prev/Next ceiling consulted it; the scrub slider still
+    mapped to ``_player.duration = last_kf_t``, so typing 40 s on a
+    25 s kf range left the scrub stuck at 25. Fix in two places
+    (one in ``09_playback_spline::buildPlayer`` where the player's
+    ``duration`` is now ``max(kfDuration, total_duration_s)``;
+    mirror in ``16_editor_timeline::_tlDuration`` so the strip
+    ruler + playhead<->scrub mapping align with the player. Past
+    the last knot the spline ``evaluate()`` clamp returns the last
+    pose (09 line 30) -- the extension is a "hold at end" segment,
+    safe + DCC-standard. All 6 fixtures shifted by the same +2091
+    byte delta in lockstep; pins re-pinned.
 """
 
 from __future__ import annotations
@@ -162,42 +176,44 @@ from splatpipe.viewers.spark.template import html_for
 # Panorama + PostFX + Annotations + Cuts + Audio + Titles3D -- all 6
 # fixtures +180878 bytes in lockstep; modules are additive only), then
 # re-pinned 2026-05-21 (Phase 11A Issues 1+2: Perspective controls
-# re-enable + trajectory fallback skips empty paths; +2720 in lockstep).
+# re-enable + trajectory fallback skips empty paths; +2720 in lockstep),
+# then re-pinned 2026-05-21 (Phase 11A Issue 6: total_duration_s now
+# lifts player + timeline duration past last kf; +2091 in lockstep).
 CORPUS: list[tuple[str, tuple, dict, int, str]] = [
     (
         "harness_defaults",
         ("HarnessScene",),
         {},
-        716817,
-        "1d7bca6e5ffb1d22ccc5f68e6d41bbcceaf1bd38c3462fb541feea5fa9927e51",
+        718908,
+        "ec4df915f53b08ee4b49601cea87b4371601bb73a7748cdefeb0656797b9402f",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        716789,
-        "79d09fc985599a825b9206605d7fd727281d5be15549dfa06e7dcf71e640f452",
+        718880,
+        "2049ce83c34a906e5e090b51943c79027870f1c050138cc695d3ad6f99f2be5b",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        716784,
-        "2a40fa683e6cd1a1d62bab9490443db931f3ec8c7eec18512cafb4ceb5f7d867",
+        718875,
+        "825cf259dec777dc2f18d09795866b6a793b7cf1e5526f29b83272bece933d6e",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        716763,
-        "d3e3ec0fc9dfd05b1c899f780f8f870d7cca7a83ba83f826d6f2984baf0002af",
+        718854,
+        "cb17d8f1f58e39b4e2d5149079cd4192529b4ec90489538da0e646e5c8d29b25",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        716828,
-        "4dcc916b56306bd68acd7b125eaea635dfbd39979220669d339d4f962a024915",
+        718919,
+        "103e6dca5b50a29501eb32cd1bb6ad15bb4291c10c783e854689799508adb001",
     ),
     (
         "share_card",
@@ -207,8 +223,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        716687,
-        "3136ec9b38641d339fefc98dffc00b934e2b4e9a59f63e42d3285bf370fed9eb",
+        718778,
+        "f065a56a7be4f0a0d79455e998fc5b5b295496e3e8f31ec16bae3866af58005e",
     ),
 ]
 
