@@ -283,18 +283,36 @@
     // Initial state from sessionStorage (default = closed).
     _ssApply(_ssReadPersisted());
 
-    // Register as a HudLayer panel so the Phase 0 framework's
-    // mode-gated visibility (modes:['author']) is the SINGLE place
-    // that hides the cog + drawer outside author mode. The body-
-    // class CSS gate (body.usermode #author-root { display:none })
-    // already covers the visual hide; this registration plugs the
-    // drawer into the same lifecycle so future mode switches go
-    // through ONE coordinator.
+    // Register as HudLayer panels so the Phase 0 framework tracks the
+    // cog + drawer in its panel lifecycle (future mode switches go
+    // through ONE coordinator). The body-class CSS gate already covers
+    // the visual mode hide for BOTH (#scene-settings-cog via the
+    // body:not(.authormode) rule in 02b_styles_editor; the drawer via
+    // body.usermode #author-root{display:none} since it lives inside
+    // #author-root) -- so the HudLayer registration here is the
+    // framework-level PEER of that CSS gate, not the sole hide.
+    //
+    // R3 Bug C (#163, 2026-05-22): the DRAWER is registered with NO
+    // `modes`. HudLayer._apply writes `el.style.display = '' | 'none'`
+    // for any panel that DECLARES modes -- but the drawer ALSO uses
+    // `style.display` for its OWN open/closed state (_ssApply). With
+    // modes:['author'] the two collided: in author mode _apply forced
+    // `display:''` (VISIBLE) at register time WITHOUT touching
+    // _ssIsOpen, so the drawer rendered open while the state machine
+    // still read CLOSED. The X / Esc / cog then early-returned at
+    // `if (!_ssIsOpen) return` and appeared dead (user: "I can't close
+    // Scene Settings by clicking the X"). Registering with no `modes`
+    // makes matches() true in every mode, so HudLayer NEVER writes the
+    // drawer's display (per the framework's documented no-modes
+    // contract) -- _ssApply stays the SINGLE writer of the drawer's
+    // display, and the mode hide is the CSS body-class gate above. The
+    // cog keeps modes:['author'] safely: _ssApply only ever writes the
+    // cog's `background`, never its `display`, so there is no collision
+    // there.
     try {
       HudLayer.register({
         id: 'scene-settings-drawer',
         el: _ssDrawer,
-        modes: ['author'],
       });
       HudLayer.register({
         id: 'scene-settings-cog',

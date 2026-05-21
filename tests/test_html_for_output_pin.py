@@ -584,6 +584,23 @@ PIN UPDATES:
     UNCHANGED (the camera follows the scrub). All 6 fixtures shifted by the
     same +1942 code points in lockstep -- additive only (isolated to the 10
     edit). Pins re-pinned to the new baseline.
+  * 2026-05-22 (R3 Bug C #163 -- Scene Settings drawer X-close): the
+    ``17b_scene_settings_drawer`` HudLayer registration for the DRAWER now
+    passes NO ``modes`` (the cog keeps ``modes:['author']``). HudLayer._apply
+    writes ``el.style.display`` for any panel that declares modes -- but the
+    drawer ALSO uses ``style.display`` for its open/closed state (_ssApply).
+    With ``modes:['author']`` the two collided: in author mode _apply forced
+    ``display:''`` (VISIBLE) at register time WITHOUT touching ``_ssIsOpen``,
+    so the drawer rendered open while the state machine still read CLOSED, and
+    the X / Esc / cog then early-returned at ``if (!_ssIsOpen) return`` and
+    appeared dead (user: "I can't close Scene Settings by clicking the X").
+    No-modes makes ``matches()`` true in every mode so HudLayer never writes
+    the drawer's display (the framework's documented no-modes contract) --
+    _ssApply stays the SINGLE writer; the mode hide is the CSS body-class gate
+    (``body.usermode #author-root{display:none}``). Isolated to the 17b edit:
+    all 6 fixtures shifted by the same +1231 code points in lockstep --
+    additive only (a removed ``modes`` line + the explanatory comment). Pins
+    re-pinned to the new baseline.
 """
 
 from __future__ import annotations
@@ -673,36 +690,36 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
         "harness_defaults",
         ("HarnessScene",),
         {},
-        885044,
-        "adff6f9b3e1c5813d5a9ec36873c0b3d8e545c6d34510b95a5a1100ddd2a1837",
+        886275,
+        "7b864ad5edb212bffc407f179e15f7c2c083d9865891992982bdb73e635d62f5",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        885016,
-        "1a885351576fdb82953900e48873d9a034d0dffa309ad0b9421beaf12a96883d",
+        886247,
+        "1568b16f8dc0ee1a854386a728af7355d0f10199eaf14b9371c6ffa4de83d2d2",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        885011,
-        "82e225d761876446405ddb94f0dc1b621d5f4608926a066f1a42c80b90be6b54",
+        886242,
+        "a757bc5361002fb87aec364a04a7a29464e2846276d778f9e00f1e461ca87dd8",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        884990,
-        "faa738aed1b4c59476d1355ae4074aa9632e5e563174c28cd1f7c51911441642",
+        886221,
+        "a975f1f7b1ddcffb9c68eba9e22249575c959a541fef33532a6e44d734581ff8",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        885055,
-        "5c44871ee65da2751fe2045ddf24c164b7568ac2b6bfbaa06f4632e8b191b420",
+        886286,
+        "320c8dec0dc9eafeb5269355362ef8f642d82d6fcd6db8c0c0fec459b85a6b5d",
     ),
     (
         "share_card",
@@ -712,8 +729,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        884914,
-        "2024529796896ae0926ca678b493510c5828011eb0ba0563b202091228a809bd",
+        886145,
+        "edef7c8ee37c3656d10f7afecff1f7524a4a401e8640add34eb550f858780dd3",
     ),
 ]
 
