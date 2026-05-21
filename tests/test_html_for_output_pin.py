@@ -269,6 +269,16 @@ PIN UPDATES:
     the same +13903 byte delta in lockstep (isolated to the 15b/15f
     edits; measured with any concurrent non-owned fragments held at
     HEAD) -- the change is additive only. Pins re-pinned.
+  * 2026-05-21 (Phase 11F H5): EditHistory ``_broadcastCfgChange`` drops
+    any active keyframe-gizmo selection on EVERY undo/redo. The Phase 11A
+    Issue 3 in-place restore keeps ``cfg.camera_paths``'s array IDENTITY
+    but REPLACES the keyframe OBJECTS inside it -- the gizmo
+    (17_editor_gizmo TransformControls) stayed bound to a proxy parked at
+    the pre-restore selected keyframe, so a drag after an undo wrote to a
+    STALE proxy. Fix: ``17a_edit_history::_broadcastCfgChange`` calls the
+    typeof-guarded ``window.__editor.gzDetach()`` (exposed by
+    17_editor_gizmo) before the module-notify broadcast. All 6 fixtures
+    shifted by the same +1249 code points in lockstep; pins re-pinned.
 """
 
 from __future__ import annotations
@@ -331,7 +341,10 @@ from splatpipe.viewers.spark.template import html_for
 # +13903 in lockstep, isolated to the 15b/15f edits), then re-pinned
 # 2026-05-21 (Phase 11D H2: 15c/15g pushUndo({label})->pushUndo(label)
 # string fix + explanatory comments; +665 code points in lockstep over
-# the 11E baseline). NOTE: expected_len counts len(html) CODE POINTS
+# the 11E baseline), then re-pinned 2026-05-21 (Phase 11F H5: EditHistory
+# _broadcastCfgChange drops the stale keyframe-gizmo selection on every
+# undo/redo via window.__editor.gzDetach(); +1249 code points in lockstep).
+# NOTE: expected_len counts len(html) CODE POINTS
 # (Unicode scalar values), NOT UTF-8 bytes -- the assembled HTML carries
 # multi-byte chars (em-dash, degree sign, etc.) so the byte length runs
 # ~770 higher. Measure a re-pin with len(html), never len(html.encode()).
@@ -340,36 +353,36 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
         "harness_defaults",
         ("HarnessScene",),
         {},
-        775334,
-        "d7cd5fbbbea6d9ded690cb898041944861adf5b305bc1bce765c612acba1cc52",
+        776583,
+        "abc2205699f31dbd9003fc8356a352fd6b8415a4af674fca7541e8a0c9606f40",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        775306,
-        "28440030aecf671eded89c8ecb81b5204d7389704c7a35425e3807d4ffa61ba6",
+        776555,
+        "18bcd7d265d3ceb5c047b7faa7c7881f039a84470d95b99af8953fe7294c6925",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        775301,
-        "a2b0d500a4e2e8e67243847aaaa3311ce95bdbfbdf8bcb81339d6fd5a0b1b0bf",
+        776550,
+        "1bcd9e7773c49212b008d6cdbcba321760d1008d1e5969db2c00b5c73183b6e9",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        775280,
-        "9403e39fae20fa4d89138ff6d3710ac37b20f46059b36ea7b47dc03345b97edb",
+        776529,
+        "39591c26c09987c43a92d62fdafe2502f19582c157876017595b86fbba29fe8a",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        775345,
-        "dcce6ed854eb98eb61bf99c8b195eab453d8720e98275bfdae82241a645c3095",
+        776594,
+        "7a4f96c4dbb06ad8527650cf3f33fb5a2a5f82387ea788cfc4031776494f26a0",
     ),
     (
         "share_card",
@@ -379,8 +392,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        775204,
-        "a9e049cdbd49eab677d36518a1d41658a850e233b08b5968161b58aaa3cd863a",
+        776453,
+        "17c05a82ac19f3e0bc1b3f7529f413c5143215a2f6ff5c9fec7fe4ac111718de",
     ),
 ]
 

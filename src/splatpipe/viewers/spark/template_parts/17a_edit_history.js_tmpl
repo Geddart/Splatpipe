@@ -248,6 +248,28 @@
     }
 
     function _broadcastCfgChange(label, dir) {
+      // UX-Phase11F H5 (2026-05-21): an undo/redo restore mutates
+      // cfg.camera_paths IN PLACE (Phase 11A Issue 3) -- the array
+      // identity survives but the keyframe OBJECTS inside it are
+      // REPLACED (the restore _restoreArrayInPlace pushes the clone's
+      // elements, so p.keyframes[i] is a NEW object). The keyframe
+      // gizmo (17_editor_gizmo TransformControls) stays bound to its
+      // proxy parked at the OLD selected-keyframe's pose; after the
+      // restore that proxy no longer corresponds to any live keyframe
+      // (its index may now point at a different kf, or out of range)
+      // so a subsequent gizmo drag writes to a STALE proxy. Drop any
+      // active gizmo selection on EVERY undo/redo so the author must
+      // re-pick a keyframe against the restored geometry. gzDetach is
+      // exposed by 17_editor_gizmo (which runs AFTER this fragment but
+      // is fully wired by the time a user-driven undo/redo fires);
+      // typeof-guarded so it is inert before the gizmo surface exists /
+      // on a non-author boot.
+      try {
+        if (window.__editor &&
+            typeof window.__editor.gzDetach === 'function') {
+          window.__editor.gzDetach();
+        }
+      } catch (e) {}
       // Notify every module that cfg changed wholesale (the safe
       // signal: stateKey = '*'). Modules that care can re-read cfg
       // and refresh their UI / overlays.
