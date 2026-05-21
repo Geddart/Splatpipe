@@ -444,6 +444,56 @@ process.stdout.write(JSON.stringify({
 
 
 @pytest.mark.skipif(_NODE is None, reason="node not available")
+def test_restore_preserves_camera_paths_array_identity():
+    """Phase 11A Issue 3 regression. The camera_paths array is captured BY
+    REFERENCE at init by 09_playback_spline (``const cameraPaths =
+    cfg.camera_paths``; read by the camera dropdown's _camSelCameras /
+    startPath / buildPlayer). A plain Object.assign restore would set
+    cfg.camera_paths to a NEW cloned array, leaving that alias STALE ->
+    the dropdown loses/duplicates entries after undo. The fix mutates
+    cfg.camera_paths IN PLACE so its OBJECT IDENTITY is preserved across
+    undo/redo. This test holds a reference to the original array (the
+    alias) and asserts: (a) it is the SAME object after undo, and (b) its
+    contents reflect the restored snapshot."""
+    js = _history_preamble() + _extract_history_js() + r"""
+// Capture the live camera_paths array reference (== the 09 alias).
+const aliasRef = cfg.camera_paths;
+EditHistory.push('baseline');           // snapshot: camera_paths == []
+cfg.camera_paths.push({id: 'p_new'});   // mutate in place (like _camSelCreate)
+EditHistory.push('added');              // snapshot: camera_paths == [p_new]
+EditHistory.undo();                     // restore baseline ([])
+const afterUndo = {
+  sameRef: cfg.camera_paths === aliasRef,
+  len: cfg.camera_paths.length,
+  ids: cfg.camera_paths.map(p => p.id),
+};
+EditHistory.redo();                     // restore [p_new]
+const afterRedo = {
+  sameRef: cfg.camera_paths === aliasRef,
+  len: cfg.camera_paths.length,
+  ids: cfg.camera_paths.map(p => p.id),
+};
+process.stdout.write(JSON.stringify({ afterUndo, afterRedo }));
+"""
+    r = _run_node(js)
+    # (a) the alias survives undo -- the array object identity is preserved.
+    assert r["afterUndo"]["sameRef"] is True, (
+        "camera_paths array identity must be preserved across undo (the "
+        "09_playback_spline `const cameraPaths` alias holds a reference)"
+    )
+    # (b) its contents reflect the restored baseline ([]).
+    assert r["afterUndo"]["len"] == 0, "undo must restore the empty baseline"
+    assert r["afterUndo"]["ids"] == []
+    # redo: still the same object, contents back to [p_new].
+    assert r["afterRedo"]["sameRef"] is True, (
+        "camera_paths array identity must be preserved across redo too"
+    )
+    assert r["afterRedo"]["ids"] == ["p_new"], (
+        "redo must restore the [p_new] state into the SAME array object"
+    )
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not available")
 def test_window_sceneview_history_is_published():
     """The IIFE self-publishes onto window.__sceneview.history so the
     EditorModuleRegistry's delegators can reach it."""

@@ -89,6 +89,37 @@
       catch (e) { _warn('clone failed: ' + e); return null; }
     }
 
+    // UX-Phase11A Issue 3 (2026-05-21): keys whose VALUE is an array that
+    // a fragment captured BY REFERENCE at init time. The proven case is
+    // `const cameraPaths = cfg.camera_paths || []` in 09_playback_spline
+    // (read by _camSelCameras / startPath / buildPlayer / the dropdown
+    // UNION). A plain Object.assign would set cfg.camera_paths = <cloned
+    // new array>, leaving that local alias pointing at the STALE old
+    // array -> the camera dropdown loses / duplicates entries after an
+    // undo/redo ("sometimes the Fehmarn cam is missing all of a
+    // sudden"). For these keys we mutate the EXISTING array IN PLACE
+    // (length=0 + push the clone's elements) so every captured alias
+    // stays valid. Scoped DELIBERATELY to camera_paths only: cfg.cameras
+    // / cfg.audio / cfg.annotations / cfg.clips / cfg.titles3d are each
+    // read LIVE (`cfg.<key>` fresh per access) by their owner module, so
+    // there is no captured-at-init alias to preserve for them -- and a
+    // restore that DROPS such a key must DELETE it (a stale empty []
+    // would be wrong; see test_edit_history::
+    // test_restore_clears_keys_added_after_snapshot which asserts a
+    // post-snapshot key is deleted on restore). Only camera_paths has
+    // the load-bearing const alias, so only it gets in-place treatment.
+    const _RESTORE_INPLACE_ARRAY_KEYS = [
+      'camera_paths',
+    ];
+    function _restoreArrayInPlace(targetArr, sourceArr) {
+      // Deep-replace targetArr's CONTENTS with sourceArr's (which is a
+      // JSON-clone, so we can take its elements directly). targetArr is
+      // the live array every alias points at; we keep its identity.
+      targetArr.length = 0;
+      if (Array.isArray(sourceArr)) {
+        for (let i = 0; i < sourceArr.length; i++) targetArr.push(sourceArr[i]);
+      }
+    }
     function _restore(target, source) {
       // Restore by clearing target's keys then Object.assign-ing source.
       // Why: callers (modules, getters) hold a REFERENCE to the live cfg
@@ -97,10 +128,40 @@
       const tkeys = Object.keys(target);
       for (const k of tkeys) {
         if (!Object.prototype.hasOwnProperty.call(source, k)) {
-          try { delete target[k]; } catch (e) {}
+          // UX-Phase11A Issue 3: for an aliased array key, EMPTY it in
+          // place rather than delete (so the alias survives a restore
+          // that drops the key entirely -- the alias just becomes []).
+          if (_RESTORE_INPLACE_ARRAY_KEYS.indexOf(k) !== -1 &&
+              Array.isArray(target[k])) {
+            target[k].length = 0;
+          } else {
+            try { delete target[k]; } catch (e) {}
+          }
         }
       }
-      Object.assign(target, source);
+      // UX-Phase11A Issue 3: for each aliased array key present in BOTH,
+      // mutate the existing target array IN PLACE so cross-fragment
+      // aliases (cameraPaths const etc.) keep pointing at the live data.
+      for (const k of _RESTORE_INPLACE_ARRAY_KEYS) {
+        if (Object.prototype.hasOwnProperty.call(source, k) &&
+            Array.isArray(target[k]) && Array.isArray(source[k])) {
+          _restoreArrayInPlace(target[k], source[k]);
+        }
+      }
+      // Everything else (scalars, objects, + any array key NOT aliased /
+      // NOT already an array on target) goes through the normal
+      // reference-set. The aliased-array keys handled above are
+      // re-assigned here too, but only when target[k] was NOT already a
+      // live array (e.g. it was absent or a non-array) -- in that case
+      // there is no alias to preserve, so a reference-set is correct.
+      const skip = Object.create(null);
+      for (const k of _RESTORE_INPLACE_ARRAY_KEYS) {
+        if (Array.isArray(target[k])) skip[k] = true;
+      }
+      for (const k of Object.keys(source)) {
+        if (skip[k]) continue;
+        target[k] = source[k];
+      }
     }
 
     function push(label) {

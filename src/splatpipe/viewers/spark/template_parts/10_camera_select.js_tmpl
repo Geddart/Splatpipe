@@ -753,6 +753,42 @@
         _camSelDelete();
       });
     }
+    // UX-Phase11A Issue 3 (2026-05-21): rebuild the dropdown options
+    // whenever the EditHistory restores cfg (undo/redo) or any module
+    // broadcasts a wholesale cfg change. WITHOUT this, an undo that
+    // adds/removes a camera_paths entry (now restored IN PLACE by the
+    // 17a _restore fix so the alias stays valid) leaves the dropdown
+    // <option> list stale -- the user sees a camera that no longer
+    // exists, or loses one that came back ("sometimes the Fehmarn cam
+    // is missing all of a sudden"). _camSelBuildOptions is idempotent
+    // + reads the live cfg.cameras + cameraPaths, so re-running it
+    // re-syncs the dropdown to the restored cfg. We also re-assert the
+    // current selection (clamped to a still-existing option, else
+    // Perspective) so a deleted-then-undone camera re-selects cleanly.
+    try {
+      if (typeof EditorModuleRegistry !== 'undefined' &&
+          typeof EditorModuleRegistry.on === 'function') {
+        const _camSelOnCfgRestore = function () {
+          try {
+            const prevVal = _camSel ? _camSel.value : null;
+            _camSelBuildOptions();
+            // Re-select the previous value if it still maps to an
+            // option; else fall back to Perspective (a deleted camera).
+            if (_camSel) {
+              let stillThere = false;
+              for (const o of _camSel.options) {
+                if (o.value === prevVal) { stillThere = true; break; }
+              }
+              _camSelSyncing = true;
+              _camSel.value = stillThere ? prevVal : _CAM_PERSP;
+              _camSelSyncing = false;
+            }
+          } catch (e) {}
+        };
+        EditorModuleRegistry.on('history:undo', _camSelOnCfgRestore);
+        EditorModuleRegistry.on('history:redo', _camSelOnCfgRestore);
+      }
+    } catch (e) {}
   }
   _camSelInit();
 

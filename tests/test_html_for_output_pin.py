@@ -143,6 +143,29 @@ PIN UPDATES:
     pose (09 line 30) -- the extension is a "hold at end" segment,
     safe + DCC-standard. All 6 fixtures shifted by the same +2091
     byte delta in lockstep; pins re-pinned.
+  * 2026-05-21 (Phase 11A Issue 3): EditHistory ``_restore`` no longer
+    swaps out aliased array references. The undo/redo restore did a
+    plain ``Object.assign(cfg, clone)`` which set ``cfg.camera_paths``
+    to a NEW (cloned) array, leaving the ``const cameraPaths =
+    cfg.camera_paths`` alias captured at init by 09_playback_spline
+    (read by ``_camSelCameras`` / ``startPath`` / ``buildPlayer``)
+    pointing at the STALE old array -> the camera dropdown lost /
+    duplicated entries after an undo ("sometimes the Fehmarn cam is
+    missing all of a sudden"). Fix in ``17a_edit_history::_restore``:
+    for a known set of aliased array keys (camera_paths / cameras /
+    clips / annotations / audio / titles3d) mutate the EXISTING array
+    IN PLACE (length=0 + push the clone's elements) so the captured
+    alias stays valid. Scoped DELIBERATELY to ``camera_paths`` only
+    (the proven load-bearing const alias; cfg.cameras / audio /
+    annotations / clips / titles3d are read live by their owner module
+    so a restore that drops them must DELETE them per
+    test_edit_history::test_restore_clears_keys_added_after_snapshot).
+    ALSO wires ``10_camera_select::_camSelInit`` to rebuild the dropdown
+    options on the EditHistory ``history:undo`` / ``history:redo``
+    events (the in-place restore keeps the alias valid but the dropdown
+    <option> list still needs a re-sync after the restored array's
+    contents change). All 6 fixtures shifted by the same +5180 byte
+    delta in lockstep; pins re-pinned.
   * 2026-05-21 (Phase 11A Issue 5): unified Play/Pause toggle. The
     separate timeline Pause button is REMOVED; ``_tlPlay`` is now a
     tri-state toggle (idle ▶ -> playing ⏸ -> paused ▶ -> resume).
@@ -248,42 +271,45 @@ from splatpipe.viewers.spark.template import html_for
 # StartViewModule 15i populate the drawer's last two placeholders;
 # +19614 in lockstep), then re-pinned 2026-05-21 (Phase 11A Issue 5:
 # unified Play/Pause toggle -- _tlPause removed, _tlPlay tri-state +
-# window.__spTransport surface; +6054 in lockstep).
+# window.__spTransport surface; +6054 in lockstep), then re-pinned
+# 2026-05-21 (Phase 11A Issue 3: EditHistory _restore mutates the
+# aliased camera_paths array in place + 10_camera_select rebuilds the
+# dropdown on undo/redo so the dropdown survives undo; +5180).
 CORPUS: list[tuple[str, tuple, dict, int, str]] = [
     (
         "harness_defaults",
         ("HarnessScene",),
         {},
-        752902,
-        "c2f93d81bf382c481404ab049af9e0c44f2567b6e7f40a4c8df0f99f5c7b55fb",
+        758082,
+        "f2610710b389b85486647710bcf732709ddcda94d7a703f84fc70ae1458b825b",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        752874,
-        "477cd5a122b84643a7dff36eae7e26195bfb056b90b695f2eb3dd61b358036fa",
+        758054,
+        "d620d1c6c05be83737bd7677e36349f6a653c05af77b220b3eea9e294cde6cd3",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        752869,
-        "16a4e1803bc40ad58c859e2d8b45014a13807f7822f365ed4941c12a3c21d140",
+        758049,
+        "b99d2fea58f9c36df64d466b3d3936fc3aaf97cea12162ace29496ccb054e9b3",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        752848,
-        "a36f5d9c7dcfdda47b9f9dc7d97ccad6f86564a4b10ffd98ec2033d4812becd6",
+        758028,
+        "95a795569e639da7c5b333f97386d71cfd38eddcc840a750b78f5ae464f85747",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        752913,
-        "9105c9f3243a9df5e501a753ee93d23d526b9d9d3c43db2fafffe40b8b4a9ada",
+        758093,
+        "add260271c120432a5a65a9c57b38fcc9c9861ca0b139d3663f9e04a7a5877e7",
     ),
     (
         "share_card",
@@ -293,8 +319,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        752772,
-        "e13528e21bb51289e1426b82ea1cac3e07f3cd4bb9245719fa7c16c35693a2d2",
+        757952,
+        "617a291656f9249e8894b3d5fd7b6c900543e717ab4c08aaeab0872b00277517",
     ),
 ]
 
