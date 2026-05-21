@@ -436,6 +436,31 @@ PIN UPDATES:
     diamond row + playhead overlay are untouched. All 6 fixtures shifted
     by the same +6717 code points in lockstep -- additive only (isolated
     to the 16/17a edits). Pins re-pinned to the new baseline.
+  * 2026-05-21 (R2 Batch D #154 -- polish #1/#13 + tooltip + upload hint +
+    chunk-warning): five low-risk polish edits across five fragments.
+    (#1 interp auto-target) ``17_editor_gizmo::_gzOpenPopover`` no longer
+    silently bails when nothing is selected -- a new
+    ``_gzNearestKfToPlayhead()`` re-derives ``_trajActiveKf`` via
+    ``_trajRefreshActive()`` (else falls back to the nearest keyframe by
+    ``|kf.t - playheadTime|``) and ``_gzAttach``es it so the popover opens
+    for the playhead-nearest keyframe; only a genuinely empty path flashes
+    a ``_gzFlashSelectHint()`` ("Select a keyframe first") in #controls-hint.
+    (#13 annotation centering) ``02a_styles_main`` ``.ann-dot`` gains
+    ``line-height: 1`` so single digits sit on the vertical centre instead
+    of ~1-2px low. (Save tooltip) ``17_editor_gizmo``'s Save button title
+    is reworded from "Save camera paths (cli: emit SPCP1 token; http: POST)"
+    to plain "Save scene". (upload hint) ``15b_panorama_module`` +
+    ``15f_audio_module`` each add a subtle dim static line ("Upload opens
+    via your author link (#token=...).") near the file picker. (chunk-warning)
+    ``18_frame_loop``'s root-chunk eviction guard now bounds the queued
+    chunk count to ``min(16, meta.chunks.length)`` -- the real chunk count
+    resolved ONCE off the existing ``splat.paged.radMetaPromise`` (no new
+    fetch, no Spark-fork edit) and cached on the pager; a <16-chunk scene
+    no longer queues non-existent chunks (the "Chunk index out of range"
+    console warning storm + wasted fetches). The bound only ever REDUCES
+    the request count, so zero streaming risk. All 6 fixtures shifted by
+    the same +7886 code points in lockstep -- additive only (isolated to
+    the edited fragments). Pins re-pinned to the new baseline.
 """
 
 from __future__ import annotations
@@ -512,6 +537,10 @@ from splatpipe.viewers.spark.template import html_for
 # seam #7/#8/#9 -- paused player block samples _pausedAt directly (18),
 # stopPath/_pathSeekHold re-sync OrbitControls to the live pose (10/09),
 # canvas drag + Alt+drag while paused take over the camera (17); +6896
+# code points in lockstep), then re-pinned 2026-05-21 (R2 Batch D #154:
+# interp auto-targets playhead kf (17) + .ann-dot line-height:1 (02a) +
+# "Save scene" tooltip (17) + upload author-link hint (15b/15f) +
+# root-chunk guard bounded to min(16, meta.chunks.length) (18); +7886
 # code points in lockstep). NOTE: expected_len counts len(html) CODE POINTS
 # (Unicode scalar values), NOT UTF-8 bytes -- the assembled HTML carries
 # multi-byte chars (em-dash, degree sign, etc.) so the byte length runs
@@ -521,36 +550,36 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
         "harness_defaults",
         ("HarnessScene",),
         {},
-        821061,
-        "62dc00154805f37a1e78375b1735d7e869b72a18eef030685c6c55e2483766bd",
+        828947,
+        "fd939ada9bb3ca46cf3181e08e4592a2a1c5b024f61cd66b9cfea529dc1b7f64",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        821033,
-        "f87dde89ac9e431674cad35c13eb6e9fe10cd08292016fe38b3fc928c91aa474",
+        828919,
+        "f60daad917e8642bd8de45b5d20b0bfcd1543fff79785d50bdf5e5c9368d7b2a",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        821028,
-        "a19b0600654ce94fd504ca8e9b6a3881f0aedc263184eded7f65db1c97d1d254",
+        828914,
+        "edf4cfc0f8a9da019a5edafc4c378613835319829291ab078ad9027e25e515d5",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        821007,
-        "251478971784ec5f8559c37e20ad0c2d4e694824cf468994c643528e41874fd9",
+        828893,
+        "aeabb3e57d75bff06895a4bb4aea6e5b9af56550e1353fa20291988314c613a1",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        821072,
-        "ef87226fb9099e250ff5a702f85c81cc09ae5be7d4b71c01f855b3c95a006c23",
+        828958,
+        "3e56e2d6e2a53454797f45129693efa5ec6cf729587005d69d63e84fa1e25f11",
     ),
     (
         "share_card",
@@ -560,8 +589,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        820931,
-        "bc4400b33973fed8254a38ea8aa797f3b42c6af012d1774d57947e105363c834",
+        828817,
+        "6391947e16d931ad2f648cf417a702c43bf663588e79e6ed4c0498cf183cfc34",
     ),
 ]
 

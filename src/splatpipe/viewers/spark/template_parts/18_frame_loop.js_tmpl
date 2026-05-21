@@ -718,14 +718,56 @@
     //      `freeablePages` so allocateFreeable() can never evict it. That is
     //      the actual anti-disappear guarantee, at zero fetch-priority cost.
     const PINNED_ROOT_CHUNK_COUNT = 16;
+    // R2 chunk-warning side-fix (2026-05-21): a scene with FEWER than 16
+    // chunks (e.g. 12) made the loop below queue chunks 12..15, which do
+    // not exist -- Spark's PagedSplats.fetchDecodeChunk then throws
+    // "Chunk index out of range: 12 (max: 11)" repeatedly (a console
+    // warning storm + wasted fetch attempts) every driveFetchers tick.
+    // The available chunk count IS cleanly knowable: splat.paged is a
+    // PagedSplats whose radMetaPromise resolves to { meta, chunksStart }
+    // where meta.chunks.length == the real chunk count. Resolve it ONCE
+    // (the promise already exists -- the constructor kicks it off for a
+    // RAD source; this adds NO fetch + NO fork edit) and cache it; until
+    // it resolves we keep the legacy 16 (no behavior change before
+    // resolution). The loop bound then becomes min(16, chunkCount), which
+    // only ever REDUCES the number of root chunks requested -- it can
+    // never request more, so there is zero streaming risk. Stored on the
+    // pager so the closure reads the latest value each tick.
+    pager.__spRootChunkCap = (typeof pager.__spRootChunkCap === 'number')
+      ? pager.__spRootChunkCap : PINNED_ROOT_CHUNK_COUNT;
+    try {
+      const _paged = splat.paged;
+      if (_paged && _paged.radMetaPromise &&
+          typeof _paged.radMetaPromise.then === 'function') {
+        _paged.radMetaPromise.then((mc) => {
+          try {
+            const n = mc && mc.meta && Array.isArray(mc.meta.chunks)
+              ? mc.meta.chunks.length : null;
+            if (typeof n === 'number' && n > 0) {
+              pager.__spRootChunkCap = Math.min(PINNED_ROOT_CHUNK_COUNT, n);
+            }
+          } catch (e) {}
+        }).catch(() => {});
+      }
+    } catch (e) {}
     if (pager && typeof pager.driveFetchers === 'function' && !pager.__spRootGuard) {
       const origDrive = pager.driveFetchers.bind(pager);
-      const _isRoot = (sc) => sc && sc.splats === splat.paged && sc.chunk < PINNED_ROOT_CHUNK_COUNT;
+      // Effective cap is read live off the pager each tick: the legacy 16
+      // until radMetaPromise resolves the real (possibly smaller) count.
+      const _rootCap = () => {
+        const c = pager.__spRootChunkCap;
+        return (typeof c === 'number' && c > 0)
+          ? Math.min(PINNED_ROOT_CHUNK_COUNT, c) : PINNED_ROOT_CHUNK_COUNT;
+      };
+      const _isRoot = (sc) => sc && sc.splats === splat.paged && sc.chunk < _rootCap();
       pager.driveFetchers = function() {
         if (!this.fetchPriority) this.fetchPriority = [];
         // (1) Ensure each not-yet-resident root chunk is queued exactly once,
-        //     at the END so it never preempts in-view fine detail.
-        for (let i = 0; i < PINNED_ROOT_CHUNK_COUNT; i++) {
+        //     at the END so it never preempts in-view fine detail. Bounded to
+        //     the REAL chunk count so a <16-chunk scene never queues a
+        //     non-existent chunk (the "out of range" warning storm).
+        const _cap = _rootCap();
+        for (let i = 0; i < _cap; i++) {
           if (this.getSplatsChunk(splat.paged, i)) continue;  // already resident
           const queued =
             this.fetchPriority.some(p => p.splats === splat.paged && p.chunk === i) ||

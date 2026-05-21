@@ -382,6 +382,18 @@
       urlHint.textContent = url ? ('Current: ' + url) : '(no backdrop)';
       wrap.appendChild(urlHint);
 
+      // R2 (2026-05-21): subtle static expectation-setter -- uploads
+      // require opening the scene via the private author-token link
+      // (the #token=... bookmark). With the token link present, auth is
+      // wired and uploads work; without it the inline error below
+      // surfaces the 401. Small + dim so it never crowds the picker.
+      const authHint = document.createElement('div');
+      authHint.className = 'pan-auth-hint';
+      authHint.style.cssText =
+        'font-size:9px;color:#667;margin-top:1px;line-height:1.3;';
+      authHint.textContent = 'Upload opens via your author link (#token=…).';
+      wrap.appendChild(authHint);
+
       // Inline upload status / error line (UX-H3). Hidden until an upload
       // starts or fails; surfaces 401 / 413 / unsupported / cli-mode /
       // network messages right under the file picker (NOT a silent

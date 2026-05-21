@@ -1568,6 +1568,88 @@
       }
       return kf.interp === val;
     }
+    // R2 #1 (2026-05-21): when NOTHING is selected, auto-target the
+    // keyframe nearest the current playhead time so clicking Interp
+    // always gives feedback (it was a SILENT no-op before -- the user
+    // clicks "interp (V)" and nothing happens). Reuses the SAME
+    // playhead the Task-16 active-key highlight uses: first re-derive
+    // _trajActiveKf via _trajRefreshActive() (the spline maps the live
+    // player / scrub position to its source-keyframe index), and if
+    // that resolves use it. It does NOT resolve on a <2-keyframe path
+    // (buildPlayer returns null there), so fall back to the nearest
+    // keyframe by raw |kf.t - playheadTime| -- which still picks a
+    // sensible target (e.g. the single keyframe on a 1-kf path). Pure
+    // read of the EXISTING module-scope _trajActivePath/_trajPlayhead/
+    // scrubEl; returns -1 only when the active path has zero keyframes.
+    function _gzNearestKfToPlayhead() {
+      try {
+        if (typeof _trajRefreshActive === 'function') _trajRefreshActive();
+      } catch (e) {}
+      try {
+        if (typeof _trajActiveKf === 'number' && _trajActiveKf >= 0) {
+          return _trajActiveKf;
+        }
+      } catch (e) {}
+      // Fallback: nearest keyframe by time to the current playhead.
+      const p = _gzActivePath();
+      if (!p || !Array.isArray(p.keyframes) || !p.keyframes.length) return -1;
+      // Resolve the playhead time in seconds: the live player clock if
+      // a tour is driving this path, else the scrub-slider position
+      // mapped through the path duration (mirror _trajPlayhead's two
+      // cases without depending on a built player existing).
+      let phT = 0;
+      try {
+        const ph = buildPlayer(p);
+        if (ph) {
+          const v = _trajPlayhead(ph);
+          if (typeof v === 'number' && isFinite(v)) phT = Math.max(0, v);
+        } else if (typeof scrubEl !== 'undefined' && scrubEl) {
+          // <2-kf path: no duration -> map the scrub fraction onto the
+          // keyframe time span so the slider still biases the pick.
+          const f = Math.max(0, Math.min(1,
+            (parseFloat(scrubEl.value) || 0) / 1000));
+          let tMin = Infinity, tMax = -Infinity;
+          for (const k of p.keyframes) {
+            const tt = (typeof k.t === 'number' && isFinite(k.t)) ? k.t : 0;
+            if (tt < tMin) tMin = tt;
+            if (tt > tMax) tMax = tt;
+          }
+          if (isFinite(tMin) && isFinite(tMax)) phT = tMin + f * (tMax - tMin);
+        }
+      } catch (e) {}
+      let best = -1, bestD = Infinity;
+      for (let i = 0; i < p.keyframes.length; i++) {
+        const k = p.keyframes[i];
+        const tt = (k && typeof k.t === 'number' && isFinite(k.t)) ? k.t : 0;
+        const d = Math.abs(tt - phT);
+        if (d < bestD) { bestD = d; best = i; }
+      }
+      return best;
+    }
+    // R2 #1: brief inline hint when there is genuinely nothing to
+    // target (zero keyframes on the active path). Reuses the existing
+    // #controls-hint element (author-mode chrome) -- flash a short
+    // message then restore its prior text. NOT a silent no-op.
+    let _gzHintRestore = null;
+    function _gzFlashSelectHint() {
+      const el = document.getElementById('controls-hint');
+      if (!el) return;
+      try {
+        if (_gzHintRestore && _gzHintRestore.timer) {
+          clearTimeout(_gzHintRestore.timer);
+        }
+        const prev = (_gzHintRestore && typeof _gzHintRestore.text === 'string')
+          ? _gzHintRestore.text : el.textContent;
+        el.textContent = 'Select a keyframe first';
+        _gzHintRestore = {
+          text: prev,
+          timer: setTimeout(() => {
+            try { el.textContent = prev; } catch (e) {}
+            _gzHintRestore = null;
+          }, 1800),
+        };
+      } catch (e) {}
+    }
     function _gzOpenPopover() {
       // UX-Phase11A Issue 4 (2026-05-21): the popover now opens
       // either on a gizmo-selected kf OR on a multi-selection from
@@ -1580,7 +1662,20 @@
           _mSelLen = window.__editor.tlSelection.length;
         }
       } catch (e) {}
-      if (_gzSelKf < 0 && _mSelLen < 2) return;   // need a selected keyframe (gizmo OR multi)
+      if (_gzSelKf < 0 && _mSelLen < 2) {
+        // R2 #1 (2026-05-21): auto-target the playhead-nearest keyframe
+        // instead of bailing silently. _gzAttach sets _gzSelKf via the
+        // SAME path a frustum click uses (proxy + TransformControls),
+        // so the popover below then opens for that keyframe. Only when
+        // there is no keyframe to target at all do we flash the hint.
+        const _autoIdx = _gzNearestKfToPlayhead();
+        if (_autoIdx >= 0) {
+          _gzAttach(_autoIdx);
+        } else {
+          _gzFlashSelectHint();
+          return;
+        }
+      }
       _gzStopTour();
       _gzClosePopover();
       const root = document.getElementById('author-root');
@@ -1995,7 +2090,7 @@
           'selected keyframe (drag them to shape the curve)',
           'editor-tan-btn');
         const saveBtn = _mkBtn('Save',
-          'Save camera paths (cli: emit SPCP1 token; http: POST)',
+          'Save scene',
           'editor-save-btn');
         recBtn.addEventListener('click', () => { _gzRecordKeyframe(); });
         interpBtn.addEventListener('click', () => { _gzOpenPopover(); });
