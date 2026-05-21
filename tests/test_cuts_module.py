@@ -627,3 +627,100 @@ process.stdout.write(JSON.stringify({
     assert r["dirtyAfterEdit"] is True
     assert r["dirtyAfterClean"] is False
     assert r["dirtyAfterSecond"] is True
+
+
+# --------------------------------------------------------------------------
+# WF-M (#145): clips can reference cfg.camera_paths directly
+# --------------------------------------------------------------------------
+
+
+def test_cuts_module_union_cameras_marker_present():
+    """STATIC: the CutsModule builds the UNION of cfg.cameras +
+    cfg.camera_paths for the clip dropdown (so a path-only entry like the
+    Fehmarn Cinematic can be sequenced)."""
+    html = html_for("HarnessScene")
+    cuts_i = html.index("(function _cutsInit() {")
+    seg = html[cuts_i:html.index("EditorModuleRegistry.register(cutsModule);",
+                                 cuts_i)]
+    assert "function _unionCameras()" in seg
+    # The union reads BOTH cfg.cameras and cfg.camera_paths.
+    assert "c.camera_paths" in seg
+    assert "coveredPaths" in seg
+    # The dropdown + add-clip default + test surface consume the union.
+    assert "const cams = _unionCameras();" in seg
+    assert "cutsUnionCameras()" in seg
+
+
+def test_clip_player_resolves_camera_paths_directly_marker():
+    """STATIC: 11_clip_player::_clipPath resolves clip.camera_id as EITHER a
+    cfg.cameras entry (via path_id) OR a cfg.camera_paths id directly, and
+    _clipMode counts camera_paths so a path-only cut sequence plays."""
+    html = html_for("HarnessScene")
+    cp_i = html.index("function _clipPath(clip) {")
+    seg = html[cp_i:cp_i + 900]
+    # Falls back to a direct camera_paths id match.
+    assert "p.id === clip.camera_id" in seg
+    # _clipMode counts camera_paths (so a no-cfg.cameras cut sequence plays).
+    cm_i = html.index("const _clipMode = _clipSeq.length > 0 &&")
+    cm_seg = html[cm_i:cm_i + 200]
+    assert "cfg.camera_paths" in cm_seg
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not available")
+def test_cuts_module_union_cameras_merges_and_dedups():
+    """cutsUnionCameras returns the UNION of cfg.cameras + cfg.camera_paths:
+    real cameras first (keeping their own id), then camera_paths NOT already
+    bound by some camera's path_id. A camera_paths id already covered by a
+    cfg.cameras[].path_id is de-duped (the real camera wins)."""
+    js = _preamble() + _extract_registry_js() + "\n" \
+        + _extract_cuts_iife_js() + r"""
+cfg.cameras = [
+  { id: 'cam1', name: 'Camera 1', path_id: 'p_bound' },
+];
+cfg.camera_paths = [
+  { id: 'p_bound', name: 'Bound Path', keyframes: [] },   // covered by cam1
+  { id: 'p_fehmarn', name: 'Fehmarn Cinematic', keyframes: [] },  // path-only
+];
+EditorModuleRegistry._bootMount();
+const union = window.__editor.cutsUnionCameras();
+process.stdout.write(JSON.stringify({
+  ids: union.map(u => u.id),
+  names: union.map(u => u.name),
+}));
+"""
+    r = _run_node(js)
+    # cam1 (real camera) first; p_bound de-duped (covered by cam1); the
+    # path-only Fehmarn Cinematic exposed by its path id.
+    assert r["ids"] == ["cam1", "p_fehmarn"]
+    assert r["names"] == ["Camera 1", "Fehmarn Cinematic"]
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not available")
+def test_cuts_module_add_clip_references_path_id_directly():
+    """A clip whose camera_id is a cfg.camera_paths id (no cfg.cameras
+    entry) is created with that path id stored verbatim -- the WF-M fix
+    that lets the Fehmarn Cinematic be sequenced without a virtual camera.
+    The add-clip with no cameras but a path picks the path as the default."""
+    js = _preamble() + _extract_registry_js() + "\n" \
+        + _extract_cuts_iife_js() + r"""
+cfg.cameras = [];
+cfg.camera_paths = [
+  { id: 'p_fehmarn', name: 'Fehmarn Cinematic', keyframes: [] },
+];
+EditorModuleRegistry._bootMount();
+// No-arg add picks the first union entry (the path, since no cameras).
+const added = window.__editor.cutsAddClip();
+// Explicit add of the same path id.
+const added2 = window.__editor.cutsAddClip('p_fehmarn', 6.0, 1.0);
+process.stdout.write(JSON.stringify({
+  defaultCam: added && added.camera_id,
+  explicitCam: added2 && added2.camera_id,
+  clipCount: cfg.clips.length,
+}));
+"""
+    r = _run_node(js)
+    assert r["defaultCam"] == "p_fehmarn", (
+        "no-arg add must pick the camera_paths entry when no cfg.cameras exist"
+    )
+    assert r["explicitCam"] == "p_fehmarn"
+    assert r["clipCount"] == 2

@@ -47,10 +47,16 @@
   const _clipCameras = Array.isArray(cfg.cameras) ? cfg.cameras : [];
   const _clipSeq = _orderedClips(
     Array.isArray(cfg.clips) ? cfg.clips : []);
-  // A scene is multi-clip only when BOTH cameras and >=1 clip are
-  // present; otherwise the degenerate single-tour path runs (the 6
-  // live scenes have neither -> byte-behaviourally unchanged).
-  const _clipMode = _clipCameras.length > 0 && _clipSeq.length > 0;
+  // A scene is multi-clip when it has >=1 clip AND >=1 resolvable camera
+  // source (a cfg.cameras virtual camera OR -- WF-M #145 -- a cfg.camera_paths
+  // entry a clip can reference directly). The 6 live scenes have NO clips
+  // (_clipSeq.length === 0) so they stay in the degenerate single-tour path
+  // -> byte-behaviourally unchanged. The camera_paths arm only changes
+  // behaviour for a scene that ALREADY ships clips (a multi-cut scene), so
+  // it cannot regress a single-tour scene.
+  const _clipMode = _clipSeq.length > 0 &&
+    (_clipCameras.length > 0 ||
+     (Array.isArray(cfg.camera_paths) ? cfg.camera_paths.length : 0) > 0);
   let _clipState = { active: false, idx: -1, clip: null };
   let _clipUserStopped = false;
   // Test/extension surface (mirrors window.__sp / __sceneview): lets
@@ -81,13 +87,25 @@
     };
   } catch (e) {}
 
-  // Resolve a clip -> its camera -> that camera's camera_paths entry.
+  // Resolve a clip -> the camera_paths entry that plays for it.
+  // WF-M (#145): clip.camera_id may name EITHER a cfg.cameras entry (resolve
+  // via its path_id -- the original behaviour) OR a cfg.camera_paths id
+  // DIRECTLY (so a clip can sequence a path like the Fehmarn Cinematic that
+  // has no cfg.cameras virtual-camera entry). Try the cfg.cameras lookup
+  // first (preserves an existing camera whose id happens to collide with a
+  // path id -- the virtual camera wins), then fall back to a direct path-id
+  // match. Reads cfg.cameras LIVE (not the _clipCameras const snapshot) so an
+  // editor-added camera resolves without a reload.
   function _clipPath(clip) {
-    if (!clip) return null;
-    const cam = _clipCameras.find(c => c && c.id === clip.camera_id);
-    if (!cam) return null;
-    return (cfg.camera_paths || []).find(p => p && p.id === cam.path_id)
-           || null;
+    if (!clip || !clip.camera_id) return null;
+    const paths = cfg.camera_paths || [];
+    const cams = Array.isArray(cfg.cameras) ? cfg.cameras : _clipCameras;
+    const cam = cams.find(c => c && c.id === clip.camera_id);
+    if (cam) {
+      return paths.find(p => p && p.id === cam.path_id) || null;
+    }
+    // Direct camera_paths reference (no virtual camera with this id).
+    return paths.find(p => p && p.id === clip.camera_id) || null;
   }
   // Synthesise a clip-bounded, retimed sub-path: keep only the
   // keyframes inside [in, in+duration] (plus the bracketing keys so

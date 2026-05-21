@@ -336,6 +336,16 @@ PIN UPDATES:
     fade_ms but NO text input, so every annotation was stuck "(untitled)"
     with an empty panel. All 6 fixtures shifted by the same +3248 code points
     in lockstep; pins re-pinned.
+  * 2026-05-21 (Phase 11G WF-M cuts->paths #145): the Cuts clip dropdown now
+    offers the UNION of ``cfg.cameras`` + ``cfg.camera_paths`` (``15d``'s new
+    ``_unionCameras()`` mirrors 10_camera_select's union) so a clip can
+    sequence a path that has no virtual-camera entry (e.g. the Fehmarn
+    Cinematic). ``11_clip_player::_clipPath`` resolves ``clip.camera_id`` as
+    EITHER a cfg.cameras entry (via path_id, unchanged) OR a cfg.camera_paths
+    id DIRECTLY, and ``_clipMode`` counts camera_paths so a path-only cut
+    sequence plays (the 6 live single-tour scenes have NO clips so they are
+    byte-behaviourally unchanged). All 6 fixtures shifted by the same +3421
+    code points in lockstep; pins re-pinned.
 """
 
 from __future__ import annotations
@@ -417,36 +427,36 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
         "harness_defaults",
         ("HarnessScene",),
         {},
-        798180,
-        "ed85c9bdfb6387c75f01f91e17261731c523ea3ad78ea4f0f8a4f26336602c31",
+        801601,
+        "c0c5127d552159fef516e367d6c3f6919952351717343b9689ad9570c85c67bd",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        798152,
-        "4301f4a74a62f11c2157b3c65960a641b47d157f341c088f8492a20b44cbd8aa",
+        801573,
+        "94b9137e6ffaf14218343b37eb39896f7e9fcd99adb90d32a056209cb8cf805e",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        798147,
-        "514edfcecfc99d6980643465fcf89b950bf0616dee69cdf3075e3eb23234dcb5",
+        801568,
+        "c4e4db71fa77fad8f64a454350a9df9bc64dedcc4b3fa7dd15935f357f8c091b",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        798126,
-        "e8226cf17e6ab42fb5da1906ebd7be800d95d0fbed5c1340e25e10048a52afce",
+        801547,
+        "77fecbda1fbd516ddfa1dfe970b6674b88a2231785e44a33227ea9534d4f3d60",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        798191,
-        "8837ea22ca7a1319245b8cc6ed913a589885b6dd2d6873da735b4ca4e43d36e4",
+        801612,
+        "30e6040cc5f25c8e4f86ded4400bd57346ba0f403777371e3028d1f5b49b339e",
     ),
     (
         "share_card",
@@ -456,8 +466,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        798050,
-        "bed493cbd90a796ca115149c920f52a432577e698f71ec72aaaf87385f2dd0c2",
+        801471,
+        "d65a567812a86234dafb4e37612bc8a0ec7d979c3efe6653a757226895417db4",
     ),
 ]
 

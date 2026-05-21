@@ -101,6 +101,38 @@
       if (!c) return null;
       return Array.isArray(c.cameras) ? c.cameras : [];
     }
+    // UX-Phase11G WF-M (#145): the UNION of cfg.cameras AND cfg.camera_paths
+    // -- mirrors 10_camera_select::_camSelCameras so a clip can reference a
+    // camera_path directly (e.g. the Fehmarn Cinematic lives in
+    // cfg.camera_paths, NOT cfg.cameras, so the cameras-only dropdown could
+    // never sequence it). Returns [{id, name}] where `id` is the value
+    // STORED in clip.camera_id: a real cfg.cameras entry keeps its OWN id
+    // (so existing cameras-based clips resolve unchanged via
+    // _clipPath's cam.path_id lookup); a camera_paths-only entry uses the
+    // PATH id (which 11_clip_player::_clipPath now also resolves directly).
+    // A camera_paths entry already covered by some cfg.cameras[].path_id is
+    // de-duped (the real camera wins -- it carries the author-facing name +
+    // any orbit_pivot). Pure: neither input array is mutated.
+    function _unionCameras() {
+      const c = _liveCfg();
+      const out = [];
+      const cams = (c && Array.isArray(c.cameras)) ? c.cameras : [];
+      const paths = (c && Array.isArray(c.camera_paths)) ? c.camera_paths : [];
+      const coveredPaths = new Set();   // camera_paths ids a cfg.cameras entry binds
+      for (const cam of cams) {
+        if (!cam || !cam.id) continue;
+        out.push({ id: cam.id, name: cam.name || cam.id });
+        if (cam.path_id) coveredPaths.add(cam.path_id);
+      }
+      let n = 0;
+      for (const p of paths) {
+        if (!p || !p.id) continue;
+        n += 1;
+        if (coveredPaths.has(p.id)) continue;  // already exposed via a real camera
+        out.push({ id: p.id, name: p.name || ('Camera ' + n) });
+      }
+      return out;
+    }
     function _sig(slice) {
       try { return JSON.stringify(slice || []); }
       catch (e) { return ''; }
@@ -176,10 +208,11 @@
     let _clipIdCounter = 0;
     function _addClip(cameraId, duration, inPoint) {
       if (!cameraId) {
-        // No camera given -> pick the first available; if none,
-        // the call is a no-op (the UI guards against the no-camera
-        // case by disabling the "+ Add clip" button when empty).
-        const cams = _camerasSlice();
+        // No camera given -> pick the first available from the UNION of
+        // cfg.cameras + cfg.camera_paths (WF-M #145); if none, the call is a
+        // no-op (the UI guards against the empty case by disabling the
+        // "+ Add clip" button).
+        const cams = _unionCameras();
         if (!cams || !cams.length) return null;
         cameraId = cams[0].id;
       }
@@ -336,7 +369,11 @@
         'display:flex;flex-direction:column;gap:6px;';
       const c = _liveCfg();
       const clips = (c && Array.isArray(c.clips)) ? c.clips : [];
-      const cams = (c && Array.isArray(c.cameras)) ? c.cameras : [];
+      // WF-M (#145): the dropdown source is the UNION of cfg.cameras +
+      // cfg.camera_paths so a clip can target a path that has no cfg.cameras
+      // entry (e.g. the Fehmarn Cinematic). Each entry's id is the value
+      // stored in clip.camera_id.
+      const cams = _unionCameras();
       // Ordered for UI display (matches playback order).
       const ordered = clips.slice().sort(
         (a, b) => ((a && a.clip_start) || 0) - ((b && b.clip_start) || 0));
@@ -678,6 +715,10 @@
         cutsAddClip(cameraId, duration, inPoint) {
           return _addClip(cameraId, duration, inPoint);
         },
+        // WF-M (#145): the UNION of cfg.cameras + cfg.camera_paths the clip
+        // dropdown offers (function form -- recomputed per call so a
+        // late-added camera/path is observable; sidesteps the merge freeze).
+        cutsUnionCameras() { return _unionCameras(); },
         cutsDeleteClip(clipId) { return _deleteClip(clipId); },
         cutsReorderUp(clipId) { return _reorderClipUp(clipId); },
         cutsReorderDown(clipId) { return _reorderClipDown(clipId); },
