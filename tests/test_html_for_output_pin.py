@@ -249,6 +249,26 @@ PIN UPDATES:
     modules stayed dirty forever -> every Save re-emitted the full
     payload. All 6 fixtures shifted by the same +1470 byte delta in
     lockstep; pins re-pinned.
+  * 2026-05-21 (Phase 11E UX-H3): panorama + audio file UPLOAD was
+    DEAD on every deployed scene. The 15b PanoramaModule + 15f
+    AudioModule file pickers POSTed to ``../upload-image`` /
+    ``../upload-audio``, which only exist on the splatpipe web
+    DASHBOARD (FastAPI) -- on a live Bunny CDN scene they 404
+    silently. Fix: both modules now derive a SIBLING
+    ``upload-asset.php`` endpoint from the baked SAVE_ENDPOINT (e.g.
+    https://geddart.de/save-camera.php ->
+    https://geddart.de/upload-asset.php) and POST the file there as
+    multipart with the per-scene Bearer token (read from the
+    ``#token=`` URL fragment, mirroring
+    ``17_editor_gizmo::_gzReadAuthToken``) + the slug. cli-mode (no
+    http endpoint) surfaces an actionable inline message; 401 / 413 /
+    unsupported / network errors surface inline (NOT a silent
+    console.warn). New per-IIFE helpers (_assetUploadEndpoint /
+    _readAuthToken / _uploadSlug / _uploadAsset / _setStatus) + an
+    inline status DOM line in each module. All 6 fixtures shifted by
+    the same +13903 byte delta in lockstep (isolated to the 15b/15f
+    edits; measured with any concurrent non-owned fragments held at
+    HEAD) -- the change is additive only. Pins re-pinned.
 """
 
 from __future__ import annotations
@@ -304,42 +324,46 @@ from splatpipe.viewers.spark.template import html_for
 # +1214 in lockstep), then re-pinned 2026-05-21 (Phase 11D H1: Save
 # dispatcher calls EditorModuleRegistry.markAllClean() on success --
 # _gzMarkAllClean() helper called from _gzSaveCli + _gzSaveHttp ok path;
-# +1470 in lockstep).
+# +1470 in lockstep), then re-pinned 2026-05-21 (Phase 11E UX-H3:
+# panorama + audio upload POST to the derived upload-asset.php endpoint
+# (was the dashboard-only ../upload-image|../upload-audio that 404'd on
+# a live CDN scene) with a Bearer token + slug + inline error surface;
+# +13903 in lockstep, isolated to the 15b/15f edits).
 CORPUS: list[tuple[str, tuple, dict, int, str]] = [
     (
         "harness_defaults",
         ("HarnessScene",),
         {},
-        760766,
-        "03fab72743c3a667e8e0fb9c13d3044df3bd5742564acaea1b5d7a680830e1e9",
+        774669,
+        "69e7a23f262b90af14d9dc31bf7ca5a08189582f5fca911ac28d9cecce9eb812",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        760738,
-        "3a5f007ae24f9433c40b4b0f9a99a10bc1b38b86803b97752c84976449b68b22",
+        774641,
+        "7738340f72c32642285b4bf0cbd9968c0ff109ec974143689032d5a5549428d6",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        760733,
-        "a8237be5091034156991e560e2dd860997b42d146f986522debdfad1978a54a3",
+        774636,
+        "e6d8e35e105f02705d2f8ec7b3df9d5984e20899c2e431ff9d471b3a1d3b53ea",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        760712,
-        "6c8353e253f64837b7b02e3bd611d336d62f5a6cbeac03dd25d2bfac6b842e04",
+        774615,
+        "aeed682e8abb80b8ca660c7da27d8413c0cb12f5d6ac0b38367125d06bf96313",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        760777,
-        "0435c26c509d1436bf58566e63134bd77c79d83d19ebff45bd969ed422422d69",
+        774680,
+        "2dc249b2fa3c5ae377aadae4072c4519e1d249d3e9154edc13456ad2df5de3b0",
     ),
     (
         "share_card",
@@ -349,8 +373,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        760636,
-        "2549dcc3e8efcd7d2aefda91a60cc521cb8f97c1afaeb848ad3e512ae76454d4",
+        774539,
+        "05e89a4c67d42fae86784c19fdfbf3b20b17d8983c9d73303b5eaa37434ee1fd",
     ),
 ]
 

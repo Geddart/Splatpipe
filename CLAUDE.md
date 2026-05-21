@@ -186,6 +186,7 @@ splatpipe/                    # repo root
     test_html_for_output_pin.py    # Output-pin byte-lock: html_for() len+SHA-256 for 6 corpus fixtures + UTF-8 LF fragment sanity (modularization-safe replacement for the retired excised-region source-level lock; T6 of #118)
     test_intro_startview_modules.py # IntroModule (15h) + StartViewModule (15i) Scene Settings sections: contract markers + fragment ordering + openStartViewCard helper (Phase 11A Issue 9)
     test_php_save_oracle.py        # PHP save adapter cross-language merge oracle (v0.8+)
+    test_upload_asset_oracle.py    # PHP upload-asset.php server-behaviour oracle: auth/ext/size/slug gates (UX-H3; Phase 11E)
     test_cloudflare_save_oracle.py # Cloudflare Worker save cross-language merge oracle (v0.8+)
     test_publish_config_sanitize.py # Public viewer-config sanitiser + publish_scene secret-leak regression (bug-audit #3; v0.8+)
     test_audio_upload_security.py   # Audio-upload path-traversal hardening (bug-audit #7; v0.8+)

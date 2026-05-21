@@ -201,9 +201,6 @@ _UI_MARKERS = (
     "intSlider.min = '0';",
     "intSlider.max = '3';",
     "intSlider.step = '0.05';",
-    # Upload route call: relative URL so the dashboard preview resolves it
-    # to /projects/<path>/upload-image (the route shipped in ce3727f).
-    "'../upload-image'",
 )
 
 
@@ -214,6 +211,82 @@ def test_panorama_editor_ui_markers_present():
     html = _rendered_html()
     for mk in _UI_MARKERS:
         assert mk in html, f"editor UI marker missing: {mk!r}"
+
+
+# --------------------------------------------------------------------------
+# (d2) UX-H3 fix: upload POSTs to the derived upload-asset.php (NOT the
+#      dashboard-only ../upload-image which 404s on a live CDN scene)
+# --------------------------------------------------------------------------
+
+# The panorama upload was DEAD on every deployed scene: the file picker
+# POSTed to ``../upload-image`` which only exists on the splatpipe web
+# dashboard (FastAPI). On a Bunny CDN scene that 404s silently. The fix
+# derives a SIBLING ``upload-asset.php`` from the baked SAVE_ENDPOINT and
+# POSTs the file there as multipart with the per-scene Bearer token.
+_UX_H3_UPLOAD_MARKERS = (
+    # The endpoint-derivation helper + the new sibling filename.
+    "function _assetUploadEndpoint()",
+    "'upload-asset.php$1'",
+    # http-mode gate (no write endpoint on the cli-default static scene).
+    "SAVE_MODE !== 'http'",
+    # Bearer-token reader (fragment-only secret; mirrors _gzReadAuthToken).
+    "function _readAuthToken()",
+    "headers['Authorization'] = 'Bearer ' + token;",
+    # Multipart body carries the slug field the server keys on.
+    "fd.append('slug', _uploadSlug());",
+    "fd.append('file', file);",
+    # The upload helper + the inline status surface (NOT silent).
+    "function _uploadAsset(file)",
+    "function _setStatus(msg, isError)",
+    # cli-mode inline message (actionable, not a console.warn).
+    "Asset upload requires the http save backend.",
+    # Status / error inline classes.
+    "pan-upload-status",
+)
+
+
+def test_panorama_upload_targets_derived_asset_endpoint_not_dashboard():
+    """UX-H3: the panorama upload must POST to the http-mode
+    ``upload-asset.php`` derived from SAVE_ENDPOINT (with a Bearer token +
+    slug), NOT the dashboard-only ``../upload-image`` that 404s on a live
+    CDN scene. The cli-mode fallback surfaces an inline message instead of
+    silently failing."""
+    html = _rendered_html()
+    for mk in _UX_H3_UPLOAD_MARKERS:
+        assert mk in html, f"UX-H3 upload marker missing: {mk!r}"
+    # NEGATIVE: the dead dashboard-only fetch CODE must be GONE from the
+    # PanoramaModule fragment (it was the silent-404 bug). We pin the
+    # actual dead-code forms (a fetch built off the relative ../upload-image
+    # target), NOT any mention -- the explanatory comments legitimately
+    # name the retired target to document the fix.
+    from splatpipe.viewers.spark import template as tmpl
+    frag = (
+        Path(tmpl.__file__).parent / "template_parts"
+        / "15b_panorama_module.js_tmpl"
+    ).read_text(encoding="utf-8")
+    assert "new URL('../upload-image'" not in frag, (
+        "15b must no longer build a fetch URL off the dashboard-only "
+        "../upload-image (UX-H3: dead on every deployed CDN scene)"
+    )
+    assert "fetch(url, { method: 'POST', body: fd })" not in frag, (
+        "15b must no longer POST the bare dashboard FormData (the old "
+        "tokenless, relative-target upload path) -- it now goes through "
+        "_uploadAsset(file) which derives upload-asset.php + adds the "
+        "Bearer token"
+    )
+
+
+def test_panorama_upload_error_paths_surface_inline_not_silent():
+    """UX-H3: 401 / 413 / unsupported / network failures must surface an
+    inline message, not a silent console.warn-only (the original bug was a
+    completely silent failure)."""
+    html = _rendered_html()
+    # Each status branch produces an inline string.
+    assert "Upload unauthorized (401)." in html
+    assert "File too large (413)." in html
+    assert "Upload failed (network error). " in html
+    # The error path calls _setStatus(msg, true) -- the inline surface.
+    assert "_setStatus(msg, true);" in html
 
 
 # --------------------------------------------------------------------------

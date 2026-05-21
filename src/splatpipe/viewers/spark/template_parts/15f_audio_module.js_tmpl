@@ -19,8 +19,9 @@
   //    * renderSceneSettings(parentEl) populates the drawer's
   //      Audio section with per-track cards (volume slider, loop
   //      toggle, positional toggle, delete button) + "+ Add
-  //      track" button (POST ../upload-audio, bug-audit #7
-  //      hardened).
+  //      track" button (UX-H3: POSTs to the http-mode
+  //      upload-asset.php derived from SAVE_ENDPOINT -- the old
+  //      dashboard-only ../upload-audio 404'd on a live CDN scene).
   //
   //  WHY HTMLAudioElement (not THREE.Audio): the legacy 08_input
   //  loader used THREE.Audio + THREE.AudioListener, which requires
@@ -87,6 +88,113 @@
       catch (e) { return ''; }
     }
 
+    // ---- Asset-upload endpoint (UX-H3 fix, 2026-05-21) -----------------
+    //  The OLD POST target was ``../upload-audio`` (relative) -- that only
+    //  exists on the splatpipe web DASHBOARD (the FastAPI dev server). On a
+    //  DEPLOYED CDN scene it 404s silently, so the audio upload was DEAD.
+    //  The http-mode fix: derive a SIBLING ``upload-asset.php`` from the
+    //  baked SAVE_ENDPOINT (e.g. https://geddart.de/save-camera.php ->
+    //  https://geddart.de/upload-asset.php) and POST the file there as
+    //  multipart with the same per-scene Bearer token Save uses. Mirrors
+    //  the 15b PanoramaModule helper verbatim (self-contained per IIFE).
+    //  Returns null when SAVE_MODE!=='http' (cli-default static scene has
+    //  no write endpoint -- caller surfaces a clear inline message).
+    function _assetUploadEndpoint() {
+      try {
+        if (typeof SAVE_MODE === 'undefined' || SAVE_MODE !== 'http') {
+          return null;
+        }
+        if (typeof SAVE_ENDPOINT === 'undefined' || !SAVE_ENDPOINT) {
+          return null;
+        }
+        return String(SAVE_ENDPOINT).replace(
+          /[^/]*(\?.*)?$/, 'upload-asset.php$1');
+      } catch (e) { return null; }
+    }
+
+    // Read the http-mode bearer from the URL fragment ONLY (#token=<token>,
+    // legacy #author=<secret>). MIRRORS 17_editor_gizmo::_gzReadAuthToken.
+    function _readAuthToken() {
+      try {
+        const h = (location.hash || '').replace(/^#/, '');
+        let legacy = '';
+        let modern = '';
+        for (const part of h.split('&')) {
+          const eq = part.indexOf('=');
+          if (eq <= 0) continue;
+          const key = part.slice(0, eq);
+          if (key === 'token') modern = decodeURIComponent(part.slice(eq + 1));
+          else if (key === 'author') legacy = decodeURIComponent(part.slice(eq + 1));
+        }
+        return modern || legacy || '';
+      } catch (e) { return ''; }
+    }
+
+    // The scene slug -- PREFER the gizmo's window.__editor.gzSlug; else
+    // derive it IDENTICALLY to 17_editor_gizmo::_gzSlug (#title h1, lower-
+    // cased + [a-z0-9_-] sanitiser the http-save slug regex requires).
+    function _uploadSlug() {
+      try {
+        if (window.__editor && typeof window.__editor.gzSlug === 'string'
+            && window.__editor.gzSlug) {
+          return window.__editor.gzSlug;
+        }
+      } catch (e) {}
+      try {
+        const h1 = document.querySelector('#title h1');
+        const name = ((h1 && h1.textContent) || 'scene').trim();
+        return (name.toLowerCase().replace(/[^a-z0-9_-]+/g, '_')
+          .slice(0, 48)) || 'scene';
+      } catch (e) { return 'scene'; }
+    }
+
+    // POST ``file`` to the derived upload-asset.php as multipart with the
+    // Bearer token + slug. RESOLVES with the server JSON ({ok:true,
+    // url:'<relative-filename>'}) or REJECTS with an Error whose .message
+    // is a human-readable inline-surfaceable string (401 / 413 / 415 /
+    // network / cli-mode). NEVER a silent console.warn-only.
+    function _uploadAsset(file) {
+      const endpoint = _assetUploadEndpoint();
+      if (!endpoint) {
+        return Promise.reject(new Error(
+          'Asset upload requires the http save backend. Run the scene in ' +
+          'the dashboard editor for local uploads, or switch save_mode to ' +
+          'http.'));
+      }
+      const token = _readAuthToken();
+      const fd = new FormData();
+      fd.append('slug', _uploadSlug());
+      fd.append('file', file);
+      const headers = {};
+      if (token) headers['Authorization'] = 'Bearer ' + token;
+      return fetch(endpoint, { method: 'POST', headers: headers, body: fd })
+        .then(function (r) {
+          return r.json().catch(function () { return null; }).then(
+            function (data) {
+              if (r.ok && data && data.ok && data.url) return data;
+              let msg;
+              if (r.status === 401) {
+                msg = 'Upload unauthorized (401). Open the scene via the ' +
+                      'private author link (#token=...).';
+              } else if (r.status === 413) {
+                msg = 'File too large (413).';
+              } else if (r.status === 415 || r.status === 400) {
+                msg = (data && data.error)
+                  ? ('Upload rejected: ' + data.error)
+                  : 'Upload rejected (unsupported file).';
+              } else {
+                msg = (data && data.error)
+                  ? ('Upload failed: ' + data.error)
+                  : ('Upload failed (HTTP ' + r.status + ').');
+              }
+              throw new Error(msg);
+            });
+        }, function (netErr) {
+          throw new Error('Upload failed (network error). ' +
+            ((netErr && netErr.message) ? netErr.message : ''));
+        });
+    }
+
     // ---- Module-local state ----
     const _audioElements = [];   // HTMLAudioElement[], index-aligned with cfg.audio
     let _isDirty = false;
@@ -94,6 +202,22 @@
     let _sectionEl = null;       // <details data-section="audio"> in 17b drawer
     let _sectionBodyEl = null;   // .spcp-scene-settings-section-body inside it
     let _dockAttached = false;   // idempotency guard for _attachToDrawer
+    let _statusEl = null;        // inline upload status/error line (UX-H3)
+
+    // Surface an upload status / error message inline under the "+ Add
+    // track" button. ``isError`` colours it red; an empty msg hides it.
+    // Tolerant of a not-yet-rendered section (no-op).
+    function _setStatus(msg, isError) {
+      if (!_statusEl) return;
+      if (!msg) {
+        _statusEl.style.display = 'none';
+        _statusEl.textContent = '';
+        return;
+      }
+      _statusEl.textContent = msg;
+      _statusEl.style.color = isError ? '#ff8a8a' : '#9aa';
+      _statusEl.style.display = '';
+    }
 
     // ---- Build from cfg.audio -- mirrors the legacy 08_input loader
     //      behaviour but uses HTMLAudioElement (simpler than THREE.Audio
@@ -293,8 +417,10 @@
         'font-size:11px;padding:5px 10px;cursor:pointer;' +
         'margin-bottom:6px;width:100%;';
       // Hidden file input that the button triggers; on file-select we
-      // POST to ../upload-audio + on success add the returned path
-      // to cfg.audio. Bug-audit #7 hardening lives server-side.
+      // POST the file to the http-mode upload-asset.php endpoint (see the
+      // change handler below) + on success add the returned relative url
+      // to cfg.audio. Server-side extension/size/auth hardening lives in
+      // upload-asset.php (mirrors the bug-audit #7 dashboard route).
       const fileInput = document.createElement('input');
       fileInput.type = 'file';
       fileInput.accept = '.mp3,.wav,.ogg,.opus,.m4a,.aac,.flac,.webm,' +
@@ -304,42 +430,53 @@
       addBtn.addEventListener('click', function () {
         fileInput.click();
       });
+      // On file-select POST the file to the http-mode upload-asset.php
+      // endpoint (derived from SAVE_ENDPOINT -- UX-H3 fix 2026-05-21; the
+      // old ../upload-audio target only existed on the dashboard + 404'd
+      // silently on a live CDN scene), then add the returned RELATIVE url
+      // as a new track. Errors (cli-mode / 401 / 413 / unsupported /
+      // network) surface INLINE -- never a silent console.warn-only.
       fileInput.addEventListener('change', function () {
         if (!fileInput.files || !fileInput.files.length) return;
         const file = fileInput.files[0];
-        const fd = new FormData();
-        fd.append('file', file);
-        let url;
-        try {
-          url = new URL('../upload-audio', location.href).toString();
-        } catch (e) {
-          url = '../upload-audio';
+        // cli-mode short-circuit: static CDN scene has no http write
+        // endpoint. Surface the actionable message + bail.
+        if (!_assetUploadEndpoint()) {
+          _setStatus(
+            'Asset upload requires the http save backend. Run the scene in ' +
+            'the dashboard editor for local uploads, or switch save_mode to ' +
+            'http.', true);
+          try { fileInput.value = ''; } catch (e) {}
+          return;
         }
-        fetch(url, { method: 'POST', body: fd })
-          .then(function (r) {
-            return r.json().catch(function () { return null; });
-          })
+        _setStatus('Uploading ' + (file.name || 'audio') + '...', false);
+        _uploadAsset(file)
           .then(function (data) {
-            if (!data || !data.ok || !data.path) {
-              try {
-                console.warn('[AudioModule] upload failed:', data);
-              } catch (e) {}
-              return;
-            }
-            // Add the returned path as a new track (default volume +
-            // loop). The user can tweak via the rendered card.
-            _addTrack(data.path, { volume: 0.5, loop: true });
+            // Add the returned relative url as a new track (default volume
+            // + loop). _addTrack re-renders the list (clearing the status).
+            _addTrack(data.url, { volume: 0.5, loop: true });
           })
           .catch(function (err) {
-            try {
-              console.warn('[AudioModule] upload error:', err);
-            } catch (e) {}
+            const msg = (err && err.message) ? err.message : 'Upload failed.';
+            _setStatus(msg, true);
+            try { console.warn('[AudioModule] upload error:', err); }
+            catch (e) {}
           });
         // Clear so re-selecting the same file fires `change` again.
         try { fileInput.value = ''; } catch (e) {}
       });
       _sectionBodyEl.appendChild(addBtn);
       _sectionBodyEl.appendChild(fileInput);
+
+      // Inline upload status / error line (UX-H3). Hidden until an upload
+      // starts or fails; surfaces 401 / 413 / unsupported / cli-mode /
+      // network messages right under the "+ Add track" button.
+      const statusEl = document.createElement('div');
+      statusEl.className = 'audio-upload-status';
+      statusEl.style.cssText =
+        'font-size:10px;line-height:1.35;display:none;margin:-2px 0 2px 0;';
+      _sectionBodyEl.appendChild(statusEl);
+      _statusEl = statusEl;
 
       // Per-track cards.
       const tracks = _slice();

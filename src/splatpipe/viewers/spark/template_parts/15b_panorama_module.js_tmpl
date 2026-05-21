@@ -78,6 +78,121 @@
       return null;
     }
 
+    // ---- Asset-upload endpoint (UX-H3 fix, 2026-05-21) -----------------
+    //  The OLD POST target was ``../upload-image`` (relative) -- that only
+    //  exists on the splatpipe web DASHBOARD (the FastAPI dev server). On a
+    //  DEPLOYED CDN scene it 404s silently, so the panorama upload was DEAD.
+    //  The http-mode fix: derive a SIBLING ``upload-asset.php`` from the
+    //  baked SAVE_ENDPOINT (e.g. https://geddart.de/save-camera.php ->
+    //  https://geddart.de/upload-asset.php) and POST the file there as
+    //  multipart with the same per-scene Bearer token Save uses.
+    //  Returns null when SAVE_MODE!=='http' (the cli-default DEFAULT static
+    //  scene has no write endpoint -- the caller surfaces a clear inline
+    //  message instead of silently failing).
+    function _assetUploadEndpoint() {
+      try {
+        if (typeof SAVE_MODE === 'undefined' || SAVE_MODE !== 'http') {
+          return null;
+        }
+        if (typeof SAVE_ENDPOINT === 'undefined' || !SAVE_ENDPOINT) {
+          return null;
+        }
+        // Replace the LAST path segment (the save-camera.php filename) with
+        // upload-asset.php, preserving scheme/host/path-prefix/query.
+        return String(SAVE_ENDPOINT).replace(
+          /[^/]*(\?.*)?$/, 'upload-asset.php$1');
+      } catch (e) { return null; }
+    }
+
+    // Read the http-mode bearer from the URL fragment ONLY (#token=<token>,
+    // legacy #author=<secret>). MIRRORS 17_editor_gizmo::_gzReadAuthToken --
+    // the secret is NEVER baked / in viewer-config.json. Self-contained so
+    // this module does not depend on the gizmo IIFE being present.
+    function _readAuthToken() {
+      try {
+        const h = (location.hash || '').replace(/^#/, '');
+        let legacy = '';
+        let modern = '';
+        for (const part of h.split('&')) {
+          const eq = part.indexOf('=');
+          if (eq <= 0) continue;
+          const key = part.slice(0, eq);
+          if (key === 'token') modern = decodeURIComponent(part.slice(eq + 1));
+          else if (key === 'author') legacy = decodeURIComponent(part.slice(eq + 1));
+        }
+        return modern || legacy || '';
+      } catch (e) { return ''; }
+    }
+
+    // The scene slug -- the upload-asset.php server keys the destination
+    // (and the auth token) by slug. PREFER the gizmo's canonical
+    // window.__editor.gzSlug when present; otherwise derive it IDENTICALLY
+    // to 17_editor_gizmo::_gzSlug (the #title h1 text, lower-cased + the
+    // [a-z0-9_-] sanitiser the http-save slug regex requires) so this
+    // module is correct even if the gizmo IIFE has not run yet.
+    function _uploadSlug() {
+      try {
+        if (window.__editor && typeof window.__editor.gzSlug === 'string'
+            && window.__editor.gzSlug) {
+          return window.__editor.gzSlug;
+        }
+      } catch (e) {}
+      try {
+        const h1 = document.querySelector('#title h1');
+        const name = ((h1 && h1.textContent) || 'scene').trim();
+        return (name.toLowerCase().replace(/[^a-z0-9_-]+/g, '_')
+          .slice(0, 48)) || 'scene';
+      } catch (e) { return 'scene'; }
+    }
+
+    // POST ``file`` to the derived upload-asset.php as multipart with the
+    // Bearer token + slug. Returns a Promise that RESOLVES with the server
+    // JSON ({ok:true, url:'<relative-filename>'}) or REJECTS with an Error
+    // whose .message is a human-readable, inline-surfaceable string (401 /
+    // 413 / 415 / network / cli-mode). NEVER a silent console.warn-only.
+    function _uploadAsset(file) {
+      const endpoint = _assetUploadEndpoint();
+      if (!endpoint) {
+        return Promise.reject(new Error(
+          'Asset upload requires the http save backend. Run the scene in ' +
+          'the dashboard editor for local uploads, or switch save_mode to ' +
+          'http.'));
+      }
+      const token = _readAuthToken();
+      const fd = new FormData();
+      fd.append('slug', _uploadSlug());
+      fd.append('file', file);
+      const headers = {};
+      if (token) headers['Authorization'] = 'Bearer ' + token;
+      return fetch(endpoint, { method: 'POST', headers: headers, body: fd })
+        .then(function (r) {
+          return r.json().catch(function () { return null; }).then(
+            function (data) {
+              if (r.ok && data && data.ok && data.url) return data;
+              // Map status -> a clear inline message.
+              let msg;
+              if (r.status === 401) {
+                msg = 'Upload unauthorized (401). Open the scene via the ' +
+                      'private author link (#token=...).';
+              } else if (r.status === 413) {
+                msg = 'File too large (413).';
+              } else if (r.status === 415 || r.status === 400) {
+                msg = (data && data.error)
+                  ? ('Upload rejected: ' + data.error)
+                  : 'Upload rejected (unsupported file).';
+              } else {
+                msg = (data && data.error)
+                  ? ('Upload failed: ' + data.error)
+                  : ('Upload failed (HTTP ' + r.status + ').');
+              }
+              throw new Error(msg);
+            });
+        }, function (netErr) {
+          throw new Error('Upload failed (network error). ' +
+            ((netErr && netErr.message) ? netErr.message : ''));
+        });
+    }
+
     // ---- Module-local state ----
     let _texture = null;            // current THREE.Texture (LDR equirect JPG/PNG)
     let _scene = null;              // captured THREE.Scene reference
@@ -86,6 +201,22 @@
     let _sectionEl = null;          // <details data-section="panorama"> in the drawer
     let _sectionBodyEl = null;      // .spcp-scene-settings-section-body inside it
     let _ddockAttached = false;     // idempotency guard for _attachToDrawer
+    let _statusEl = null;           // inline upload status/error line (UX-H3)
+
+    // Surface an upload status / error message inline under the file
+    // picker. ``isError`` colours it red; an empty msg hides the line.
+    // Tolerant of a not-yet-rendered controls section (no-op).
+    function _setStatus(msg, isError) {
+      if (!_statusEl) return;
+      if (!msg) {
+        _statusEl.style.display = 'none';
+        _statusEl.textContent = '';
+        return;
+      }
+      _statusEl.textContent = msg;
+      _statusEl.style.color = isError ? '#ff8a8a' : '#9aa';
+      _statusEl.style.display = '';
+    }
 
     function _sig(slice) {
       try { return JSON.stringify(slice || null); }
@@ -251,6 +382,18 @@
       urlHint.textContent = url ? ('Current: ' + url) : '(no backdrop)';
       wrap.appendChild(urlHint);
 
+      // Inline upload status / error line (UX-H3). Hidden until an upload
+      // starts or fails; surfaces 401 / 413 / unsupported / cli-mode /
+      // network messages right under the file picker (NOT a silent
+      // console.warn). Held on the module so _setStatus can update it
+      // across renders.
+      const statusEl = document.createElement('div');
+      statusEl.className = 'pan-upload-status';
+      statusEl.style.cssText =
+        'font-size:10px;margin-top:2px;line-height:1.35;display:none;';
+      wrap.appendChild(statusEl);
+      _statusEl = statusEl;
+
       // ---- Rotation row -------------------------------------------------
       const yawRow = document.createElement('label');
       yawRow.className = 'pan-row';
@@ -316,37 +459,40 @@
 
       // ---- Wire handlers ------------------------------------------------
       // File picker: on file select, snapshot history BEFORE the upload,
-      // POST to ../upload-image (resolves to /projects/<path>/upload-image
-      // when the viewer is served from the dashboard preview), then merge
-      // the returned path into cfg.panorama_backdrop and re-render.
+      // POST the file to the http-mode upload-asset.php endpoint (derived
+      // from SAVE_ENDPOINT -- UX-H3 fix 2026-05-21; the old ../upload-image
+      // target only existed on the dashboard + 404'd silently on a live CDN
+      // scene), then merge the returned RELATIVE url into
+      // cfg.panorama_backdrop and re-render. Errors (cli-mode / 401 / 413 /
+      // unsupported / network) surface INLINE in the status hint -- never a
+      // silent console.warn-only.
       fileInput.addEventListener('change', function () {
         if (!fileInput.files || !fileInput.files.length) return;
         const file = fileInput.files[0];
+        // cli-mode short-circuit: no http write endpoint on a static CDN
+        // scene. Surface the actionable message + bail BEFORE touching
+        // history (no snapshot for a non-op).
+        if (!_assetUploadEndpoint()) {
+          _setStatus(
+            'Asset upload requires the http save backend. Run the scene in ' +
+            'the dashboard editor for local uploads, or switch save_mode to ' +
+            'http.', true);
+          try { fileInput.value = ''; } catch (e) {}
+          return;
+        }
         // Snapshot BEFORE the upload (gesture-start; R8 §4.2).
         try { EditorModuleRegistry.pushUndo('panorama-upload'); } catch (e) {}
-        const fd = new FormData();
-        fd.append('file', file);
-        let url;
-        try {
-          url = new URL('../upload-image', location.href).toString();
-        } catch (e) {
-          url = '../upload-image';
-        }
-        fetch(url, { method: 'POST', body: fd })
-          .then(function (r) { return r.json().catch(function () { return null; }); })
+        _setStatus('Uploading ' + (file.name || 'image') + '...', false);
+        _uploadAsset(file)
           .then(function (data) {
-            if (!data || !data.ok || !data.path) {
-              try {
-                console.warn('[PanoramaModule] upload failed:', data);
-              } catch (e) {}
-              return;
-            }
-            // Merge into cfg.panorama_backdrop (whole-replace shape).
+            // Merge into cfg.panorama_backdrop (whole-replace shape). The
+            // server returns a RELATIVE filename (resolved next to the
+            // viewer's index.html on the CDN).
             const live = _liveCfg();
             if (!live) return;
             const prev = live.panorama_backdrop || null;
             const next = {
-              image_url: data.path,
+              image_url: data.url,
               rotation_y_deg: (prev && typeof prev.rotation_y_deg === 'number')
                 ? prev.rotation_y_deg : 0,
               intensity: (prev && typeof prev.intensity === 'number')
@@ -366,10 +512,15 @@
             _renderControls();
           })
           .catch(function (err) {
-            try {
-              console.warn('[PanoramaModule] upload error:', err);
-            } catch (e) {}
+            // Inline error surface (NOT a silent console.warn). Also log
+            // for the console for completeness.
+            const msg = (err && err.message)
+              ? err.message : 'Upload failed.';
+            _setStatus(msg, true);
+            try { console.warn('[PanoramaModule] upload error:', err); }
+            catch (e) {}
           });
+        try { fileInput.value = ''; } catch (e) {}
       });
 
       // Clear button: snapshot, null out cfg.panorama_backdrop, re-apply.

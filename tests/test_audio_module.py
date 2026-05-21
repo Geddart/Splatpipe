@@ -108,8 +108,7 @@ _CONTRACT_MARKERS = (
     # HTMLAudioElement management (the canonical playback primitive)
     "new Audio(",
     "_audioElements",
-    # Upload route (bug-audit #7 hardened)
-    "'../upload-audio'",
+    # Add-track button (the upload trigger)
     "'+ Add track'",
     # Test surface
     "testSurface:",
@@ -122,6 +121,70 @@ def test_audio_module_contract_markers_present():
     html = _rendered_html()
     for mk in _CONTRACT_MARKERS:
         assert mk in html, f"AudioModule contract marker missing: {mk!r}"
+
+
+# --------------------------------------------------------------------------
+# (b2) UX-H3 fix: upload POSTs to the derived upload-asset.php (NOT the
+#      dashboard-only ../upload-audio which 404s on a live CDN scene)
+# --------------------------------------------------------------------------
+
+# The audio upload was DEAD on every deployed scene: the "+ Add track"
+# picker POSTed to ``../upload-audio`` which only exists on the splatpipe
+# web dashboard (FastAPI). On a Bunny CDN scene that 404s silently. The fix
+# derives a SIBLING ``upload-asset.php`` from the baked SAVE_ENDPOINT and
+# POSTs the file there as multipart with the per-scene Bearer token.
+_UX_H3_UPLOAD_MARKERS = (
+    "function _assetUploadEndpoint()",
+    "'upload-asset.php$1'",
+    "SAVE_MODE !== 'http'",
+    "function _readAuthToken()",
+    "headers['Authorization'] = 'Bearer ' + token;",
+    "fd.append('slug', _uploadSlug());",
+    "fd.append('file', file);",
+    "function _uploadAsset(file)",
+    "function _setStatus(msg, isError)",
+    "Asset upload requires the http save backend.",
+    "audio-upload-status",
+)
+
+
+def test_audio_upload_targets_derived_asset_endpoint_not_dashboard():
+    """UX-H3: the audio "+ Add track" upload must POST to the http-mode
+    ``upload-asset.php`` derived from SAVE_ENDPOINT (with a Bearer token +
+    slug), NOT the dashboard-only ``../upload-audio`` that 404s on a live
+    CDN scene. cli-mode surfaces an inline message instead of silently
+    failing."""
+    html = _rendered_html()
+    for mk in _UX_H3_UPLOAD_MARKERS:
+        assert mk in html, f"UX-H3 audio upload marker missing: {mk!r}"
+    # NEGATIVE: the dead dashboard-only fetch CODE must be GONE from the
+    # AudioModule fragment. We pin the actual dead-code forms (a fetch
+    # built off the relative ../upload-audio target), NOT any mention --
+    # the explanatory comments legitimately name the retired target.
+    frag = (
+        Path(__file__).parent.parent / "src" / "splatpipe" / "viewers"
+        / "spark" / "template_parts" / "15f_audio_module.js_tmpl"
+    ).read_text(encoding="utf-8")
+    assert "new URL('../upload-audio'" not in frag, (
+        "15f must no longer build a fetch URL off the dashboard-only "
+        "../upload-audio (UX-H3: dead on every deployed CDN scene)"
+    )
+    assert "fetch(url, { method: 'POST', body: fd })" not in frag, (
+        "15f must no longer POST the bare dashboard FormData (the old "
+        "tokenless, relative-target upload path) -- it now goes through "
+        "_uploadAsset(file) which derives upload-asset.php + adds the "
+        "Bearer token"
+    )
+
+
+def test_audio_upload_error_paths_surface_inline_not_silent():
+    """UX-H3: 401 / 413 / unsupported / network failures must surface an
+    inline message, not a silent console.warn-only."""
+    html = _rendered_html()
+    assert "Upload unauthorized (401)." in html
+    assert "File too large (413)." in html
+    assert "Upload failed (network error). " in html
+    assert "_setStatus(msg, true);" in html
 
 
 def test_audio_module_concatenates_before_18_frame_loop():
