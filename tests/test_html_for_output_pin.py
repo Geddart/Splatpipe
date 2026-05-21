@@ -328,42 +328,48 @@ from splatpipe.viewers.spark.template import html_for
 # panorama + audio upload POST to the derived upload-asset.php endpoint
 # (was the dashboard-only ../upload-image|../upload-audio that 404'd on
 # a live CDN scene) with a Bearer token + slug + inline error surface;
-# +13903 in lockstep, isolated to the 15b/15f edits).
+# +13903 in lockstep, isolated to the 15b/15f edits), then re-pinned
+# 2026-05-21 (Phase 11D H2: 15c/15g pushUndo({label})->pushUndo(label)
+# string fix + explanatory comments; +665 code points in lockstep over
+# the 11E baseline). NOTE: expected_len counts len(html) CODE POINTS
+# (Unicode scalar values), NOT UTF-8 bytes -- the assembled HTML carries
+# multi-byte chars (em-dash, degree sign, etc.) so the byte length runs
+# ~770 higher. Measure a re-pin with len(html), never len(html.encode()).
 CORPUS: list[tuple[str, tuple, dict, int, str]] = [
     (
         "harness_defaults",
         ("HarnessScene",),
         {},
-        774669,
-        "69e7a23f262b90af14d9dc31bf7ca5a08189582f5fca911ac28d9cecce9eb812",
+        775334,
+        "d7cd5fbbbea6d9ded690cb898041944861adf5b305bc1bce765c612acba1cc52",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        774641,
-        "7738340f72c32642285b4bf0cbd9968c0ff109ec974143689032d5a5549428d6",
+        775306,
+        "28440030aecf671eded89c8ecb81b5204d7389704c7a35425e3807d4ffa61ba6",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        774636,
-        "e6d8e35e105f02705d2f8ec7b3df9d5984e20899c2e431ff9d471b3a1d3b53ea",
+        775301,
+        "a2b0d500a4e2e8e67243847aaaa3311ce95bdbfbdf8bcb81339d6fd5a0b1b0bf",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        774615,
-        "aeed682e8abb80b8ca660c7da27d8413c0cb12f5d6ac0b38367125d06bf96313",
+        775280,
+        "9403e39fae20fa4d89138ff6d3710ac37b20f46059b36ea7b47dc03345b97edb",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        774680,
-        "2dc249b2fa3c5ae377aadae4072c4519e1d249d3e9154edc13456ad2df5de3b0",
+        775345,
+        "dcce6ed854eb98eb61bf99c8b195eab453d8720e98275bfdae82241a645c3095",
     ),
     (
         "share_card",
@@ -373,8 +379,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        774539,
-        "05e89a4c67d42fae86784c19fdfbf3b20b17d8983c9d73303b5eaa37434ee1fd",
+        775204,
+        "a9e049cdbd49eab677d36518a1d41658a850e233b08b5968161b58aaa3cd863a",
     ),
 ]
 
@@ -391,8 +397,9 @@ def test_output_pin(
     expected_len: int,
     expected_sha: str,
 ) -> None:
-    """``html_for(*args, **kwargs)`` produces exactly ``expected_len`` bytes
-    and ``expected_sha`` SHA-256. A drift here means the generated HTML has
+    """``html_for(*args, **kwargs)`` produces exactly ``expected_len`` code
+    points (``len(html)``, NOT UTF-8 bytes) and ``expected_sha`` SHA-256 of
+    the UTF-8 encoding. A drift here means the generated HTML has
     changed -- if that's deliberate, update the pin in CORPUS; if not,
     that's the regression this test exists to catch."""
     html = html_for(*args, **kwargs)

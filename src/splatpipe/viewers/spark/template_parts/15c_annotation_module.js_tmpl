@@ -620,7 +620,13 @@
       return { wrap: wrap, value: () => inp.value, el: inp };
     }
     function _pushUndo(label) {
-      try { EditorModuleRegistry.pushUndo({ label: label }); }
+      // UX-Phase11D H2 (2026-05-21): pass the BARE string label, NOT an
+      // object. EditHistory.push (17a) stores `label || ''` and re-emits
+      // it as a string in history:undo / history:redo + _broadcastCfgChange;
+      // a `{label}` object is truthy so it was stored verbatim and
+      // stringified to "[object Object]". Every OTHER module passes a bare
+      // string -- match them.
+      try { EditorModuleRegistry.pushUndo(label); }
       catch (e) {}
     }
     function _writeBack() {
