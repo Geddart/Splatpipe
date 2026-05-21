@@ -122,12 +122,14 @@
   // user gets fly movement from keys + orbit-around-pivot from mouse drag.
   // Same pattern as PlayCanvas CameraControls' WASD + orbit hybrid.
   const _keys = {};
-  const _isInputFocused = () => {
-    const a = document.activeElement;
-    return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.tagName === 'SELECT');
-  };
+  // UX-Phase11F H6: route through the shared _editorHotkeyBlocked() guard
+  // (04_js_prologue) -- a strict SUPERSET of the prior INPUT/TEXTAREA/
+  // SELECT check (so WASD/Arrows still ignore key-repeat into a text
+  // field) that ALSO suppresses fly-movement while a [role=menu] (the
+  // camera kebab) / [role=dialog] (Save + Set-start-view cards) or a
+  // contenteditable owns focus.
   window.addEventListener('keydown', (e) => {
-    if (_isInputFocused()) return;
+    if (_editorHotkeyBlocked()) return;
     _keys[e.code] = true;
   });
   window.addEventListener('keyup', (e) => { _keys[e.code] = false; });
@@ -422,6 +424,11 @@
     }
   }
   window.addEventListener('keydown', (e) => {
+    // UX-Phase11F H6: the H (HUD) + F (autofocus) toggles previously had
+    // NO focus guard -- typing H/F into a field, or pressing them with the
+    // kebab menu / a Save dialog focused, toggled the HUD/autofocus behind
+    // the UI. Gate on the shared _editorHotkeyBlocked() (04_js_prologue).
+    if (_editorHotkeyBlocked()) return;
     if (e.key === 'h' || e.key === 'H') { _hudOn = !_hudOn; _hud.style.display = _hudOn ? 'block' : 'none'; }
     if (e.key === 'f' || e.key === 'F') { _afOn = !_afOn; if (!_afOn) _afClear(); }
   });

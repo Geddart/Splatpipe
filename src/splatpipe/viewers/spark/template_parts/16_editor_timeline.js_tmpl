@@ -941,12 +941,11 @@
       if (!ModeManager.is('author')) return;
       const mod = ev.metaKey || ev.ctrlKey;
       if (!mod) return;
-      const ae = document.activeElement;
-      if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' ||
-                 ae.tagName === 'SELECT' ||
-                 (ae.isContentEditable === true))) {
-        return;
-      }
+      // UX-Phase11F H6: shared guard (04_js_prologue) -- supersets the
+      // prior INPUT/TEXTAREA/SELECT + contenteditable check AND adds
+      // [role=menu]/[role=dialog] so Ctrl+Arrow does not skip keyframes
+      // with the kebab menu / a Save dialog focused.
+      if (_editorHotkeyBlocked()) return;
       if (ev.key === 'ArrowLeft') {
         ev.preventDefault();
         _tlSkipPrev();
@@ -963,10 +962,12 @@
       if (!ModeManager.is('author')) return;
       if (ev.key !== 'x' && ev.key !== 'X' &&
           ev.key !== 'Delete') return;
-      // Ignore when typing in an input (none here, but defensive).
-      const ae = document.activeElement;
-      if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' ||
-          ae.tagName === 'SELECT')) return;
+      // UX-Phase11F H6: shared guard (04_js_prologue) -- supersets the
+      // prior INPUT/TEXTAREA/SELECT check AND adds contenteditable +
+      // [role=menu]/[role=dialog]. Critical here: X DELETES the selected
+      // keyframe(s); without the menu/dialog guard, Tab-ing to the kebab
+      // menu (or a Save dialog) and pressing X silently dropped a keyframe.
+      if (_editorHotkeyBlocked()) return;
       if (!_tlSel.size) return;
       const p = _tlActivePath();
       if (!p || !p.keyframes) return;

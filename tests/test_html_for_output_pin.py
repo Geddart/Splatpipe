@@ -279,6 +279,17 @@ PIN UPDATES:
     typeof-guarded ``window.__editor.gzDetach()`` (exposed by
     17_editor_gizmo) before the module-notify broadcast. All 6 fixtures
     shifted by the same +1249 code points in lockstep; pins re-pinned.
+  * 2026-05-21 (Phase 11F H6): a SHARED ``_editorHotkeyBlocked()`` guard
+    is added to ``04_js_prologue`` and routed into EVERY global editor
+    keydown handler (08 WASD + H/F, 16 timeline X + Ctrl-arrows, 17 gizmo
+    R/T/K/V/B/Space/Escape, 17a Ctrl+Z/Y). The handlers previously bailed
+    only on INPUT/TEXTAREA/SELECT, so pressing K with the camera kebab
+    (``[role=menu]``) button focused recorded a keyframe / X deleted one /
+    V opened the interp popover behind the menu, and the H/F toggles had
+    no guard at all. The shared helper SUPERSETS the old check and also
+    blocks while a contenteditable or a ``[role=menu]``/``[role=dialog]``
+    owns focus. All 6 fixtures shifted by the same +3056 code points in
+    lockstep; pins re-pinned.
 """
 
 from __future__ import annotations
@@ -343,8 +354,11 @@ from splatpipe.viewers.spark.template import html_for
 # string fix + explanatory comments; +665 code points in lockstep over
 # the 11E baseline), then re-pinned 2026-05-21 (Phase 11F H5: EditHistory
 # _broadcastCfgChange drops the stale keyframe-gizmo selection on every
-# undo/redo via window.__editor.gzDetach(); +1249 code points in lockstep).
-# NOTE: expected_len counts len(html) CODE POINTS
+# undo/redo via window.__editor.gzDetach(); +1249 code points in lockstep),
+# then re-pinned 2026-05-21 (Phase 11F H6: shared _editorHotkeyBlocked()
+# guard in 04 routed into every global editor keydown handler so hotkeys
+# do not fire with a [role=menu]/[role=dialog]/contenteditable focused;
+# +3056 code points in lockstep). NOTE: expected_len counts len(html) CODE POINTS
 # (Unicode scalar values), NOT UTF-8 bytes -- the assembled HTML carries
 # multi-byte chars (em-dash, degree sign, etc.) so the byte length runs
 # ~770 higher. Measure a re-pin with len(html), never len(html.encode()).
@@ -353,36 +367,36 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
         "harness_defaults",
         ("HarnessScene",),
         {},
-        776583,
-        "abc2205699f31dbd9003fc8356a352fd6b8415a4af674fca7541e8a0c9606f40",
+        779639,
+        "cf2aeb73ace67a023ae8a7a54fabb9098bd1b9dbb246735a9c48ba63298e4344",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        776555,
-        "18bcd7d265d3ceb5c047b7faa7c7881f039a84470d95b99af8953fe7294c6925",
+        779611,
+        "a9f8e196f358297afcbc2c308689fec8b5803e02ac8c2c97eb2554fbe7b07264",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        776550,
-        "1bcd9e7773c49212b008d6cdbcba321760d1008d1e5969db2c00b5c73183b6e9",
+        779606,
+        "18dd6d439f7e68552878d88fae2101df0351035ac90226c5c63124df3f516d9f",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        776529,
-        "39591c26c09987c43a92d62fdafe2502f19582c157876017595b86fbba29fe8a",
+        779585,
+        "d9caa63aba7d744c1feae41ab20976fc93286d7501429b5c47301e0b123b250f",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        776594,
-        "7a4f96c4dbb06ad8527650cf3f33fb5a2a5f82387ea788cfc4031776494f26a0",
+        779650,
+        "0c1685ce70047913d84720d3066ef2f34fd9490dccdd3382a6c4ac5e6e86fc37",
     ),
     (
         "share_card",
@@ -392,8 +406,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        776453,
-        "17c05a82ac19f3e0bc1b3f7529f413c5143215a2f6ff5c9fec7fe4ac111718de",
+        779509,
+        "5e5175fe88741a4ff682e1686751681d8ecf650dce57a34d89fb60619d887b40",
     ),
 ]
 

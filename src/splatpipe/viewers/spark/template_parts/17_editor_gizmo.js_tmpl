@@ -1967,9 +1967,15 @@
     //      token does not trigger Record.
     window.addEventListener('keydown', (ev) => {
       if (!ModeManager.is('author')) return;
-      const ae = document.activeElement;
-      if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' ||
-          ae.tagName === 'SELECT')) return;
+      // UX-Phase11F H6: shared guard (04_js_prologue) -- supersets the
+      // prior INPUT/TEXTAREA/SELECT check (the Save card's textareas) AND
+      // adds contenteditable + [role=menu]/[role=dialog]. Without it,
+      // Tab-ing into the camera kebab menu (or a Save dialog) and pressing
+      // K recorded a keyframe / V opened the interp popover behind the
+      // menu. The overlay-internal Escape (closing the Save / Set-start
+      // card, H7) is handled by the overlay's own focused listener, so
+      // blocking Escape HERE while a [role=dialog] is focused is correct.
+      if (_editorHotkeyBlocked()) return;
       const k = ev.key;
       if (k === 'r' || k === 'R') {
         _gzMode = 'rotate'; _gzApplySpace();

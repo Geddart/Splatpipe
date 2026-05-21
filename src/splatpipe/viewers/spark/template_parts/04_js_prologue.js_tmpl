@@ -29,3 +29,37 @@
   const STOCK = new URLSearchParams(location.search).get('stock') === '1';
   if (STOCK) console.info('[Splatpipe] STOCK mode: all perf mods disabled');
 
+  // UX-Phase11F H6 (2026-05-21): the SINGLE source of truth for "should
+  // an editor hotkey be SWALLOWED right now because the user is typing /
+  // operating a menu, not driving the viewer?". Every global keydown
+  // handler in the bundle (08 WASD + H/F, 16 timeline X + Ctrl-arrows,
+  // 17 gizmo R/T/K/V/B/Space/Escape, 17a Ctrl+Z/Y) calls this FIRST and
+  // bails when it returns true. Declared in this earliest JS fragment so
+  // it is hoisted across the one shared <script type="module"> scope and
+  // visible to every later fragment (IIFE or top-level).
+  //
+  // It SUPERSETS the prior INPUT/TEXTAREA/SELECT-only guards (so existing
+  // behaviour is preserved) and additionally blocks while:
+  //   * a contenteditable element is focused (a rich-text field) -- so
+  //     typing X / K there edits the text instead of deleting a keyframe
+  //     / recording, AND
+  //   * focus is inside a [role=menu] (the camera-actions kebab popup,
+  //     03_body_chrome #cam-menu-popup) or a [role=dialog] (the Save card
+  //     + Set-start-view card, H7) -- so Tab-ing to a menu/dialog button
+  //     and pressing K / X / V does NOT fire the gizmo/timeline hotkey
+  //     behind the open menu/overlay.
+  // Returns true = the hotkey MUST be ignored; false = let it through.
+  function _editorHotkeyBlocked() {
+    let a;
+    try { a = document.activeElement; } catch (e) { return false; }
+    if (!a) return false;
+    const tag = a.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+    if (a.isContentEditable === true) return true;
+    try {
+      if (typeof a.closest === 'function' &&
+          a.closest('[role=menu],[role=dialog]')) return true;
+    } catch (e) {}
+    return false;
+  }
+
