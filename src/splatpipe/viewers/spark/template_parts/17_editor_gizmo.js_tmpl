@@ -1688,14 +1688,54 @@
       return '';
     }
     let _gzLastToken = '';
+    // UX-Phase11F H7 (2026-05-21): the Save card needs (a) an Escape
+    // close, (b) focus restored to the opener button on close, and (c)
+    // to NOT stack behind / under the Set-start-view card. _gzSaveOpener
+    // remembers the focused element at open time; _gzSaveEscHandler is
+    // the ONE named window keydown listener attached on open + removed on
+    // close (one-shot, no leak). _gzCloseSaveCard is idempotent (no-op
+    // when the card is already gone) so the cross-fragment
+    // _closeAllEditorOverlays() coordinator can call it freely.
+    let _gzSaveOpener = null;
+    let _gzSaveEscHandler = null;
+    function _gzCloseSaveCard() {
+      if (_gzSaveEscHandler) {
+        try { window.removeEventListener('keydown', _gzSaveEscHandler, true); }
+        catch (e) {}
+        _gzSaveEscHandler = null;
+      }
+      const ov = document.getElementById('gz-save-overlay');
+      if (ov) { try { ov.remove(); } catch (e) {} }
+      // Restore focus to whatever opened the card (the Save button) so
+      // keyboard focus is not left orphaned on document.body.
+      const opener = _gzSaveOpener;
+      _gzSaveOpener = null;
+      if (opener && typeof opener.focus === 'function' &&
+          document.contains(opener)) {
+        try { opener.focus(); } catch (e) {}
+      }
+    }
+    // Register once with the cross-fragment overlay coordinator (04) so
+    // opening the Set-start-view card closes this one and vice-versa.
+    try { _registerEditorOverlayCloser(_gzCloseSaveCard); } catch (e) {}
     function _gzShowTokenCard(token) {
       // Mirror the SPV1 relay overlay/card EXACTLY (same structure,
       // wording shape, textarea + copy-again + done).
+      // H7: close any OTHER editor overlay first (no stacking) + remember
+      // the opener for focus restore.
+      _gzSaveOpener = document.activeElement;
+      try { _closeAllEditorOverlays(_gzCloseSaveCard); } catch (e) {}
       const old = document.getElementById('gz-save-overlay');
       if (old) old.remove();
       const cmd = 'splatpipe set-camera-path ' + token;
       const ov = document.createElement('div');
       ov.id = 'gz-save-overlay';
+      // H7: role=dialog + tabindex so focus can land on the overlay (the
+      // H6 hotkey guard already blocks gizmo keys while a [role=dialog]
+      // is focused) and aria-modal for assistive tech.
+      ov.setAttribute('role', 'dialog');
+      ov.setAttribute('aria-modal', 'true');
+      ov.setAttribute('tabindex', '-1');
       ov.style.cssText =
         'position:fixed;inset:0;z-index:9999;display:flex;' +
         'align-items:center;justify-content:center;' +
@@ -1736,15 +1776,30 @@
         'style="background:#2d6cdf;color:#fff;">Done</button></div>';
       ov.appendChild(card);
       document.body.appendChild(ov);
+      // H7: Escape closes the card. One named window listener (capture
+      // phase so it wins before any bubble handler), removed in
+      // _gzCloseSaveCard -> no leak, no stacked listeners across re-opens.
+      _gzSaveEscHandler = function (ev) {
+        if (ev && ev.key === 'Escape') {
+          ev.preventDefault();
+          ev.stopPropagation();
+          _gzCloseSaveCard();
+        }
+      };
+      try { window.addEventListener('keydown', _gzSaveEscHandler, true); }
+      catch (e) {}
       const ta = card.querySelector('#gz-tok');
       ta.value = token;
       card.querySelector('#gz-cmd').value = cmd;
+      // Focus the textarea so the token is selectable for copy (the
+      // textarea is INSIDE the role=dialog, so the H6 guard still blocks
+      // gizmo hotkeys while it has focus).
       ta.focus(); ta.select();
       ov.addEventListener('click', (e) => {
-        if (e.target === ov) ov.remove();
+        if (e.target === ov) _gzCloseSaveCard();
       });
       card.querySelector('#gz-done').addEventListener('click', () => {
-        ov.remove();
+        _gzCloseSaveCard();
       });
       card.querySelector('#gz-copy').addEventListener('click', () => {
         ta.focus(); ta.select();
@@ -2241,11 +2296,17 @@
           gzReadAuthToken() { return _gzReadAuthToken(); },
           gzAuthorSecret() { return _gzReadAuthToken(); },
           // Close the Save card if open (harness cleanup so its
-          // textarea focus does not eat later key probes).
+          // textarea focus does not eat later key probes). H7: route
+          // through the real _gzCloseSaveCard so the Escape listener is
+          // removed + focus restored (matches the user-facing close).
           gzCloseSaveCard() {
             const o = document.getElementById('gz-save-overlay');
-            if (o) { o.remove(); return true; }
-            return false;
+            _gzCloseSaveCard();
+            return !!o;
+          },
+          // H7 TEST-ONLY: is the Save card currently open?
+          get gzSaveCardOpen() {
+            return !!document.getElementById('gz-save-overlay');
           },
           // ---- Bezier tangent-handle surface (TEST-ONLY) --------
           // Are the in/out tangent handles currently shown?

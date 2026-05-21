@@ -301,9 +301,40 @@
       return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     }
     const _r = n => Math.round(n * 1e5) / 1e5;
-    function _ssClose() { const o = document.getElementById('ss-overlay'); if (o) o.remove(); }
+    // UX-Phase11F H7 (2026-05-21): the Set-start-view card needs an
+    // Escape close + focus restore + to not stack with the Save card.
+    // _ssOpener remembers the focused opener; _ssEscHandler is the ONE
+    // named window keydown listener attached on open + removed on close
+    // (one-shot, no leak). _ssClose is idempotent so the cross-fragment
+    // _closeAllEditorOverlays() coordinator can call it freely.
+    let _ssOpener = null;
+    let _ssEscHandler = null;
+    function _ssClose() {
+      if (_ssEscHandler) {
+        try { window.removeEventListener('keydown', _ssEscHandler, true); }
+        catch (e) {}
+        _ssEscHandler = null;
+      }
+      const o = document.getElementById('ss-overlay');
+      if (o) { try { o.remove(); } catch (e) {} }
+      const opener = _ssOpener;
+      _ssOpener = null;
+      if (opener && typeof opener.focus === 'function' &&
+          document.contains(opener)) {
+        try { opener.focus(); } catch (e) {}
+      }
+    }
+    // Register with the cross-fragment overlay coordinator (04) so opening
+    // the Save card closes this one and vice-versa.
+    try { _registerEditorOverlayCloser(_ssClose); } catch (e) {}
     function _openStartViewCard() {
+      // H7: remember the opener BEFORE any close (the defensive _ssClose
+      // below nulls _ssOpener), close any OTHER editor overlay first (no
+      // stacking), then re-stamp the opener for focus restore on close.
+      const _opener = document.activeElement;
+      try { _closeAllEditorOverlays(_ssClose); } catch (e) {}
       _ssClose();
+      _ssOpener = _opener;
       const pose = {
         project: _projName,
         pos: [camera.position.x, camera.position.y, camera.position.z].map(_r),
@@ -314,6 +345,12 @@
       const token = 'SPV1:' + _slug + ':' + _b64url(pose);
       const ov = document.createElement('div');
       ov.id = 'ss-overlay';
+      // H7: role=dialog + tabindex so focus can land on the overlay (the
+      // H6 hotkey guard blocks gizmo keys while a [role=dialog] is
+      // focused) + aria-modal for assistive tech.
+      ov.setAttribute('role', 'dialog');
+      ov.setAttribute('aria-modal', 'true');
+      ov.setAttribute('tabindex', '-1');
       ov.style.cssText = 'position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.55);font:14px system-ui,sans-serif;';
       const card = document.createElement('div');
       card.style.cssText = 'background:#1f1f24;color:#eee;max-width:520px;width:90%;padding:20px 22px;border-radius:12px;box-shadow:0 8px 40px rgba(0,0,0,.5);';
@@ -326,6 +363,19 @@
         '<button id="ss-confirm" class="quality-btn" style="background:#2d6cdf;color:#fff;">Confirm</button></div>';
       ov.appendChild(card);
       document.body.appendChild(ov);
+      // H7: Escape closes the card. One named window listener (capture
+      // phase), removed in _ssClose -> no leak across re-opens.
+      _ssEscHandler = function (ev) {
+        if (ev && ev.key === 'Escape') {
+          ev.preventDefault();
+          ev.stopPropagation();
+          _ssClose();
+        }
+      };
+      try { window.addEventListener('keydown', _ssEscHandler, true); } catch (e) {}
+      // Focus the overlay so Escape + the H6 dialog-focus guard engage
+      // immediately (no auto-focused textarea on the initial confirm step).
+      try { ov.focus(); } catch (e) {}
       ov.addEventListener('click', e => { if (e.target === ov) _ssClose(); });
       card.querySelector('#ss-cancel').addEventListener('click', _ssClose);
       card.querySelector('#ss-confirm').addEventListener('click', () => {
@@ -362,6 +412,13 @@
     try {
       if (!window.__editor) window.__editor = {};
       window.__editor.openStartViewCard = _openStartViewCard;
+      // H7 TEST-ONLY: open-state getter + a close hook so the harness can
+      // assert Escape / no-stack behaviour deterministically.
+      Object.defineProperty(window.__editor, 'ssCardOpen', {
+        configurable: true,
+        get() { return !!document.getElementById('ss-overlay'); },
+      });
+      window.__editor.ssCloseCard = function () { _ssClose(); };
     } catch (e) {}
   }
 

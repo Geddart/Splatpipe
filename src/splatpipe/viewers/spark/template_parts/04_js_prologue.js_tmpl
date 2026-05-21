@@ -63,3 +63,29 @@
     return false;
   }
 
+  // UX-Phase11F H7 (2026-05-21): cross-fragment coordinator for the modal
+  // editor overlays that live in SEPARATE IIFEs -- the Save-camera card
+  // (#gz-save-overlay, 17_editor_gizmo) and the Set-start-view card
+  // (#ss-overlay, 18_frame_loop, also opened by StartViewModule 15i).
+  // Each overlay registers ITS OWN close function here once; opening one
+  // calls _closeAllEditorOverlays(myCloser) FIRST so the other never
+  // STACKS behind it (the H7 "they pile up confusingly" report). Declared
+  // in this earliest JS fragment so both later IIFEs share the one list
+  // across the single <script type="module"> scope.
+  const _editorOverlayClosers = [];
+  function _registerEditorOverlayCloser(fn) {
+    if (typeof fn === 'function' &&
+        _editorOverlayClosers.indexOf(fn) === -1) {
+      _editorOverlayClosers.push(fn);
+    }
+  }
+  function _closeAllEditorOverlays(except) {
+    // Run every registered closer except the one opening now. A closer is
+    // idempotent (no-op when its overlay is already gone), so calling it
+    // when nothing is open is harmless.
+    for (const fn of _editorOverlayClosers.slice()) {
+      if (fn === except) continue;
+      try { fn(); } catch (e) {}
+    }
+  }
+

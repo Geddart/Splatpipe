@@ -290,6 +290,17 @@ PIN UPDATES:
     blocks while a contenteditable or a ``[role=menu]``/``[role=dialog]``
     owns focus. All 6 fixtures shifted by the same +3056 code points in
     lockstep; pins re-pinned.
+  * 2026-05-21 (Phase 11F H7): the Save-camera card (#gz-save-overlay,
+    17_editor_gizmo) + the Set-start-view card (#ss-overlay, 18_frame_loop)
+    now (1) close on Escape via a ONE named window keydown listener
+    attached on open + removed on close (no leak), (2) carry
+    ``role="dialog"`` + ``tabindex="-1"`` + focus on open (so the H6 guard
+    suppresses gizmo hotkeys behind them), (3) restore focus to the opener
+    button on close, and (4) NEVER stack -- a new shared
+    ``_closeAllEditorOverlays()`` coordinator in ``04_js_prologue`` closes
+    the other card first (each card registers its idempotent closer). All
+    6 fixtures shifted by the same +7025 code points in lockstep; pins
+    re-pinned.
 """
 
 from __future__ import annotations
@@ -358,7 +369,11 @@ from splatpipe.viewers.spark.template import html_for
 # then re-pinned 2026-05-21 (Phase 11F H6: shared _editorHotkeyBlocked()
 # guard in 04 routed into every global editor keydown handler so hotkeys
 # do not fire with a [role=menu]/[role=dialog]/contenteditable focused;
-# +3056 code points in lockstep). NOTE: expected_len counts len(html) CODE POINTS
+# +3056 code points in lockstep), then re-pinned 2026-05-21 (Phase 11F H7:
+# Save-camera + Set-start-view cards close on Escape (one-shot listener),
+# carry role=dialog + focus, restore opener focus, and never stack via a
+# shared _closeAllEditorOverlays() coordinator in 04; +7025 code points in
+# lockstep). NOTE: expected_len counts len(html) CODE POINTS
 # (Unicode scalar values), NOT UTF-8 bytes -- the assembled HTML carries
 # multi-byte chars (em-dash, degree sign, etc.) so the byte length runs
 # ~770 higher. Measure a re-pin with len(html), never len(html.encode()).
@@ -367,36 +382,36 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
         "harness_defaults",
         ("HarnessScene",),
         {},
-        779639,
-        "cf2aeb73ace67a023ae8a7a54fabb9098bd1b9dbb246735a9c48ba63298e4344",
+        786664,
+        "28c332999366849761415341471445b2ea396620225cbbbd6a450d178af542e9",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        779611,
-        "a9f8e196f358297afcbc2c308689fec8b5803e02ac8c2c97eb2554fbe7b07264",
+        786636,
+        "9532e209256d46b7d133d8a970137707e055796a677034e9227a16f4a2c26068",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        779606,
-        "18dd6d439f7e68552878d88fae2101df0351035ac90226c5c63124df3f516d9f",
+        786631,
+        "4fcd99c885ffd71fac4b994bf36c375ef4626589cf46e4fb3c5256eeddecb94e",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        779585,
-        "d9caa63aba7d744c1feae41ab20976fc93286d7501429b5c47301e0b123b250f",
+        786610,
+        "f5898944ae2bba4d56b93e180021708523e95be7f4fb6761bf71165595986c3d",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        779650,
-        "0c1685ce70047913d84720d3066ef2f34fd9490dccdd3382a6c4ac5e6e86fc37",
+        786675,
+        "4691547fd80e35473d5acadb9b33debce2077063aeb35337868a7b0994412762",
     ),
     (
         "share_card",
@@ -406,8 +421,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        779509,
-        "5e5175fe88741a4ff682e1686751681d8ecf650dce57a34d89fb60619d887b40",
+        786534,
+        "cda8e2d58d3aec3531e659324f595522090298f80b398fcc1019b4ae33e1a826",
     ),
 ]
 
