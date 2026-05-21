@@ -227,7 +227,15 @@ $tok_path  = $scene_dir . '/' . TOKEN_BASENAME;
 
 /* ===== 4. auth: constant-time per-scene bearer (verbatim) ============== */
 
-$auth = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+// Authorization-header recovery, in priority order (verbatim from
+// save-camera.php): HTTP_AUTHORIZATION, then REDIRECT_HTTP_AUTHORIZATION
+// (what the sibling .htaccess `RewriteRule [E=HTTP_AUTHORIZATION:...]`
+// actually produces in a per-dir context — Apache prefixes per-dir-set
+// env vars with `REDIRECT_`; on Strato this is the key that carries the
+// Bearer token), then the apache_request_headers() raw-header fallback.
+$auth = $_SERVER['HTTP_AUTHORIZATION']
+    ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION']
+    ?? '';
 if ($auth === '' && function_exists('apache_request_headers')) {
     foreach (apache_request_headers() as $k => $v) {
         if (strcasecmp($k, 'Authorization') === 0) {

@@ -9,7 +9,7 @@ CLI-first Gaussian splatting pipeline. Takes COLMAP data through: auto-clean →
 ```bash
 cd H:\001_ProjectCache\1000_Coding\Splatpipe
 pip install -e ".[dev]"
-pytest tests/ -v                    # Run tests (1007 collected; 945 passed, 62 skipped, ~32s)
+pytest tests/ -v                    # Run tests (1013 collected; 951 passed, 62 skipped, ~32s)
 splatpipe --help                    # CLI commands
 splatpipe web                       # Launch dashboard
 ```
@@ -189,6 +189,7 @@ splatpipe/                    # repo root
     test_edit_history.py           # EditHistory snapshot ring-buffer (pre-gesture convention; WF-H2 #143 first-edit-undoable + per-gesture undo/redo; 200-cap; Phase 2A/11G)
     test_php_save_oracle.py        # PHP save adapter cross-language merge oracle (v0.8+)
     test_upload_asset_oracle.py    # PHP upload-asset.php server-behaviour oracle: auth/ext/size/slug gates (UX-H3; Phase 11E)
+    test_php_auth_header_recovery.py # PHP-independent source lock: both endpoints read HTTP_AUTHORIZATION ?? REDIRECT_HTTP_AUTHORIZATION ?? apache_request_headers(); .htaccess forwards Authorization + denies dotfile secrets (#150 Strato cgi-fcgi 401 fix)
     test_cloudflare_save_oracle.py # Cloudflare Worker save cross-language merge oracle (v0.8+)
     test_publish_config_sanitize.py # Public viewer-config sanitiser + publish_scene secret-leak regression (bug-audit #3; v0.8+)
     test_audio_upload_security.py   # Audio-upload path-traversal hardening (bug-audit #7; v0.8+)
@@ -424,7 +425,7 @@ Key config sections: `[tools]`, `[colmap_clean]`, `[postshot]` (profile, gpu, ma
 ## Tests
 
 ```bash
-pytest tests/ -v              # 1007 collected (945 passed, 62 skipped)
+pytest tests/ -v              # 1013 collected (951 passed, 62 skipped)
 pytest tests/ -k colmap       # Just COLMAP tests
 pytest tests/ -k integration  # End-to-end with tiny data
 pytest tests/ -k trainers     # Trainer abstraction tests

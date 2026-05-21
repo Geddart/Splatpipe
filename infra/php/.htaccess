@@ -53,11 +53,28 @@
 #    handing the request to mod_php/php-fpm, which would break the
 #    Bearer-token auth in BOTH save-camera.php and upload-asset.php. Re-
 #    inject it via the rewrite engine. Scoped to the two endpoints only;
-#    no other request is affected. (The PHP also has an
-#    apache_request_headers() fallback, but this rule is the reliable path
-#    on hosts that drop HTTP_AUTHORIZATION entirely.)
+#    no other request is affected.
+#
+#    IMPORTANT — REDIRECT_ prefix: a `RewriteRule ... [E=VAR:...]` that runs
+#    in a per-directory (.htaccess) context has its env var exposed to PHP
+#    as $_SERVER['REDIRECT_<VAR>'], NOT $_SERVER['<VAR>'] (Apache prefixes
+#    env vars set by a per-dir rewrite with REDIRECT_). On Strato that means
+#    the token arrives as REDIRECT_HTTP_AUTHORIZATION. We therefore (a) set
+#    the env var below AND (b) the PHP reads BOTH forms (HTTP_AUTHORIZATION
+#    ?? REDIRECT_HTTP_AUTHORIZATION ?? apache_request_headers()). Setting one
+#    E= var only ever yields the REDIRECT_ form here; the PHP-side fallback
+#    is the reliable, host-independent path.
 <IfModule mod_rewrite.c>
     RewriteEngine On
     RewriteCond %{HTTP:Authorization} ^(.+)$
     RewriteRule ^(save-camera|upload-asset)\.php$ - [E=HTTP_AUTHORIZATION:%1,L]
+</IfModule>
+
+# 3b. SetEnvIf belt-and-braces: also expose the Authorization header as a
+#     CGI-style env var. Unlike the per-dir RewriteRule above, SetEnvIf
+#     sets the var WITHOUT the REDIRECT_ prefix, so on hosts where mod_php
+#     reads the un-prefixed form this provides HTTP_AUTHORIZATION directly.
+#     (mod_setenvif is enabled on virtually every Apache; harmless if not.)
+<IfModule mod_setenvif.c>
+    SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1
 </IfModule>

@@ -309,9 +309,21 @@ $tok_path  = $scene_dir . '/' . TOKEN_BASENAME;
 
 /* ===== 5. auth: constant-time per-scene bearer ======================= */
 
-$auth = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+// Authorization-header recovery, in priority order:
+//  1. HTTP_AUTHORIZATION       — set directly when the SAPI keeps it.
+//  2. REDIRECT_HTTP_AUTHORIZATION — what the sibling .htaccess actually
+//     produces: its `RewriteRule ... [E=HTTP_AUTHORIZATION:%1]` runs in a
+//     per-directory (.htaccess) context, and Apache prefixes env vars set
+//     by a per-dir rewrite with `REDIRECT_`. On Strato (and most shared
+//     LAMP hosts that strip the raw header) THIS is the key that carries
+//     the Bearer token — the un-prefixed HTTP_AUTHORIZATION is never set.
+//  3. apache_request_headers() — last-resort raw-header scan for SAPIs
+//     that expose neither $_SERVER form.
+$auth = $_SERVER['HTTP_AUTHORIZATION']
+    ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION']
+    ?? '';
 if ($auth === '' && function_exists('apache_request_headers')) {
-    // Some SAPIs drop HTTP_AUTHORIZATION; recover it from the raw headers.
+    // Some SAPIs drop both $_SERVER forms; recover from the raw headers.
     foreach (apache_request_headers() as $k => $v) {
         if (strcasecmp($k, 'Authorization') === 0) {
             $auth = $v;
