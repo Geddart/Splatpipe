@@ -568,6 +568,22 @@ PIN UPDATES:
     ``_tlApplyBtnEnabled``) is UNCHANGED. All 6 fixtures shifted by the same
     +2399 code points in lockstep -- additive only (isolated to the
     02b/16/17b edits). Pins re-pinned to the new baseline.
+  * 2026-05-21 (R3 #6 -- scrub in Perspective): the ``#path-scrub`` ``input``
+    handler in ``10_camera_select`` now bails BEFORE any camera-drive code
+    when the visible camera dropdown is on the ``_CAM_PERSP`` sentinel
+    (free-fly). Previously a scrub in Perspective built a ``_player`` off
+    ``selEl.value``, set ``_t0``/``_pausedAt``, disabled OrbitControls and let
+    the ``18_frame_loop`` ``if (_player)`` block + the ``15`` rebase TELEPORT
+    the free-fly view onto the path's sampled pose (dropdown still said
+    "Perspective") -- user-reported. The guard leaves ``_player`` null so the
+    view camera is never written; the trajectory active-key frustum/ring
+    (``_trajRefreshActive`` in 15) and the bottom-timeline playhead
+    (``_tlSyncPlayhead`` in 16) BOTH read ``scrubEl.value`` directly in their
+    not-playing branch every frame, so the marker still slides along the path
+    (previewing the tour position from outside). Binding a real path camera is
+    UNCHANGED (the camera follows the scrub). All 6 fixtures shifted by the
+    same +1942 code points in lockstep -- additive only (isolated to the 10
+    edit). Pins re-pinned to the new baseline.
 """
 
 from __future__ import annotations
@@ -657,36 +673,36 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
         "harness_defaults",
         ("HarnessScene",),
         {},
-        883102,
-        "fe1d68d6e8d06b9afe8efd8da090591c95d5405ac9c3358dbc05385428e3b658",
+        885044,
+        "adff6f9b3e1c5813d5a9ec36873c0b3d8e545c6d34510b95a5a1100ddd2a1837",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        883074,
-        "d7eec6d8b141511aac2e24c718878a2b2bdea60ad0131d6524462c2b6392e783",
+        885016,
+        "1a885351576fdb82953900e48873d9a034d0dffa309ad0b9421beaf12a96883d",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        883069,
-        "57858e995f6e60fbbe60b62fd5644e9b347ecd4dd0789e6862c311ff2ec8845e",
+        885011,
+        "82e225d761876446405ddb94f0dc1b621d5f4608926a066f1a42c80b90be6b54",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        883048,
-        "2f6ec721e4c3938a64b059c8d4cc27bdcce9b62aa23a0f468884ab83c3d57253",
+        884990,
+        "faa738aed1b4c59476d1355ae4074aa9632e5e563174c28cd1f7c51911441642",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        883113,
-        "9dc62ea181d7831d084cd0c9c00e9d89dd23807a1939ef42cb4f1b31d547d1b5",
+        885055,
+        "5c44871ee65da2751fe2045ddf24c164b7568ac2b6bfbaa06f4632e8b191b420",
     ),
     (
         "share_card",
@@ -696,8 +712,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        882972,
-        "1a7aeadb07f6f23fcd23b245b3e824a8eb9ea734cae1325ff2568ce0ad753d10",
+        884914,
+        "2024529796896ae0926ca678b493510c5828011eb0ba0563b202091228a809bd",
     ),
 ]
 

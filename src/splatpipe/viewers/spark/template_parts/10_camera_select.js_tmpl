@@ -1017,6 +1017,35 @@
   playBtn.addEventListener('click', () => startPath(selEl.value));
   stopBtn.addEventListener('click', stopPath);
   scrubEl.addEventListener('input', () => {
+    // UX-R3 #6 (2026-05-21): scrubbing in PERSPECTIVE must NOT hijack the
+    // view camera. The dropdown sentinel _CAM_PERSP means free-fly --
+    // OrbitControls/WASD owns the camera and _player is left null. The
+    // block below (build a _player off selEl.value -> set _t0/_pausedAt ->
+    // the 18_frame_loop `if (_player)` block writes camera.position/
+    // quaternion + the 15 rebase pins it) would TELEPORT the free-fly view
+    // to the path's sampled pose even though the user is looking at the
+    // tour camera FROM OUTSIDE. User-reported: "switch to Perspective, move
+    // freely, scrub -> the view jumps onto the path (dropdown still says
+    // Perspective)". When in Perspective we therefore ONLY let the slider
+    // value change + nudge the trajectory/timeline redraw: the per-frame
+    // _trajRefreshActive() (15) + _tlSyncPlayhead() (16) both read
+    // scrubEl.value DIRECTLY in their not-playing branch, so the frustum/
+    // active-key marker + the bottom-timeline playhead slide along the path
+    // (previewing the tour position from outside) WITHOUT any camera write.
+    // Guard ONLY changes Perspective behaviour; binding a real path camera
+    // (selEl.value mirrors it) keeps today's follow-the-scrub behaviour.
+    if (_camSel && _camSel.value === _CAM_PERSP) {
+      // No _player build, no controls.enabled=false, no camera write --
+      // OrbitControls keeps the free-fly view. The active-key frustum/ring
+      // (_trajRefreshActive in 15) and the bottom-timeline playhead
+      // (_tlSyncPlayhead in 16) BOTH read scrubEl.value directly in their
+      // not-playing branch and run every frame in author mode, so the
+      // marker slides along the path on the next rAF with no explicit
+      // nudge (a per-input geometry rebuild would jank the drag). Just keep
+      // the play/pause glyph honest and bail before any camera-drive code.
+      _pathIconSync();
+      return;
+    }
     if (!_player) {
       const p = cameraPaths.find(x => x.id === selEl.value);
       if (!p) return;
