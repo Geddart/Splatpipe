@@ -1773,7 +1773,80 @@
         recBtn.addEventListener('click', () => { _gzRecordKeyframe(); });
         interpBtn.addEventListener('click', () => { _gzOpenPopover(); });
         tanBtn.addEventListener('click', () => { _tanEnableBezier(); });
-        saveBtn.addEventListener('click', () => { _gzSave(); });
+        // UX-Phase11A Issue 7 (2026-05-21): Save was silent in http mode
+        // (no toast, no visible state change) -- user has no idea if
+        // the POST succeeded. cli mode is fine because the token card
+        // overlay IS the feedback. Add an ephemeral button-state
+        // toast for both modes, keyed on the underlying _gzSave()
+        // return value (cli returns a string token synchronously;
+        // http returns a fetch Promise). The button text + background
+        // cycle through Save -> Saving... -> "OK Saved" / "Save failed"
+        // -> Save (after 2s). Inline-styled so this needs no new CSS
+        // region. The harness can inspect document.getElementById(
+        // 'editor-save-btn').textContent to assert the feedback state.
+        const _SAVE_LABEL_DEFAULT = 'Save';
+        const _SAVE_LABEL_BUSY = 'Saving...';
+        const _SAVE_LABEL_OK = 'OK Saved';
+        const _SAVE_LABEL_ERR = 'Save failed';
+        const _SAVE_BG_DEFAULT = 'rgba(255,255,255,0.10)';
+        const _SAVE_BG_BUSY = 'rgba(255,255,255,0.18)';
+        const _SAVE_BG_OK = 'rgba(53,255,143,0.34)';
+        const _SAVE_BG_ERR = 'rgba(255,90,90,0.40)';
+        function _gzSaveSetState(label, bg) {
+          try {
+            saveBtn.textContent = label;
+            saveBtn.style.background = bg;
+          } catch (e) {}
+        }
+        function _gzSaveResetSoon() {
+          setTimeout(() => {
+            _gzSaveSetState(_SAVE_LABEL_DEFAULT, _SAVE_BG_DEFAULT);
+          }, 2000);
+        }
+        saveBtn.addEventListener('click', () => {
+          _gzSaveSetState(_SAVE_LABEL_BUSY, _SAVE_BG_BUSY);
+          let result;
+          try {
+            result = _gzSave();
+          } catch (e) {
+            _gzSaveSetState(_SAVE_LABEL_ERR, _SAVE_BG_ERR);
+            console.warn('Save: synchronous failure', e);
+            _gzSaveResetSoon();
+            return;
+          }
+          // cli mode returns the token string synchronously. The token
+          // card is the user-facing confirmation; the button can flash
+          // OK as a secondary signal.
+          if (typeof result === 'string') {
+            _gzSaveSetState(_SAVE_LABEL_OK, _SAVE_BG_OK);
+            _gzSaveResetSoon();
+            return;
+          }
+          // http mode returns a fetch Promise. Drive the button state
+          // through the response.
+          if (result && typeof result.then === 'function') {
+            result.then((resp) => {
+              if (resp && resp.ok) {
+                _gzSaveSetState(_SAVE_LABEL_OK, _SAVE_BG_OK);
+              } else {
+                const code = (resp && resp.status) ? resp.status : '?';
+                _gzSaveSetState(_SAVE_LABEL_ERR, _SAVE_BG_ERR);
+                console.warn('Save: HTTP ' + code +
+                  (resp && resp.statusText ? ' ' + resp.statusText : ''));
+              }
+              _gzSaveResetSoon();
+            }).catch((err) => {
+              _gzSaveSetState(_SAVE_LABEL_ERR, _SAVE_BG_ERR);
+              console.warn('Save: network/fetch error', err);
+              _gzSaveResetSoon();
+            });
+            return;
+          }
+          // Unknown return shape -- defensive default to OK so the
+          // user is not left with a permanent "Saving..." indicator.
+          _gzSaveSetState(_SAVE_LABEL_OK, _SAVE_BG_OK);
+          _gzSaveResetSoon();
+        });
         bar.appendChild(recBtn);
         bar.appendChild(interpBtn);
         bar.appendChild(tanBtn);
