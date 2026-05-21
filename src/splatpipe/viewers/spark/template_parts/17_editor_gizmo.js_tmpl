@@ -1754,6 +1754,23 @@
         try { document.execCommand('copy'); } catch (e) {}
       });
     }
+    // UX-Phase11D Issue H1 (2026-05-21): on a SUCCESSFUL save the
+    // registry must be told every module is now clean. Each module's
+    // markClean() resets its own dirty flag; WITHOUT this the modules
+    // stay dirty forever -> every subsequent Save re-emits the FULL
+    // payload (collectPatch keeps returning all the dirty slices) and
+    // the dirty-state surface never settles. Guarded (typeof) so it is
+    // safe before the registry exists / on a non-registry build. NOT
+    // called on a failed save (a failed save leaves the work unsaved =
+    // still dirty, correctly).
+    function _gzMarkAllClean() {
+      try {
+        if (typeof EditorModuleRegistry !== 'undefined' &&
+            typeof EditorModuleRegistry.markAllClean === 'function') {
+          EditorModuleRegistry.markAllClean();
+        }
+      } catch (e) {}
+    }
     // The CLI-default Save: build the payload from the AUTHORED
     // in-memory state, encode the SPCP1 token (byte-identical port),
     // mirror the SPV1 relay UI. Returns the token string.
@@ -1762,6 +1779,9 @@
       const token = _encodeSpcp(_gzSlug, payload);
       _gzLastToken = token;
       _gzShowTokenCard(token);
+      // H1: token emitted == the save committed (the user now relays it
+      // via `splatpipe set-camera-path`). Mark every module clean.
+      _gzMarkAllClean();
       return token;
     }
     // The opt-in http Save: POST {slug, ...patch} (flat top-level
@@ -1780,6 +1800,14 @@
       if (token) headers['Authorization'] = 'Bearer ' + token;
       return fetch(SAVE_ENDPOINT, {
         method: 'POST', headers: headers, body: body,
+      }).then((resp) => {
+        // H1: ONLY a 200-OK POST commits the save -> mark modules clean.
+        // A non-ok status (4xx/5xx) is a failed save; leave them dirty.
+        // The returned `resp` is passed through UNCHANGED so the caller's
+        // own .then(resp => resp.ok) feedback chain still drives the
+        // button state exactly as before (no contract change).
+        if (resp && resp.ok) _gzMarkAllClean();
+        return resp;
       });
     }
     function _gzSave() {

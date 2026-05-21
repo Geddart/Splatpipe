@@ -238,6 +238,17 @@ PIN UPDATES:
     (fetch Promise) flips OK on response.ok, Save failed on a
     non-ok status or fetch reject. All 6 fixtures shifted by the
     same +5389 byte delta in lockstep; pins re-pinned.
+  * 2026-05-21 (Phase 11D H1): the Save dispatcher now calls
+    ``EditorModuleRegistry.markAllClean()`` on a SUCCESSFUL save.
+    A new guarded ``_gzMarkAllClean()`` helper in ``17_editor_gizmo``
+    is invoked at the end of ``_gzSaveCli()`` (after the token is
+    emitted) and on the 200-OK branch of ``_gzSaveHttp()`` (the
+    fetch ``.then`` passes the response through UNCHANGED so the
+    button-feedback chain is intact). NOT called on the error path
+    (a failed save is still dirty, correctly). Without the call the
+    modules stayed dirty forever -> every Save re-emitted the full
+    payload. All 6 fixtures shifted by the same +1470 byte delta in
+    lockstep; pins re-pinned.
 """
 
 from __future__ import annotations
@@ -290,42 +301,45 @@ from splatpipe.viewers.spark.template import html_for
 # dropdown on undo/redo so the dropdown survives undo; +5180), then
 # re-pinned 2026-05-21 (Phase 11A Issue 9 fixup: 17b renders sections
 # for already-registered modules so Annotations/Cuts/Titles populate;
-# +1214 in lockstep).
+# +1214 in lockstep), then re-pinned 2026-05-21 (Phase 11D H1: Save
+# dispatcher calls EditorModuleRegistry.markAllClean() on success --
+# _gzMarkAllClean() helper called from _gzSaveCli + _gzSaveHttp ok path;
+# +1470 in lockstep).
 CORPUS: list[tuple[str, tuple, dict, int, str]] = [
     (
         "harness_defaults",
         ("HarnessScene",),
         {},
-        759296,
-        "2b048ba26b2cf8c22ede107cd68febf6aa1539cd0574cea2ad8b28db360d0f11",
+        760766,
+        "03fab72743c3a667e8e0fb9c13d3044df3bd5742564acaea1b5d7a680830e1e9",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        759268,
-        "e2ed7198d3c8be5b87f6f9e06241078e531da0bb76fc1be99aaf4b3d8b641280",
+        760738,
+        "3a5f007ae24f9433c40b4b0f9a99a10bc1b38b86803b97752c84976449b68b22",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        759263,
-        "4bcde77b7b1ea6cfb7665ebcd937ef9f0a446fb29883ebb24739c82f4b4db4ff",
+        760733,
+        "a8237be5091034156991e560e2dd860997b42d146f986522debdfad1978a54a3",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        759242,
-        "c739c988eb9eb61b777c5941b3158048ffd7b7d55f1402f97247f5389c002393",
+        760712,
+        "6c8353e253f64837b7b02e3bd611d336d62f5a6cbeac03dd25d2bfac6b842e04",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        759307,
-        "fa0f0f4a0f5d1f92ed05442ea8e42c9f0a307b3dcf9c8a19bba09814ebbc1ea2",
+        760777,
+        "0435c26c509d1436bf58566e63134bd77c79d83d19ebff45bd969ed422422d69",
     ),
     (
         "share_card",
@@ -335,8 +349,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        759166,
-        "63a031dfbe52d703e7428380e13ddd45a730d3b69310d12aafc1c44dc0faf549",
+        760636,
+        "2549dcc3e8efcd7d2aefda91a60cc521cb8f97c1afaeb848ad3e512ae76454d4",
     ),
 ]
 
