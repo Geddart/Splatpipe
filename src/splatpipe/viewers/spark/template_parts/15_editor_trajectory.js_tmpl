@@ -747,14 +747,19 @@
     if (root) {
       const wrap = document.createElement('label');
       wrap.id = 'editor-traj-toggle';
-      // A2: bottom-right, just ABOVE the Task-17 bottom timeline
-      // (strip height _TL_H == 70px; 12px gap -> bottom:82px). Keeps
-      // the top-left corner free and groups it with the bottom
-      // editing chrome. z-index 50 stays above the canvas; the
-      // timeline strip (z-index 48) sits below this gap so they
-      // never overlap.
+      // R2 Batch F (Layout 2, 2026-05-21): MOVED off the bottom timeline.
+      // The prior bottom:82px;right:12px sat the toggle directly OVER the
+      // multi-lane timeline strip -- the strip GROWS in height as module
+      // lanes (Cam / ann / Cuts / audio / titles) register (_TL_H base 70
+      // -> taller), so the 82px gap was eaten and the checkbox overlapped
+      // the lanes (user-reported). New home: TOP-LEFT, just under the
+      // #header title band (top:0 + ~50px tall), left-aligned with the
+      // #controls-hint / camera cluster. Well clear of BOTH the bottom
+      // timeline AND the top-right #quality-buttons dropdowns + the cog.
+      // z-index 50 stays above the canvas; #header is z-index 10 so this
+      // sits above the title gradient without covering the dropdowns.
       wrap.style.cssText =
-        'position:absolute;bottom:82px;right:12px;z-index:50;' +
+        'position:absolute;top:62px;left:20px;z-index:50;' +
         'display:flex;align-items:center;gap:7px;' +
         'padding:7px 11px;border-radius:7px;cursor:pointer;' +
         'font:13px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;' +

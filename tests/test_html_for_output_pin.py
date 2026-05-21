@@ -514,6 +514,42 @@ PIN UPDATES:
     mis-wrapped to a negative index so End left focus on the first item,
     caught in the live Playwright verify; replaced with a direct
     _ctxFocusEdge first/last jump). Pins re-pinned to the new baseline.
+  * 2026-05-21 (R2 Batch F #157 -- layout): four UX layout edits across
+    five fragments. (Layout 1, author hints -> Settings) ``02a_styles_main``
+    adds ``body.authormode #controls-hint{display:none}`` so the on-canvas
+    nav-hint strip is hidden in AUTHOR mode (it crowded the merged
+    transport row + the bottom timeline); the SAME hint chords move into a
+    new static "Navigation" ``<details>`` section appended to the
+    ``17b_scene_settings_drawer`` body (``data-section='navigation'``).
+    USER / embed are byte-behaviourally identical -- end-users have no
+    drawer so the strip stays on-screen (the existing ``body.embed`` rule
+    still hides it for iframes). ``17_editor_gizmo::_gzFlashSelectHint``
+    now temporarily un-hides ``#controls-hint`` (inline ``display:block``)
+    for its ~1.8 s flash + restores ``display:''`` on the same timer, so
+    the R2-Batch-D "Select a keyframe first" flash is NOT a silent no-op
+    under the new author rule. (Layout 2, Show-trajectory off the timeline)
+    ``15_editor_trajectory``'s ``#editor-traj-toggle`` moves from
+    ``bottom:82px;right:12px`` (which sat OVER the multi-lane timeline as
+    it grew) to ``top:62px;left:20px`` (under the header band, clear of the
+    bottom strip + the top-right dropdown cluster). (Layout 3, float
+    undo/redo) ``16_editor_timeline``'s undo / redo buttons are FLOATED
+    out of the dark ``_tlBar`` transport row into a new
+    ``#editor-undo-float`` div (a SIBLING of ``_tlStrip`` under
+    ``#author-root``, positioned ``bottom:(_TL_H + 8)px`` so it sits just
+    above the strip's top edge + is re-synced by ``_tlSyncHeight`` as the
+    strip grows; ``_tlStrip``'s ``overflow:hidden`` would clip a child).
+    The ``_tlSyncUndoRedo`` per-frame enable/disable + the ``history:*``
+    event sync + the click handlers reference the buttons by variable, so
+    they are parent-agnostic + intact. (#4, right-click interp on a
+    multi-selection) ``16``'s ``_tlLane`` contextmenu handler no longer
+    unconditionally clears the box-selection: when the right-clicked
+    diamond is part of a ``_tlSel.size >= 2`` selection it KEEPS the whole
+    selection + the interp item applies the chosen mode to EVERY selected
+    index with ONE ``interp-multi`` snapshot (mirrors ``_gzSetInterp``'s
+    multi branch); otherwise it replaces with the clicked kf + a single
+    ``kf-interp`` snapshot (prior behaviour). All 6 fixtures shifted by the
+    same +8659 code points in lockstep -- additive only (isolated to the
+    02a/15/16/17/17b edits). Pins re-pinned to the new baseline.
 """
 
 from __future__ import annotations
@@ -603,36 +639,36 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
         "harness_defaults",
         ("HarnessScene",),
         {},
-        872044,
-        "6400ef16d5a65368f477886ac6d63cd02fea2b00ed91151ebdbe191f69e1459c",
+        880703,
+        "aaef5a4c12918f34262b883dfe8286fdc0f1ec474bc261f1c1297f2599a3384d",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        872016,
-        "1babed563ddf48f13bae959b47e71c45cc4acdddf569fbf047b33fe5a70486df",
+        880675,
+        "55010699af16cde12be3e6c24a5d449dc59c779a77d844cac1b0bdd45b5260b2",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        872011,
-        "b0c1ebc1fea9cdcc3ce82c2cb71b7fca6d4462eec9646204ec3382e1af1e2301",
+        880670,
+        "c8904a2c5fe9b4f61fb3d2ad614768667923f94b8c87970fe05d3df6db823479",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        871990,
-        "f6dd439859083568e0a359ec4826e00c1433dc856ee13a374fddb9420e525e42",
+        880649,
+        "49cf308f9d2c6f9a0ea8020348fb3b031d1bc808b9f7dc097771707500e4de5c",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        872055,
-        "722aa2c68a15070dabf05e3595d561e03ea87de75f54406c8cb71099a1552fa3",
+        880714,
+        "b16d1142c5400ab18f0821d69597ddd272ae5d61d299549633a34effab825478",
     ),
     (
         "share_card",
@@ -642,8 +678,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        871914,
-        "e3fd6e09d4fc2bc10fbef636e8bfed27fa625f960c6ab4325270f376a1d6c30a",
+        880573,
+        "0751946191f18a7b7100a979b6f18b399fb2e1b1e2f45c024e799a0262e77b4e",
     ),
 ]
 

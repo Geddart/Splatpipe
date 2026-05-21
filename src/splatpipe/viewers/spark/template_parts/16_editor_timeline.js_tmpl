@@ -228,9 +228,34 @@
       'display:inline-flex;align-items:center;gap:4px;';
     _tlUndo.style.cssText = _UNDO_BTN_CSS;
     _tlRedo.style.cssText = _UNDO_BTN_CSS;
+    // R2 Batch F (Layout 3, 2026-05-21): the Undo / Redo pair is FLOATED
+    // OUT of the dark transport row into a small container that sits just
+    // ABOVE the whole dark block (above the Play button). User: the
+    // buttons read as "embedded in the dark block"; they want them
+    // visually detached, floating above it. The floating bar is a SIBLING
+    // of _tlStrip under #author-root (NOT a child -- _tlStrip is
+    // overflow:hidden, so a child above its top edge would be clipped).
+    // It is positioned bottom:(_TL_H + gap) so it floats just over the
+    // strip's top edge; _tlSyncHeight() re-applies that bottom whenever
+    // the strip GROWS with module lanes (so it always tracks the top).
+    // left:8px aligns it over the Play button area. The _tlSyncUndoRedo()
+    // per-frame enable/disable, the history:* event sync, and the click
+    // handlers all reference _tlUndo/_tlRedo by variable, so they are
+    // PARENT-AGNOSTIC and stay intact regardless of where the buttons
+    // live. Buttons keep their Batch-B labels + glyphs.
+    const _TL_UNDO_FLOAT_GAP = 8;  // px gap above the strip's top edge
+    const _tlUndoBar = document.createElement('div');
+    _tlUndoBar.id = 'editor-undo-float';
+    _tlUndoBar.style.cssText =
+      'position:absolute;left:8px;bottom:' + (_TL_H + _TL_UNDO_FLOAT_GAP) +
+      'px;display:flex;gap:6px;align-items:center;z-index:49;' +
+      'pointer-events:auto;';
+    _tlUndoBar.appendChild(_tlUndo);
+    _tlUndoBar.appendChild(_tlRedo);
+    // Transport row keeps Play / Loop / fps (undo/redo lifted out). One
+    // divider between Play and the Loop/fps group preserves the visual
+    // grouping cue the Batch-B dividers added.
     _tlBar.appendChild(_tlPlay);
-    _tlBar.appendChild(_tlDivider());
-    _tlBar.appendChild(_tlUndo); _tlBar.appendChild(_tlRedo);
     _tlBar.appendChild(_tlDivider());
     _tlBar.appendChild(_tlLoop); _tlBar.appendChild(_tlFpsBtn);
 
@@ -303,6 +328,11 @@
     _tlLane.appendChild(_tlPlayhead);
     _tlStrip.appendChild(_tlLane);
     root.appendChild(_tlStrip);
+    // R2 Batch F (Layout 3): the floating Undo/Redo bar is a SIBLING of
+    // the strip (above it) -- appended to #author-root so _tlStrip's
+    // overflow:hidden never clips it. Its bottom is kept in sync with the
+    // live strip height by _tlSyncHeight().
+    root.appendChild(_tlUndoBar);
 
     const _tlCtx = _tlCanvas.getContext('2d');
     let _tlW = 0, _tlHpx = 0, _tlDpr = 1;
@@ -332,6 +362,9 @@
       _TL_H = _TL_H_BASE + _tlTotalLaneRows() * _TL_LANE_ROW_H;
       _tlStrip.style.height = _TL_H + 'px';
       _tlLane.style.height = (_TL_H - _TL_BAR_H) + 'px';
+      // R2 Batch F (Layout 3): keep the floating Undo/Redo bar pinned just
+      // above the strip's TOP edge as the strip grows/shrinks with lanes.
+      _tlUndoBar.style.bottom = (_TL_H + _TL_UNDO_FLOAT_GAP) + 'px';
     }
     function _tlResize() {
       _tlSyncHeight();
@@ -1051,9 +1084,19 @@
     //          interp is shown disabled (a no-op highlight).
     //        * Go to keyframe -- _tlScrubToTime(kf.t) (the real scrub).
     //      Author-gated (ModeManager.is('author')) + preventDefault so
-    //      the browser menu never shows. Single keyframe target = the
-    //      hit diamond's index (NOT the box-selection); selecting it
-    //      first keeps the visual feedback consistent.
+    //      the browser menu never shows.
+    //      R2 Batch F (#4, 2026-05-21): the interp choice now respects a
+    //      MULTI-SELECTION. User: "right-click a keyframe -> interpolation
+    //      -> switch that keyframe OR multiple keyframes." If the
+    //      right-clicked diamond is PART of the current box-selection
+    //      (_tlSel.size >= 2 && _tlSel.has(ki)) we KEEP the whole
+    //      selection and the interp applies to EVERY selected kf with ONE
+    //      'interp-multi' EditHistory snapshot (mirrors _gzSetInterp's
+    //      multi branch + the R8 anti-pattern: one snapshot per batch,
+    //      never per-target). Otherwise the right-clicked diamond becomes
+    //      the single target (selection replaced) + a single 'kf-interp'
+    //      snapshot -- the prior behaviour. Delete / Go-to always operate
+    //      on the clicked diamond.
     _tlLane.addEventListener('contextmenu', (ev) => {
       if (!ModeManager.is('author')) return;
       // Always suppress the browser menu over the lane in author mode
@@ -1064,9 +1107,13 @@
       if (ki < 0) return;          // not on a diamond -> no menu
       const p = _tlActivePath();
       if (!p || !p.keyframes || !p.keyframes[ki]) return;
-      // Select the right-clicked diamond (single) so the menu target is
-      // visually obvious (mirrors the left-click select-on-down).
-      _tlSel.clear(); _tlSel.add(ki); _tlDraw();
+      // #4: if the right-clicked diamond is already part of a 2+ selection,
+      // operate on the WHOLE selection; else replace it with just this kf
+      // (so the menu target is visually obvious -- mirrors left-click
+      // select-on-down). `_interpMulti` drives the interp item below.
+      const _interpMulti = (_tlSel.size >= 2 && _tlSel.has(ki));
+      if (!_interpMulti) { _tlSel.clear(); _tlSel.add(ki); }
+      _tlDraw();
       const kf = p.keyframes[ki];
       const curInterp = (kf && typeof kf.interp === 'string' &&
         _VALID_INTERP[kf.interp]) ? kf.interp : 'automatic';
@@ -1095,17 +1142,43 @@
         },
       });
       items.push({ separator: true });
-      // FLATTENED interp choices (one per _VALID_INTERP key). The
-      // current value is shown disabled (a labelled no-op).
+      // FLATTENED interp choices (one per _VALID_INTERP key).
+      //  * SINGLE target: the clicked kf's current value is shown
+      //    disabled (a labelled no-op highlight) -> 'kf-interp' snapshot.
+      //  * MULTI target (#4): NO item is disabled (the selected kfs may
+      //    differ, so any value is a meaningful batch-set); each writes
+      //    the chosen interp to EVERY selected index with ONE
+      //    'interp-multi' snapshot. A stale/out-of-range index is skipped.
+      const _interpCount = _interpMulti ? _tlSel.size : 1;
       for (const nm of Object.keys(_VALID_INTERP)) {
         items.push({
-          label: (nm === curInterp ? '✓ ' : '  ') +
-            'Interp: ' + nm,
-          disabled: (nm === curInterp),
-          title: 'Set this keyframe’s interpolation to ' + nm,
+          label: (!_interpMulti && nm === curInterp ? '✓ ' : '  ') +
+            'Interp: ' + nm + (_interpMulti ? ' (' + _interpCount + ')' : ''),
+          disabled: (!_interpMulti && nm === curInterp),
+          title: _interpMulti
+            ? ('Set interpolation of all ' + _interpCount +
+               ' selected keyframes to ' + nm)
+            : ('Set this keyframe’s interpolation to ' + nm),
           onSelect: () => {
             const pp = _tlActivePath();
-            if (!pp || !pp.keyframes || !pp.keyframes[ki]) return;
+            if (!pp || !pp.keyframes) return;
+            if (_interpMulti) {
+              // ONE snapshot for the whole batch (R8 §4.2 -- never
+              // per-target). Apply the chosen interp to every
+              // selected index; skip a stale/out-of-range index.
+              _tlPushHistorySnap('interp-multi');
+              let anyWritten = false;
+              for (const idx of _tlSel) {
+                if (typeof idx !== 'number' || idx < 0 ||
+                    idx >= pp.keyframes.length || !pp.keyframes[idx]) continue;
+                pp.keyframes[idx].interp = nm;
+                anyWritten = true;
+              }
+              if (!anyWritten) return;
+              _tlAfterEdit();
+              return;
+            }
+            if (!pp.keyframes[ki]) return;
             _tlPushHistorySnap('kf-interp');
             pp.keyframes[ki].interp = nm;
             _tlAfterEdit();

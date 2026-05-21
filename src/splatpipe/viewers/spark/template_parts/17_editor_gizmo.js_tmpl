@@ -1735,6 +1735,13 @@
     // target (zero keyframes on the active path). Reuses the existing
     // #controls-hint element (author-mode chrome) -- flash a short
     // message then restore its prior text. NOT a silent no-op.
+    // R2 Batch F (Layout 1, 2026-05-21): the static nav-hint strip is now
+    // CSS-hidden in author mode (body.authormode #controls-hint{display:none})
+    // -- its hints moved to the Scene Settings "Navigation" section. So
+    // this transient flash must TEMPORARILY un-hide the element for its
+    // ~1.8 s lifetime (an inline display override beats the stylesheet
+    // rule) then restore display:none on the same timer that restores the
+    // text. User / embed are unaffected (the rule does not apply there).
     let _gzHintRestore = null;
     function _gzFlashSelectHint() {
       const el = document.getElementById('controls-hint');
@@ -1746,10 +1753,16 @@
         const prev = (_gzHintRestore && typeof _gzHintRestore.text === 'string')
           ? _gzHintRestore.text : el.textContent;
         el.textContent = 'Select a keyframe first';
+        // Author mode hides the strip by default; force it visible for the
+        // flash so the message is NOT a silent no-op.
+        if (ModeManager.is('author')) el.style.display = 'block';
         _gzHintRestore = {
           text: prev,
           timer: setTimeout(() => {
             try { el.textContent = prev; } catch (e) {}
+            try {
+              if (ModeManager.is('author')) el.style.display = '';
+            } catch (e) {}
             _gzHintRestore = null;
           }, 1800),
         };

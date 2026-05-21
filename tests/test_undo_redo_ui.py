@@ -10,10 +10,13 @@ Phase 11C's workflow-trace found two related gaps:
       in the drawer.
 
 Fix:
-  * 16_editor_timeline adds VISIBLE Undo (``↶``) + Redo (``↷``) buttons in the
-    always-reachable transport row, delegating to ``EditorModuleRegistry.undo/
-    redo`` and dimming/disabling per ``canUndo()``/``canRedo()`` (synced every
-    frame off ``_tlSyncPlayhead`` + on every ``history:*`` event).
+  * 16_editor_timeline adds VISIBLE Undo (``↶``) + Redo (``↷``) buttons,
+    delegating to ``EditorModuleRegistry.undo/redo`` and dimming/disabling
+    per ``canUndo()``/``canRedo()`` (synced every frame off
+    ``_tlSyncPlayhead`` + on every ``history:*`` event). R2 Batch F (#157)
+    FLOATS the pair into an ``#editor-undo-float`` container ABOVE the dark
+    transport block (a sibling of the timeline strip) -- always reachable,
+    just visually detached from the block.
   * 04_js_prologue adds a NARROWER ``_editorUndoHotkeyBlocked()`` guard (blocks
     only real TEXT-ENTRY focus: INPUT text/number/etc, TEXTAREA, contenteditable
     -- NOT SELECT/range/checkbox/file/buttons, NOT [role=dialog]/[role=menu]),
@@ -48,12 +51,21 @@ _NODE = shutil.which("node")
 # --------------------------------------------------------------------------
 
 _VISIBLE_BUTTON_MARKERS = (
-    # The two transport buttons + their delegation + tooltips.
+    # The two undo/redo buttons + their delegation + tooltips.
     "const _tlUndo = _tlBtn(",
     "const _tlRedo = _tlBtn(",
     "'Undo (Ctrl+Z)'",
     "'Redo (Ctrl+Y)'",
-    "_tlBar.appendChild(_tlUndo); _tlBar.appendChild(_tlRedo);",
+    # R2 Batch F (#157, Layout 3): the buttons FLOAT above the dark
+    # transport block in their own #editor-undo-float container (a sibling
+    # of the timeline strip), instead of being appended into _tlBar. They
+    # are STILL always-reachable + delegated + synced; only the placement
+    # changed (user: they should read as floating above the block, not
+    # embedded in it).
+    "_tlUndoBar.id = 'editor-undo-float';",
+    "_tlUndoBar.appendChild(_tlUndo);",
+    "_tlUndoBar.appendChild(_tlRedo);",
+    "root.appendChild(_tlUndoBar);",
     "EditorModuleRegistry.undo();",
     "EditorModuleRegistry.redo();",
     # Enabled-state sync wired off the per-frame playhead sync + history events.

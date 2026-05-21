@@ -163,6 +163,47 @@
       _ssBody.appendChild(_ssMakeSection(id, label, copy));
     }
 
+    // R2 Batch F (Layout 1, 2026-05-21): a static "Navigation" section
+    // holding the viewport-control hints. In AUTHOR mode the on-canvas
+    // #controls-hint strip is CSS-hidden (it crowded the merged
+    // transport row + the bottom timeline) -- the SAME hint text lives
+    // here instead. End-users (no drawer) keep the on-screen strip. This
+    // is STATIC help copy, not a module, so it is appended directly to
+    // _ssBody (after the placeholder sections, before any module's
+    // renderSceneSettings-attached section). The HTML mirrors
+    // 03_body_chrome's #controls-hint verbatim (bold key chords) so the
+    // wording stays in one mental model. data-section='navigation' lets
+    // the harness assert it exists.
+    (function _ssNavSection() {
+      const det = document.createElement('details');
+      det.className = 'spcp-scene-settings-section';
+      det.dataset.section = 'navigation';
+      det.open = true;   // controls help is useful open by default
+      det.style.cssText =
+        'background:rgba(255,255,255,0.04);border-radius:6px;' +
+        'padding:6px 10px;border:1px solid rgba(255,255,255,0.06);';
+      const sm = document.createElement('summary');
+      sm.textContent = 'Navigation';
+      sm.style.cssText =
+        'cursor:pointer;color:#fff;font-weight:600;font-size:12px;' +
+        'padding:4px 0;list-style:none;';
+      det.appendChild(sm);
+      const body = document.createElement('div');
+      body.id = 'scene-settings-navigation-body';
+      body.className = 'spcp-scene-settings-section-body';
+      body.style.cssText =
+        'padding:6px 0 4px 0;color:#bcc;font-size:11px;line-height:1.7;';
+      // Same chords as #controls-hint (03_body_chrome lines 109-112).
+      body.innerHTML =
+        '<b>Left-drag</b> orbit &middot; <b>Right-drag</b> look &middot; ' +
+        '<b>Middle-drag</b> pan &middot; <b>Scroll</b> zoom &middot; ' +
+        '<b>WASD / Arrows</b> fly &middot; <b>Q/E</b> up/down &middot; ' +
+        '<b>Shift</b> sprint &middot; <b>Double-click / double-tap</b> ' +
+        'set pivot &middot; <b>Double-tap+drag</b> zoom (touch)';
+      det.appendChild(body);
+      _ssBody.appendChild(det);
+    })();
+
     // ---- Open/close state, persisted in sessionStorage.
     let _ssIsOpen = false;
     function _ssReadPersisted() {
