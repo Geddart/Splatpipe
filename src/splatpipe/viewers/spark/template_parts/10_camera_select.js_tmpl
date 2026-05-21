@@ -843,12 +843,46 @@
     // Perspective sentinel). Region-interior (recipe-2c absorbed).
     if (typeof _camSelReflect === 'function') _camSelReflect(pathId);
   }
+  // R2 #9 (2026-05-21): hand the camera back to OrbitControls CLEANLY.
+  // After a tour the player has written camera.position/quaternion every
+  // frame WHILE OrbitControls' update() was skipped (tick() 18:`if
+  // (!_player) controls.update()`), so controls' internal spherical +
+  // controls.target are STALE -- left over from before the tour. The
+  // first controls.update() after _player goes null re-derives the
+  // camera from that stale spherical and snaps it to look at the stale
+  // target (documented "symptom B"; the visible interp-open / Rec / Stop
+  // camera jump). The fix: BEFORE re-enabling controls, point
+  // controls.target at a spot directly ahead of where the camera now
+  // sits and call controls.update() ONCE so the spherical is re-derived
+  // from the LIVE pose. Then every subsequent controls.update() is a
+  // no-op (no snap). Distance: preserve the existing camera->target
+  // distance when finite+positive (keeps the orbit radius natural),
+  // else fall back to ~5 m forward (the same construction the UX-2
+  // bind-snap + the 08_input start-view pivot use:
+  // controls.target.copy(camera.position).addScaledVector(fwd, d)).
+  function _syncControlsToCamera() {
+    if (!controls || !controls.target) return;
+    const _fwd = new THREE.Vector3(0, 0, -1)
+      .applyQuaternion(camera.quaternion);
+    let _d = camera.position.distanceTo(controls.target);
+    if (!(Number.isFinite(_d) && _d > 1e-3)) _d = 5;
+    controls.target.copy(camera.position).addScaledVector(_fwd, _d);
+    // Re-derive OrbitControls' internal spherical from the live camera
+    // pose. Must run with the camera at its final tour pose -- callers
+    // invoke this AFTER the player's last write, BEFORE controls.enabled
+    // flips true, so this single update() cannot fight a stale spherical.
+    try { controls.update(); } catch (e) {}
+  }
   function stopPath() {
     _player = null; _activePathId = null; _lastTriggeredAnnotation = null;
     // UX-3 (2026-05-20): clear paused-scrub state; this is the ONLY
     // explicit teardown path (besides startPath's clear) so a stale
     // _pausedAt never survives across a real stop.
     _pausedAt = null; _pausedAtPlayer = null;
+    // R2 #9: re-sync OrbitControls to the live camera pose BEFORE
+    // re-enabling it, so the next controls.update() in tick() does not
+    // snap the camera to the stale pre-tour target.
+    _syncControlsToCamera();
     controls.enabled = true;
     InteractionManager.releasePointer('player');
     markerObjs.forEach(m => m.el.querySelector('.ann-dot').classList.remove('path-active'));

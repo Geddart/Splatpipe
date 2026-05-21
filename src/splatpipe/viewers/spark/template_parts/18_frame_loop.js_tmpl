@@ -458,7 +458,27 @@
     // Path playback (when active)
     if (_player) {
       const speed = _player.playSpeed || 1.0;
-      const tNow = ((performance.now() - _t0) / 1000) * speed;
+      // R2 #7 (2026-05-21): when PAUSED (the UX-3 paused-scrub state +
+      // the Phase-11A-Issue-5 unified pause), hold at EXACTLY _pausedAt
+      // -- sample that spline time directly instead of the
+      // `(now-_t0)*speed` wall clock. The clock expression equals
+      // _pausedAt only at the single frame the pause was set; on every
+      // later frame it reads the PREVIOUS frame's _t0 (the _trajLayer
+      // .update() rebase that re-pins _t0 runs LATER this frame, in
+      // OverlayScene.update()), so the camera sampled _pausedAt + one
+      // frame's delta -- a ~16 ms sawtooth at 60 fps that BALLOONS when
+      // the frame rate dips (this scene stutters on a chunk-refetch
+      // storm). Sampling _pausedAt directly pins the paused frame
+      // dead-still regardless of frame pacing. The _trajLayer rebase is
+      // now redundant for the camera (kept inert -- it still keeps _t0
+      // consistent for _pathCurTime / a subsequent resume, and the
+      // structural marker test pins its presence). Identity-gated on
+      // _pausedAtPlayer so a bench/clip launcher that swapped _player is
+      // never affected.
+      const _isPaused = (typeof _pausedAt !== 'undefined' && _pausedAt !== null &&
+        _pausedAtPlayer === _player);
+      const tNow = _isPaused ? _pausedAt
+        : ((performance.now() - _t0) / 1000) * speed;
       if (tNow > _player.duration && !_player.loop) {
         stopPath();
       } else {

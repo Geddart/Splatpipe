@@ -1344,6 +1344,31 @@
         // the event so OrbitControls does not also start a drag
         // from the same pointerdown.
         ev.stopPropagation();
+        return;
+      }
+      // 5. R2 #8 (2026-05-21): EMPTY-SPACE drag while PAUSED takes over.
+      //    A paused tour keeps _player NON-null (the pause is a freeze,
+      //    not a stop -- Phase-11A-Issue-5), and the scrub/pause path
+      //    set controls.enabled=false, so tick()'s
+      //    `if (!_player) controls.update()` is skipped -> OrbitControls
+      //    is inert and the user CANNOT grab the camera out of a pause
+      //    (the reported "can't Alt-rotate / drag out of a paused
+      //    camera"). There is no separate author left-drag binding: a
+      //    left-drag on empty canvas goes straight to OrbitControls'
+      //    own (bubble-phase) canvas listener. So here -- a plain-left
+      //    pointerdown on EMPTY space (no gizmo/handle/frustum was hit
+      //    above; not mid gizmo drag) while paused -- we stopPath()
+      //    (which, after R2 #9, re-syncs OrbitControls to the live held
+      //    pose + re-enables it WITHOUT a snap) and DO NOT
+      //    stopPropagation, so this SAME pointerdown bubbles to
+      //    OrbitControls and the orbit begins from where the camera
+      //    sits. Alt+left is handled in _gzAltDown (it returns early
+      //    above on ev.altKey). Gated to author mode (the handler's top
+      //    guard) + paused state, so a normal author click on empty
+      //    space when NOT paused is byte-behaviourally unchanged.
+      if (typeof _pathPlayState === 'function' &&
+          _pathPlayState() === 'paused') {
+        try { stopPath(); } catch (e) {}
       }
     }
     // ---- B1 Alt-orbit TransformControls neutraliser. _gzOnCanvasDown
@@ -1376,6 +1401,25 @@
         _gzAltPrevTan = _tanCtl.enabled;
         _tanCtl.enabled = false;
       }
+      // R2 #8 (2026-05-21): Alt+left while PAUSED takes over the camera.
+      // The pause keeps _player non-null + controls.enabled=false, so
+      // OrbitControls is inert (tick() skips controls.update() while
+      // _player). Alt+left is the documented "rotate out of a paused
+      // camera" gesture; this handler already neutralises TC and lets
+      // the event bubble to OrbitControls (it never stopPropagation()s
+      // and _gzOnCanvasDown returns early on ev.altKey). So stopPath()
+      // here (after R2 #9, a clean re-sync + re-enable WITHOUT a snap)
+      // frees the camera, and this SAME Alt+left pointerdown bubbles to
+      // OrbitControls -- which maps LEFT->ROTATE (controls.mouseButtons)
+      // regardless of Alt -- so the orbit begins from the held pose.
+      // Identity-checked via _pathPlayState so a non-paused Alt-orbit
+      // (the existing gizmo navigation-supremacy gesture) is unchanged.
+      try {
+        if (typeof _pathPlayState === 'function' &&
+            _pathPlayState() === 'paused') {
+          stopPath();
+        }
+      } catch (e) {}
     }
     function _gzAltRestore(ev) {
       if (!_gzAltOrbiting) return;

@@ -389,6 +389,18 @@
     camera.quaternion.set(s.quat[0], s.quat[1], s.quat[2], s.quat[3]);
     camera.fov = s.fov;
     camera.updateProjectionMatrix();
+    // R2 #9 (2026-05-21): sync OrbitControls to the just-written seek
+    // pose. This function leaves _player===null, so tick() runs
+    // controls.update() every frame; OrbitControls 0.180's update()
+    // calls lookAt(controls.target) at the end, which would re-orient
+    // the camera toward the STALE target (clobbering the held quat) on
+    // the very next frame. _syncControlsToCamera() (declared in
+    // 10_camera_select; hoisted into this shared script scope) repoints
+    // the target directly ahead of the seek pose so the next update()
+    // is a no-op -- the held preview no longer drifts/snaps. Guarded so
+    // a build where 10 has not yet declared it (impossible at runtime --
+    // 10 concatenates after 09 but both run before any seek) is inert.
+    try { if (typeof _syncControlsToCamera === 'function') _syncControlsToCamera(); } catch (e) {}
     const pct = Math.min(1000, Math.max(0, (t / dur) * 1000));
     if (scrubEl) scrubEl.value = String(pct);
     if (timeEl) timeEl.textContent = t.toFixed(2) + 's';

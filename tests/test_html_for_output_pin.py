@@ -358,6 +358,32 @@ PIN UPDATES:
     a missing id). Also repairs the same latent loss for the pre-existing
     kind/radius/t_in/t_out/fade_ms card edits. All 6 fixtures shifted by the
     same +930 code points in lockstep; pins re-pinned.
+  * 2026-05-21 (R2 Batch A #151 -- camera-state seam #7/#8/#9): ONE
+    lifecycle seam fixed across THREE fragments. (#7 paused-camera
+    drift) ``18_frame_loop``'s player block now samples
+    ``sampleAt(_player, _pausedAt)`` DIRECTLY when paused, instead of
+    the ``(now-_t0)*speed`` wall clock that read the previous frame's
+    ``_t0`` (the ``15_editor_trajectory`` rebase runs LATER in the
+    frame) -> a ~16 ms sawtooth that ballooned on frame-rate dips. The
+    15 rebase is left inert (kept for ``_t0`` clock consistency + the
+    structural marker test). (#9 stop/interp camera jump)
+    ``10_camera_select`` adds ``_syncControlsToCamera()`` -- repoints
+    ``controls.target`` directly ahead of the LIVE camera + calls
+    ``controls.update()`` ONCE so OrbitControls' internal spherical is
+    re-derived from the live pose (verified against three 0.180
+    ``OrbitControls.update()``: it ``setFromVector3(camera.position -
+    target)`` at the top + ``lookAt(target)`` at the end, so a stale
+    target snapped the camera). Called inside ``stopPath()`` before
+    ``controls.enabled=true`` AND at the end of
+    ``09_playback_spline::_pathSeekHold`` (the held seek pose was also
+    being clobbered by the next ``lookAt(stale target)``).
+    (#8 can't drag/Alt-rotate out of pause) ``17_editor_gizmo``'s
+    ``_gzOnCanvasDown`` (empty-space fallback) + ``_gzAltDown`` now
+    ``stopPath()`` when ``_pathPlayState()==='paused'`` so the SAME
+    drag / Alt+drag bubbles to OrbitControls (re-enabled+synced by #9)
+    and orbits from the held pose. All 6 fixtures shifted by the same
+    +6896 code points in lockstep -- additive only (isolated to the
+    edited fragments). Pins re-pinned to the new baseline.
 """
 
 from __future__ import annotations
@@ -430,7 +456,11 @@ from splatpipe.viewers.spark.template import html_for
 # Save-camera + Set-start-view cards close on Escape (one-shot listener),
 # carry role=dialog + focus, restore opener focus, and never stack via a
 # shared _closeAllEditorOverlays() coordinator in 04; +7025 code points in
-# lockstep). NOTE: expected_len counts len(html) CODE POINTS
+# lockstep), then re-pinned 2026-05-21 (R2 Batch A #151: camera-state
+# seam #7/#8/#9 -- paused player block samples _pausedAt directly (18),
+# stopPath/_pathSeekHold re-sync OrbitControls to the live pose (10/09),
+# canvas drag + Alt+drag while paused take over the camera (17); +6896
+# code points in lockstep). NOTE: expected_len counts len(html) CODE POINTS
 # (Unicode scalar values), NOT UTF-8 bytes -- the assembled HTML carries
 # multi-byte chars (em-dash, degree sign, etc.) so the byte length runs
 # ~770 higher. Measure a re-pin with len(html), never len(html.encode()).
@@ -439,36 +469,36 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
         "harness_defaults",
         ("HarnessScene",),
         {},
-        802531,
-        "783a5cd0587cea64136efa14a3479a6f5bbb479b3c6ac3b00e606ca00da68052",
+        809427,
+        "bc917977f6135c3c4b809d71e1f6fdcf7f6a99937eb7faf3317aac04f60d9065",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        802503,
-        "e2b779c08934bd91e11ac64e54f397f3b33837e633a2e8ee48541f81a70a8562",
+        809399,
+        "c1a3d42e1bc6130e55005949328001c18f6111a4f9e49088ab0551da43fa6c4a",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        802498,
-        "2f08ca792881f0d859291305742efe375eb6bdaa0afb900c7fa1f5b5b90120c3",
+        809394,
+        "2ca7d4e5794aa956ab660010eee213d42f81f76f4771caa53e8785751f52ddd4",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        802477,
-        "e16da15d3a4405685ab34a08c0060c81eaa693a3ea0179f90f4197951c28d694",
+        809373,
+        "f81ca47de89ea8316154142996b5d9736861f670c88ee434c867ce8b199f0337",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        802542,
-        "78008970238ebefb99ffffb9516a2ad3873caf6f9b605a56a37eb5b0e5e98201",
+        809438,
+        "5329f66e4d9cabf1c7da14df4dfe766a7e32ed857303bd075bc55ad08d62ce46",
     ),
     (
         "share_card",
@@ -478,8 +508,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        802401,
-        "942cd9ddc309ba505ffbf84014d6b49afe437f0fb083bd7ebd7f7555069b020f",
+        809297,
+        "6cd78d16e4d0b08e33db348f509b0aaf2d7af5c5220e7068ae40a79a3d53f356",
     ),
 ]
 
