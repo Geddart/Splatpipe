@@ -1431,9 +1431,75 @@
       return (kf && kf.interp) ? kf.interp : null;
     }
     function _gzSetInterp(val) {
+      if (!val || !_VALID_INTERP[val]) return false;
+      // UX-Phase11A Issue 4 (2026-05-21): the interp popover was
+      // SINGLE-target -- it only wrote to the gizmo-selected kf
+      // (_gzSelKf). User-reported: "When I select several keyframes
+      // and change the interpolation, it doesn't seem to work for
+      // multiple keyframes. But it should." Fix: when the bottom
+      // timeline has a multi-selection (tlSelection.length >= 2),
+      // apply the new interp to EVERY selected kf. The multi-write
+      // branch takes precedence over the gizmo-target branch (a
+      // multi-select implies user is operating on the batch, NOT
+      // the single gizmo target).
+      //
+      // The timeline IIFE's _tlSel Set is scope-private; we read
+      // it through the existing window.__editor.tlSelection getter
+      // surface (an Array<number> sorted asc) which already exists
+      // for the Task-17 harness. Defensive try/catch -- if the
+      // surface is absent (early init / non-author / harness
+      // teardown) fall back to the single-target write.
+      let targets = null;
+      try {
+        if (window.__editor && Array.isArray(window.__editor.tlSelection) &&
+            window.__editor.tlSelection.length >= 2) {
+          targets = window.__editor.tlSelection;
+        }
+      } catch (e) {}
+      const p = _gzActivePath();
+      if (targets && p && Array.isArray(p.keyframes)) {
+        // Multi-write: ONE EditHistory snapshot for the batch
+        // (Phase 2A R8 §4.2 pattern -- never per-keystroke). Filter
+        // out-of-range indices defensively (a stale selection during
+        // a fast rebuild could carry a phantom index).
+        try {
+          if (typeof EditorModuleRegistry !== 'undefined' &&
+              typeof EditorModuleRegistry.pushUndo === 'function') {
+            EditorModuleRegistry.pushUndo('interp-multi');
+          }
+        } catch (e) {}
+        let bezierSeen = false;
+        let anyWritten = false;
+        for (const idx of targets) {
+          if (typeof idx !== 'number' || idx < 0 ||
+              idx >= p.keyframes.length) continue;
+          const tk = p.keyframes[idx];
+          if (!tk) continue;
+          tk.interp = val;
+          anyWritten = true;
+          if (val === 'bezier') bezierSeen = true;
+        }
+        if (!anyWritten) return false;
+        // Match the single-target side effects: bezier seeds the
+        // gizmo-selected kf's tangents (so the grab-able handles
+        // appear on the currently-attached gizmo); other modes hide
+        // them. We DO NOT seed tangents on the non-attached selected
+        // kfs (that would be confusing -- the tangent UI is gizmo-
+        // anchored). _gzAfterEdit() runs once for the full batch.
+        if (bezierSeen && _gzSelKf >= 0 &&
+            _gzSelKf < p.keyframes.length &&
+            p.keyframes[_gzSelKf].interp === 'bezier') {
+          _tanEnableBezier();
+        } else {
+          _gzAfterEdit();
+          _tanHide();
+        }
+        return true;
+      }
+      // Single-target fallback (no multi-select): gizmo target only.
       const kf = _gzSelKfObj();
       if (!kf) return false;
-      if (val && _VALID_INTERP[val]) kf.interp = val;
+      kf.interp = val;
       // Picking `bezier` from the interp popover is the same
       // intent as the tangents button: seed the derived defaults
       // (no curve jump) + reveal the grab-able handles. Any other
@@ -1447,7 +1513,18 @@
       return kf.interp === val;
     }
     function _gzOpenPopover() {
-      if (_gzSelKf < 0) return;       // need a selected keyframe
+      // UX-Phase11A Issue 4 (2026-05-21): the popover now opens
+      // either on a gizmo-selected kf OR on a multi-selection from
+      // the bottom timeline. Without this lift, V on a multi-select
+      // was a silent no-op because the user did not single-click any
+      // single kf for the gizmo (the multi-select was a box drag).
+      let _mSelLen = 0;
+      try {
+        if (window.__editor && Array.isArray(window.__editor.tlSelection)) {
+          _mSelLen = window.__editor.tlSelection.length;
+        }
+      } catch (e) {}
+      if (_gzSelKf < 0 && _mSelLen < 2) return;   // need a selected keyframe (gizmo OR multi)
       _gzStopTour();
       _gzClosePopover();
       const root = document.getElementById('author-root');

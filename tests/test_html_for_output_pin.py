@@ -143,6 +143,19 @@ PIN UPDATES:
     pose (09 line 30) -- the extension is a "hold at end" segment,
     safe + DCC-standard. All 6 fixtures shifted by the same +2091
     byte delta in lockstep; pins re-pinned.
+  * 2026-05-21 (Phase 11A Issue 4): interp popover now applies to
+    multi-selection. The V popover wrote only to the gizmo-selected
+    kf; a box-select of 3 kfs followed by V + click was a no-op
+    for kfs 2 and 3. Fix in ``17_editor_gizmo``:
+    ``_gzSetInterp`` reads ``window.__editor.tlSelection`` (the
+    Phase 2D timeline selection surface) and when it has >=2
+    entries iterates over EVERY index, writing the chosen interp
+    to each + pushes ONE ``EditorModuleRegistry.pushUndo('interp-
+    multi')`` snapshot for the batch (R8 §4.2 anti-pattern: never
+    per-target). Also ``_gzOpenPopover`` now opens when EITHER a
+    gizmo target OR a multi-selection >= 2 exists (V on a box-
+    select was a silent no-op before). All 6 fixtures shifted by
+    the same +9027 byte delta in lockstep; pins re-pinned.
   * 2026-05-21 (Phase 11A Issue 7): Save button visible feedback.
     In http save mode the POST was silent (user clicked Save, no
     visible response, no idea if it succeeded). The cli mode at
@@ -191,42 +204,44 @@ from splatpipe.viewers.spark.template import html_for
 # then re-pinned 2026-05-21 (Phase 11A Issue 6: total_duration_s now
 # lifts player + timeline duration past last kf; +2091 in lockstep),
 # then re-pinned 2026-05-21 (Phase 11A Issue 7: Save button visible
-# feedback -- Saving.../OK Saved/Save failed states; +5389 in lockstep).
+# feedback -- Saving.../OK Saved/Save failed states; +5389 in lockstep),
+# then re-pinned 2026-05-21 (Phase 11A Issue 4: interp popover applies
+# to multi-selection from the bottom timeline; +9027 in lockstep).
 CORPUS: list[tuple[str, tuple, dict, int, str]] = [
     (
         "harness_defaults",
         ("HarnessScene",),
         {},
-        722206,
-        "364758ce44b245d3c94f302c8b27e0484de1959c059e95ca15f1a7ee8632e020",
+        725844,
+        "0af9b5d99778343b56dfcdc324a34418c6f4ef9900731d5817a25af5ba2238b9",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        722178,
-        "5bf846db74b88eb697866193fa1102236415a22fd708e3ba000255b7f62151c0",
+        725816,
+        "2ee3b119be725560efa67bb11d61a6e3bdead6a5f8cee9fca96fdd3e7ee1a81d",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        722173,
-        "fefb14fb71ddf77aa85d0f32810698d74f00075b5c58e5c518efca395824ff0a",
+        725811,
+        "3465a7639fbf31e84e0287838153a1e5cfc137dbfb6d9921308d10b2f2bfec71",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        722152,
-        "1ee7b827a5c93ef253f44e13f32d6bceb6be6200114ef0056028fff967916d30",
+        725790,
+        "2093af4a275b15e3c12c90bd28976f897faef67ac5461cd4a92549d0f5bacb83",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        722217,
-        "851e4c3897cfa99c2a5f0fe5471eb8569908004238a5891cbb89754918bb6d70",
+        725855,
+        "4edd2176564c84558899330fc8716ac080649f9455ffad240ec0ef23f5503ee3",
     ),
     (
         "share_card",
@@ -236,8 +251,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        722076,
-        "e67c89bd26c7beaf261d7136b5d83ef4ddb06d9f8ac94b7d0122775e4124e779",
+        725714,
+        "5aa8df779105099a621cb03cfb9223c2fb653600b8bf776d7f32e558dfc3921e",
     ),
 ]
 
