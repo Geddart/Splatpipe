@@ -43,6 +43,19 @@ THREE_VERSION = "0.180.0"
 # Self-hosted, version-pinned path; never float and never reuse the path
 # (Bunny edge-cache). Bump -rcfN whenever the fork changes.
 SPARK_FORK_URL = "https://splatpipe-cdn.b-cdn.net/_sparkfork-rcf2/spark.module.min.js"
+# Typeface JSON for the real extruded 3D titles (TitlesModule, 15g). The
+# Spark viewer renders each cfg.titles3d[i] as a TextGeometry mesh (lit by a
+# fake-light rig, depth-composited, foreshortening with the camera) instead
+# of a flat CSS2D billboard. FontLoader needs a three.js typeface JSON; we
+# pin the three examples' helvetiker_bold (bolder strokes read better as
+# extruded glyphs) on the SAME jsdelivr host as `three` / `three/addons/`,
+# at the EXACT @@THREE_VERSION@@ so it can never drift from the importmapped
+# three. Overridable via the @@FONT_URL@@ slot if a self-hosted typeface is
+# ever preferred.
+FONT_URL = (
+    f"https://cdn.jsdelivr.net/npm/three@{THREE_VERSION}"
+    "/examples/fonts/helvetiker_bold.typeface.json"
+)
 
 
 _PARTS_DIR = Path(__file__).parent / "template_parts"
@@ -180,6 +193,7 @@ def html_for(
             "SPARK_VERSION": SPARK_VERSION,
             "THREE_VERSION": THREE_VERSION,
             "SPARK_FORK_URL": SPARK_FORK_URL,
+            "FONT_URL": FONT_URL,
             "PRIMARY_ASSET": primary_asset,
             "PAGED_JSON": json.dumps(bool(paged)),
             "SAVE_MODE_JSON": json.dumps(save_mode),

@@ -461,6 +461,27 @@ PIN UPDATES:
     the request count, so zero streaming risk. All 6 fixtures shifted by
     the same +7886 code points in lockstep -- additive only (isolated to
     the edited fragments). Pins re-pinned to the new baseline.
+  * 2026-05-21 (R2 Batch E1 #155 -- real extruded 3D text): the
+    ``15g_titles_module`` renderer is replaced. Each ``cfg.titles3d[i]``
+    is now a REAL ``TextGeometry`` mesh (bevelled glyphs, real
+    extrusion depth) shaded by a fake-light rig (``AmbientLight`` +
+    ``DirectionalLight`` added ONCE to ``scene``) and added to the same
+    ``scene`` Spark renders into -- so the text foreshortens with the
+    camera, is lit (gradient across the bevel, not a flat fill), and
+    depth-sorts against the other depth-writing editor meshes, instead
+    of the prior flat always-on-top CSS2D ``<div>`` billboard. The font
+    is loaded ONCE (cached) via a dynamic ``import('three/addons/...')``
+    of ``FontLoader`` + ``TextGeometry`` (the trajectory fat-lines
+    async-load pattern; the typeface JSON is a new ``@@FONT_URL@@``
+    template slot pinning the three examples' helvetiker_bold at the
+    exact ``THREE_VERSION``). billboard=true faces the camera each
+    frame; billboard=false orients the mesh in world space via the
+    (finally-implemented) reserved ``quat``; fade is applied via
+    ``material.opacity``; geometry+material are disposed on rebuild.
+    ``_upgradeTitle`` now upgrades the cfg entry IN PLACE (so a drawer
+    edit persists, mirroring the WF-M annotation fix). Isolated to the
+    15g fragment: all 6 fixtures shifted by the same +9100 code points
+    in lockstep -- additive only. Pins re-pinned to the new baseline.
 """
 
 from __future__ import annotations
@@ -550,36 +571,36 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
         "harness_defaults",
         ("HarnessScene",),
         {},
-        828947,
-        "fd939ada9bb3ca46cf3181e08e4592a2a1c5b024f61cd66b9cfea529dc1b7f64",
+        838047,
+        "b487072d623f4724c91c513d1aee63ef385dbc35a8f81e42ef700cf906d63ea1",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        828919,
-        "f60daad917e8642bd8de45b5d20b0bfcd1543fff79785d50bdf5e5c9368d7b2a",
+        838019,
+        "a5244a9b8926c25ede8d9393d7fbf3f401c477db4194778e595f31d187aaff6f",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        828914,
-        "edf4cfc0f8a9da019a5edafc4c378613835319829291ab078ad9027e25e515d5",
+        838014,
+        "d4d6aacbdb407a84fb5001b0ca5d3b7c7c5c7a70f66b9e80ebb9af992d380e08",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        828893,
-        "aeabb3e57d75bff06895a4bb4aea6e5b9af56550e1353fa20291988314c613a1",
+        837993,
+        "336abf94b740be38da242573531a4d72b207c787086c31a00c2c8cd143afa83b",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        828958,
-        "3e56e2d6e2a53454797f45129693efa5ec6cf729587005d69d63e84fa1e25f11",
+        838058,
+        "9853ea0b6d9832983bd5bae3642f3d6190b3c3051ebc3cada15619d61fc114dd",
     ),
     (
         "share_card",
@@ -589,8 +610,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        828817,
-        "6391947e16d931ad2f648cf417a702c43bf663588e79e6ed4c0498cf183cfc34",
+        837917,
+        "496aaba7299983671da28b2ef90682ad6e6a6ebc14a070cb5f69cfdad77d046f",
     ),
 ]
 

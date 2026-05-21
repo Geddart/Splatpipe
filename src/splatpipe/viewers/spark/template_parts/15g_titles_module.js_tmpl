@@ -1,10 +1,24 @@
   // ============================================================
   //  TitlesModule (Phase 8 -- editor-arc-design #122 §4.7)
   // ------------------------------------------------------------
-  //  3D-world-space title labels with timeline-animatable
-  //  appearance: a billboard CSS2D label per `cfg.titles3d[i]` that
-  //  shows in EVERY mode (author/user/embed) and fades in/out
-  //  across `[t_in, t_out]` with `fade_ms` smoothstep edges.
+  //  REAL extruded 3D title text in world space (R2 Batch E1 #155):
+  //  each `cfg.titles3d[i]` is a `TextGeometry` mesh (bevelled
+  //  glyphs, real depth) shaded by a fake-light rig
+  //  (AmbientLight + DirectionalLight) and added to the SAME
+  //  THREE.Scene the splats render in. So the text FORESHORTENS with
+  //  the camera (perspective), is LIT (a gradient across the bevel,
+  //  not a flat fill), and depth-sorts against the other
+  //  depth-writing editor meshes -- everything the prior flat CSS2D
+  //  `<div>` billboard could not do. It still shows in EVERY mode
+  //  (author/user/embed) and fades in/out across `[t_in, t_out]`
+  //  with `fade_ms` smoothstep edges (now via `material.opacity`).
+  //
+  //  DEPTH CAVEAT (honest): Spark's splat pass is order-independent
+  //  transparency and does NOT reliably write depth, so a title mesh
+  //  with `depthTest:true` is NOT guaranteed to be OCCLUDED behind
+  //  dense splats -- but it still foreshortens, is lit, and sorts
+  //  against the depth-writing editor meshes. Strictly better than
+  //  CSS (which was always-on-top, never foreshortened, never lit).
   //
   //  `titles3d` has lived in `core/config_safety.PUBLIC_VIEWER_CONFIG_KEYS`
   //  + `core/config_merge.ALLOWED_PATCH_KEYS` for the whole Phase 2
@@ -42,33 +56,47 @@
   //                      section + append it, the 17b placeholder set
   //                      stays focused on the Phase 2/3/4/5/7 sections)
   //
-  //  RENDERER CHOICE -- CSS2D over CSS3D:
-  //    Spec §4.7 lists either CSS3DObject or "sprite + canvas-texture
-  //    as fallback". v1 ships the CSS2D path because:
-  //      * Billboard semantics are built into CSS2DObject (always
-  //        faces the camera); spec §4.7 (and `titles3d.billboard`
-  //        defaults to `true`) wants exactly that.
-  //      * The existing `css2d` CSS2DRenderer (from 08_input) is
-  //        ALREADY rendering each frame via `css2d.render(scene,
-  //        camera)` in 18_frame_loop -- no second renderer / no
-  //        additional rAF / no dynamic-import dance / no edit to the
-  //        contested 07_setup_three_spark fragment.
-  //      * AnnotationModule (15c) proved the pattern for dot markers;
-  //        TitlesModule reuses the same proven pipeline.
-  //    `billboard:false` (a flat 3D-rotated CSS3DObject per `quat`) is
-  //    documented as a future extension; for v1 the editor only
-  //    surfaces `billboard:true`.
+  //  RENDERER CHOICE -- TextGeometry mesh (real 3D text):
+  //    The user asked for "real 3D text in 3D space, with fake light"
+  //    (#155). So instead of a CSS2D `<div>` billboard we build a
+  //    `TextGeometry` mesh with `MeshStandardMaterial` and add it to
+  //    the ONE `scene` Spark renders into. Justification:
+  //      * `renderer.render(scene, camera)` (18_frame_loop) is one
+  //        WebGL pass; the SparkRenderer + SplatMesh are scene.add()-ed.
+  //        Any THREE mesh added to `scene` renders in the SAME pass --
+  //        proof: the gizmo (MeshBasicMaterial) + trajectory frusta are
+  //        THREE meshes in `scene` already.
+  //      * `TextGeometry` + `FontLoader` import from the EXISTING
+  //        `three/addons/` importmap entry (04_js_prologue) -- no
+  //        importmap change, no edit to the contested 07/04 fragments.
+  //        The font is loaded ONCE (cached) via the async addon-load
+  //        pattern the trajectory fat-lines loader (15) already uses.
+  //      * There are NO lights in the template + splats are pre-lit, so
+  //        adding an AmbientLight + DirectionalLight is safe (it ONLY
+  //        affects the StandardMaterial text mesh -- the splat shader
+  //        ignores scene lights).
+  //    `billboard:true` (default): the mesh quaternion is copied from
+  //    the camera each frame (faces camera, still foreshortens via
+  //    perspective). `billboard:false`: the mesh is oriented by the
+  //    title's `quat` in world space -- this FINALLY implements the
+  //    previously-reserved `quat` field (the old CSS2D path skipped it).
   //
   //  TITLE SCHEMA (mirrors `core/scene_cuts.py` docstring -- Phase 6
   //  scope, formalised in the spec §4.7 + §3.X.titles3d):
   //    {
   //      id?:        string  (auto-generated `t3d_<hex>` if missing)
   //      text:       string  (display copy; textContent -- never innerHTML)
-  //      pos:        [x, y, z] world position (THREE units)
-  //      quat?:      [x, y, z, w] rotation (RESERVED -- v1 ignores when
-  //                          billboard=true; non-billboard is future)
-  //      billboard:  boolean (default true; v1 supports true only)
-  //      size:       number  (font-size in pixels; default 24)
+  //      pos:        [x, y, z] world position (THREE units; the text is
+  //                          recentred on its bounding box so pos is the
+  //                          GLYPH CENTRE)
+  //      quat?:      [x, y, z, w] world rotation -- APPLIED when
+  //                          billboard=false (the mesh orients in world
+  //                          space); ignored when billboard=true (the
+  //                          mesh tracks the camera each frame)
+  //      billboard:  boolean (default true)
+  //      size:       number  (legacy px scale 8..96; mapped to WORLD
+  //                          units for TextGeometry via _worldSize();
+  //                          default 24 -> ~0.6 world units)
   //      color:      string  (CSS color; default '#fff')
   //      t_in:       number  (timeline-visible window start, seconds; 0)
   //      t_out:      number  (timeline-visible window end, seconds; 999)
@@ -88,12 +116,22 @@
   //    { titlesGet, titlesModuleDirty, titlesCount, titlesIds,
   //      titlesGetById, titlesObj3DById, titlesElById, titlesIsVisible,
   //      titlesForceTick, titlesLane, titlesSectionEl, titlesAddAt,
-  //      titlesDelete, titlesRender, _upgradeTitle, _timelineOpacity,
-  //      _TITLE_DEFAULTS }
+  //      titlesDelete, titlesRender, titlesFontReady, titlesMeshById,
+  //      _upgradeTitle, _timelineOpacity, _TITLE_DEFAULTS }
+  //    `titlesObj3DById` / `titlesMeshById` BOTH return the THREE.Mesh
+  //    (TextGeometry) now -- the prior CSS2DObject is gone.
+  //    `titlesElById` is retained for harness back-compat but ALSO
+  //    returns the mesh (there is no DOM element anymore).
   // ============================================================
   (function _titlesInit() {
     if (typeof EditorModuleRegistry === 'undefined') return;
     if (typeof THREE === 'undefined') return;
+
+    // ---- Pinned typeface JSON (template slot; see template.py
+    //      FONT_URL). FontLoader needs a three.js typeface; we pin the
+    //      three examples' helvetiker_bold on the SAME jsdelivr host as
+    //      `three`, at the exact THREE_VERSION so it can never drift.
+    const FONT_URL = '@@FONT_URL@@';
 
     // ---- Live cfg + slice helpers (mirror 15a/15c -- one source of
     //      truth). The module OWNS `cfg.titles3d` once it registers;
@@ -155,11 +193,16 @@
 
     // ---- Legacy-tolerant read: a `cfg.titles3d` entry from a hand-
     //      written JSON (or a future schema-evolution shim) may be
-    //      missing some fields. Fill in the defaults at READ time so
-    //      the renderer never branches on undefined. Input is NEVER
-    //      mutated; the output is a fresh shallow copy + defaults.
+    //      missing some fields. Fill in the defaults IN PLACE + return
+    //      the SAME object (mirrors 15c's WF-M `_upgradeAnnotation`
+    //      fix): so `_titleStates[i].t3d === cfg.titles3d[i]` and a
+    //      drawer edit (text/color/size/t_in/...) mutates the live cfg
+    //      slice -> the change flips getDirtyState() AND survives a
+    //      _rebuild(). Idempotent (fills only missing keys + a missing
+    //      id). When called with a bare literal (the Node helper test)
+    //      it returns that same now-augmented literal.
     function _upgradeTitle(t) {
-      const out = Object.assign({}, t || {});
+      const out = (t && typeof t === 'object') ? t : {};
       if (typeof out.id !== 'string' || !out.id) out.id = _newTitleId();
       for (const k in TITLE_DEFAULTS) {
         if (!Object.prototype.hasOwnProperty.call(out, k) ||
@@ -217,53 +260,172 @@
       return Math.max(0, Math.min(1, rise - fall));
     }
 
-    // ---- Per-title render-state record. One per upgraded entry.
-    //      `obj3d` is the CSS2DObject parented under the THREE.Scene
-    //      from 07_setup_three_spark (which the existing
-    //      `css2d.render(scene, camera)` call in 18_frame_loop
-    //      auto-renders each frame -- no second renderer, no second
-    //      DOM container, no second rAF).
-    const _titleStates = [];   // [{t3d, el, obj3d, lastOpacity}]
+    // ---- Per-title render-state record. One per built entry.
+    //      `mesh` is the TextGeometry THREE.Mesh added to the scene
+    //      (07_setup_three_spark IIFE-scope `scene`) so the existing
+    //      `renderer.render(scene, camera)` in 18_frame_loop draws it
+    //      in the same WebGL pass as the splats -- no second renderer,
+    //      no DOM, no extra rAF. `el` aliases `mesh` purely for harness
+    //      back-compat (there is no DOM element anymore).
+    const _titleStates = [];   // [{t3d, mesh, el, lastOpacity}]
 
-    // ---- Build a single label DOM element. Style is inline (small
-    //      module-local surface; no new CSS region). textContent is
-    //      assigned (NEVER innerHTML) so a hand-authored
-    //      `cfg.titles3d[i].text` cannot inject markup.
-    function _buildTitleEl(t3d) {
-      const el = document.createElement('div');
-      el.className = 'spcp-title3d';
-      el.dataset.titleId = t3d.id;
-      el.textContent = (t3d.text || '').toString();
-      const sz = (typeof t3d.size === 'number' && t3d.size > 0)
-        ? t3d.size : 24;
-      const col = (typeof t3d.color === 'string' && t3d.color)
-        ? t3d.color : '#ffffff';
-      el.style.cssText =
-        'color:' + col + ';font-size:' + sz + 'px;' +
-        'font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;' +
-        'font-weight:600;letter-spacing:0.02em;' +
-        'text-shadow:0 1px 3px rgba(0,0,0,0.85),0 0 8px rgba(0,0,0,0.55);' +
-        'white-space:nowrap;pointer-events:none;user-select:none;' +
-        'opacity:1;transition:opacity 80ms linear;';
-      return el;
+    // ---- Async font load (ONE FontLoader, cached). Mirrors the
+    //      trajectory fat-lines loader (15_editor_trajectory): a
+    //      dynamic import of the existing three/addons/ mapping, then
+    //      ONE rebuild once the font + Font class resolve. Titles
+    //      added before the font lands are queued by the cfg slice +
+    //      built on resolve (every _buildFromCfg re-reads the live
+    //      cfg, so a rebuild-on-resolve materialises them all).
+    let _font = null;          // parsed THREE Font instance
+    let _fontTried = false;
+    let _fontPromise = null;
+    let _TextGeometry = null;  // resolved addon ctor
+    function _ensureFont() {
+      if (_fontTried) return Promise.resolve(_font);
+      if (_fontPromise) return _fontPromise;
+      _fontPromise = Promise.all([
+        import('three/addons/loaders/FontLoader.js'),
+        import('three/addons/geometries/TextGeometry.js'),
+      ]).then((mods) => {
+        const pick = (m, n) => (m && (m[n] ||
+          (m.default && m.default[n]) || m.default)) || null;
+        const FontLoaderCtor = pick(mods[0], 'FontLoader');
+        _TextGeometry = pick(mods[1], 'TextGeometry');
+        if (!FontLoaderCtor || !_TextGeometry) {
+          _fontTried = true; _font = null; return null;
+        }
+        return new Promise((resolve) => {
+          try {
+            new FontLoaderCtor().load(
+              FONT_URL,
+              (font) => {
+                _font = font; _fontTried = true;
+                // Rebuild so any already-requested titles materialise
+                // now that the font + TextGeometry are available.
+                try { _rebuild(); } catch (e) {}
+                resolve(_font);
+              },
+              undefined,
+              (err) => {
+                console.warn('[Splatpipe] title font load failed', err);
+                _fontTried = true; _font = null; resolve(null);
+              },
+            );
+          } catch (e) {
+            _fontTried = true; _font = null; resolve(null);
+          }
+        });
+      }).catch((e) => {
+        console.warn('[Splatpipe] title font import failed', e);
+        _fontTried = true; _font = null; return null;
+      });
+      return _fontPromise;
     }
 
-    // ---- Tear down a single state record. The CSS2DObject's
-    //      DOM element is removed via `removeFromParent` (which
-    //      detaches the DOM element via CSS2DRenderer's internal
-    //      tracking) + a safety belt that walks parentNode for the
-    //      DOM element itself in case the renderer's tracking is
-    //      stale.
+    // ---- Fake-light rig. Added to `scene` ONCE (idempotent across
+    //      re-mounts / multiple titles) so the StandardMaterial text
+    //      meshes are shaded with a soft ambient fill + a directional
+    //      key from above-front (a gradient across the bevel, not a
+    //      flat fill). Splats are pre-lit and the splat shader ignores
+    //      scene lights, so this is invisible to the splats.
+    let _lightsAdded = false;
+    function _ensureLights() {
+      if (_lightsAdded) return;
+      if (typeof scene === 'undefined' || !scene) return;
+      try {
+        const amb = new THREE.AmbientLight(0xffffff, 0.55);
+        amb.name = 'spcp-title-ambient';
+        const dir = new THREE.DirectionalLight(0xffffff, 0.9);
+        dir.name = 'spcp-title-key';
+        dir.position.set(0.6, 1.0, 0.8);   // above-front world dir
+        scene.add(amb);
+        scene.add(dir);
+        _lightsAdded = true;
+      } catch (e) {}
+    }
+
+    // ---- Map the legacy 8..96 px `size` slider to WORLD units for
+    //      TextGeometry. 24 (the default) -> ~0.6 world units, a
+    //      readable height at the deployed scenes' ~few-metre scale;
+    //      the author tunes it live with the same slider. Linear map
+    //      keeps the slider monotonic + intuitive.
+    function _worldSize(sz) {
+      const px = (typeof sz === 'number' && sz > 0) ? sz : 24;
+      return Math.max(0.05, px * 0.025);   // 8px->0.2 .. 96px->2.4
+    }
+
+    // ---- Build one TextGeometry mesh for a title. Returns null when
+    //      the font is not yet loaded (caller queues via the cfg
+    //      slice; _ensureFont's rebuild-on-resolve materialises it).
+    //      The geometry is recentred on its bounding box so `pos` is
+    //      the glyph centre (matches the +Add-at-orbit-target intent).
+    function _buildMesh(t3d) {
+      if (!_font || !_TextGeometry) return null;
+      const txt = (t3d.text || '').toString();
+      if (!txt) return null;
+      let mesh = null;
+      try {
+        const ws = _worldSize(t3d.size);
+        const geo = new _TextGeometry(txt, {
+          font: _font,
+          size: ws,
+          height: ws * 0.22,        // extrusion depth (real 3D)
+          depth: ws * 0.22,         // three r150+ renamed height->depth
+          curveSegments: 4,
+          bevelEnabled: true,
+          bevelThickness: ws * 0.03,
+          bevelSize: ws * 0.02,
+          bevelSegments: 2,
+        });
+        geo.computeBoundingBox();
+        const bb = geo.boundingBox;
+        if (bb) {
+          const cx = -0.5 * (bb.max.x + bb.min.x);
+          const cy = -0.5 * (bb.max.y + bb.min.y);
+          const cz = -0.5 * (bb.max.z + bb.min.z);
+          geo.translate(cx, cy, cz);   // recenter -> pos is the centre
+        }
+        const col = (typeof t3d.color === 'string' && t3d.color)
+          ? t3d.color : '#ffffff';
+        const mat = new THREE.MeshStandardMaterial({
+          color: new THREE.Color(col),
+          metalness: 0.0,
+          roughness: 0.5,
+          transparent: true,
+          opacity: 1,
+        });
+        mesh = new THREE.Mesh(geo, mat);
+        mesh.name = 'spcp-title3d';
+        if (Array.isArray(t3d.pos) && t3d.pos.length >= 3) {
+          mesh.position.fromArray(t3d.pos);
+        }
+        // billboard=false orients the mesh in world space via the
+        // (previously-reserved) quat; billboard=true is re-oriented
+        // each frame in _titlesTick to face the camera.
+        if (t3d.billboard === false && Array.isArray(t3d.quat) &&
+            t3d.quat.length >= 4) {
+          mesh.quaternion.fromArray(t3d.quat);
+        }
+        mesh.renderOrder = 10;   // draw after the splat pass
+      } catch (e) { mesh = null; }
+      return mesh;
+    }
+
+    // ---- Tear down a single state record: dispose the geometry +
+    //      material (GPU resources) and remove the mesh from the
+    //      scene so a rebuild never leaks meshes/geos.
     function _disposeState(s) {
       if (!s) return;
       try {
-        if (s.obj3d && s.obj3d.parent) {
-          s.obj3d.parent.remove(s.obj3d);
-        }
-      } catch (e) {}
-      try {
-        if (s.el && s.el.parentNode) {
-          s.el.parentNode.removeChild(s.el);
+        const m = s.mesh;
+        if (m) {
+          if (m.parent) m.parent.remove(m);
+          if (m.geometry && typeof m.geometry.dispose === 'function') {
+            m.geometry.dispose();
+          }
+          if (m.material && typeof m.material.dispose === 'function') {
+            m.material.dispose();
+          }
         }
       } catch (e) {}
     }
@@ -273,51 +435,59 @@
       }
     }
 
-    // ---- Build all titles from the live cfg. Reuses CSS2DObject
-    //      (imported in 04_js_prologue) for the billboard. Reuses
-    //      the `scene` reference (IIFE-scope const in 07_setup_three_spark).
+    // ---- Build all titles from the live cfg. Each entry becomes a
+    //      TextGeometry mesh added to `scene` (the IIFE-scope const in
+    //      07_setup_three_spark). The light rig is ensured first. If
+    //      the font is not loaded yet, the build is deferred: a state
+    //      record with mesh:null is pushed (so count/dirty tracking is
+    //      consistent) and _ensureFont()'s rebuild-on-resolve replaces
+    //      it with a real mesh.
     function _buildFromCfg() {
+      _ensureLights();
+      _ensureFont();
       const raw = _slice();
       for (const r of raw) {
         const t3d = _upgradeTitle(r);
-        // v1: only billboard=true is supported. A non-billboard
-        // CSS3D path is deferred (the spec lists it as a future
-        // extension; a single-billboard scene is the 8-deployed-
-        // scenes baseline).
-        if (t3d.billboard === false) continue;
-        const el = _buildTitleEl(t3d);
-        let obj3d = null;
+        const mesh = _buildMesh(t3d);   // null until the font lands
         try {
-          obj3d = new CSS2DObject(el);
-          if (Array.isArray(t3d.pos) && t3d.pos.length >= 3) {
-            obj3d.position.fromArray(t3d.pos);
+          if (mesh && typeof scene !== 'undefined' && scene) {
+            scene.add(mesh);
           }
-          if (typeof scene !== 'undefined' && scene) scene.add(obj3d);
         } catch (e) {}
         _titleStates.push({
           t3d: t3d,
-          el: el,
-          obj3d: obj3d,
+          mesh: mesh,
+          el: mesh,        // back-compat alias (no DOM element now)
           lastOpacity: 1,
         });
       }
     }
 
-    // ---- Per-frame tick. ONE timeline-opacity lookup per title.
-    //      Outside the [t_in, t_out] window the label is fully
-    //      hidden (visibility:hidden + opacity:0) so the cinematic
-    //      "appear/disappear at keyframe" effect is exact.
+    // ---- Per-frame tick. ONE timeline-opacity lookup per title,
+    //      applied via material.opacity; a billboard title also has
+    //      its quaternion re-pointed at the camera each frame. Outside
+    //      the [t_in, t_out] window the mesh is hidden (visible=false)
+    //      so the cinematic "appear/disappear at keyframe" effect is
+    //      exact.
     function _titlesTick(_t) {
       const tNow = _playheadTime();
+      let _cam = null;
+      try { if (typeof camera !== 'undefined') _cam = camera; } catch (e) {}
       for (const s of _titleStates) {
-        if (!s.el) continue;
+        const m = s.mesh;
+        if (!m) continue;
         const opacity = _timelineOpacity(s.t3d, tNow);
         s.lastOpacity = opacity;
-        s.el.style.opacity = String(opacity);
-        if (opacity <= 0) {
-          s.el.style.visibility = 'hidden';
-        } else {
-          s.el.style.visibility = '';
+        if (m.material) {
+          m.material.opacity = opacity;
+          m.material.transparent = true;
+        }
+        m.visible = opacity > 0;
+        // billboard=true: face the camera (still foreshortens via
+        // perspective). billboard=false keeps the world-space quat set
+        // at build time.
+        if (m.visible && s.t3d.billboard !== false && _cam) {
+          m.quaternion.copy(_cam.quaternion);
         }
       }
     }
@@ -387,7 +557,8 @@
         textIn.addEventListener('change', () => {
           _pushUndo('title-text');
           t3d.text = textIn.value;
-          if (s.el) s.el.textContent = t3d.text;
+          // Text changes the glyph geometry -> rebuild the mesh.
+          _rebuild();
           _writeBack();
         });
         textIn.addEventListener('keydown', (ev) => {
@@ -422,7 +593,12 @@
         colIn.addEventListener('change', () => {
           _pushUndo('title-color');
           t3d.color = colIn.value;
-          if (s.el) s.el.style.color = t3d.color;
+          // Recolor the live material in place (no geometry rebuild).
+          try {
+            if (s.mesh && s.mesh.material) {
+              s.mesh.material.color = new THREE.Color(t3d.color);
+            }
+          } catch (e) {}
           _writeBack();
         });
         cRow.appendChild(colLbl);
@@ -448,7 +624,8 @@
         });
         szIn.addEventListener('change', () => {
           t3d.size = parseInt(szIn.value, 10) || 24;
-          if (s.el) s.el.style.fontSize = t3d.size + 'px';
+          // Size maps to the TextGeometry world size -> rebuild.
+          _rebuild();
           _writeBack();
         });
         cRow.appendChild(szLbl);
@@ -760,18 +937,28 @@
           const s = _titleStates.find(s => s.t3d.id === id);
           return s ? s.t3d : null;
         },
+        // Both Obj3DById + MeshById return the THREE.Mesh (TextGeometry)
+        // now -- the prior CSS2DObject is gone. ElById is retained for
+        // harness back-compat and ALSO returns the mesh (no DOM element).
         titlesObj3DById(id) {
           const s = _titleStates.find(s => s.t3d.id === id);
-          return s ? s.obj3d : null;
+          return s ? s.mesh : null;
+        },
+        titlesMeshById(id) {
+          const s = _titleStates.find(s => s.t3d.id === id);
+          return s ? s.mesh : null;
         },
         titlesElById(id) {
           const s = _titleStates.find(s => s.t3d.id === id);
-          return s ? s.el : null;
+          return s ? s.mesh : null;
         },
         titlesIsVisible(id) {
           const s = _titleStates.find(s => s.t3d.id === id);
           return s ? (s.lastOpacity > 0) : false;
         },
+        // Resolves to the loaded THREE Font (or null on failure) so a
+        // harness can await the async font load before asserting meshes.
+        titlesFontReady() { return _ensureFont(); },
         titlesForceTick(t) { _titlesTick(t || 0); },
         titlesLane() { return titlesModule.timelineLane; },
         titlesSectionEl() { return _ssSection; },

@@ -79,12 +79,28 @@ _TITLES_MARKERS = (
     "function _titlesTick(",
     "function _timelineOpacity(",
     "function _smoothstep(",
-    # CSS2DObject reuse (the existing 04_js_prologue import); NO
-    # dynamic import + NO second CSS2DRenderer -- the AnnotationModule
-    # pattern is reused so the 08_input `css2d.render(scene, camera)`
-    # call in 18_frame_loop also handles titles.
-    "new CSS2DObject(el)",
-    "scene.add(obj3d)",
+    # REAL extruded 3D text (R2 Batch E1 #155): a TextGeometry mesh +
+    # MeshStandardMaterial added to the SAME `scene` Spark renders into
+    # (renderer.render(scene, camera) in 18_frame_loop draws it in the
+    # same WebGL pass). Font loaded once via the three/addons/ importmap
+    # (FontLoader + TextGeometry dynamic import, the trajectory fat-lines
+    # async-load pattern). Fake-light rig (AmbientLight + DirectionalLight)
+    # added once. NO CSS2DObject, NO DOM element.
+    # FONT_URL is a @@FONT_URL@@ template slot in the source -> the
+    # rendered HTML carries the substituted pinned typeface URL.
+    "const FONT_URL = 'https://cdn.jsdelivr.net/npm/three@",
+    "/examples/fonts/helvetiker_bold.typeface.json';",
+    "import('three/addons/loaders/FontLoader.js')",
+    "import('three/addons/geometries/TextGeometry.js')",
+    "new _TextGeometry(txt, {",
+    "new THREE.MeshStandardMaterial({",
+    "new THREE.AmbientLight(0xffffff, 0.55)",
+    "new THREE.DirectionalLight(0xffffff, 0.9)",
+    "function _ensureFont()",
+    "function _ensureLights()",
+    "function _buildMesh(t3d)",
+    "function _worldSize(sz)",
+    "scene.add(mesh)",
     # OverlayScene tick registration (all-modes)
     "id: 'titles3d-tick',",
     # Timeline lane contributes thin white bars (spec §4.10)
@@ -287,24 +303,36 @@ def test_titles_module_creates_drawer_section_not_in_placeholder_order():
     assert "'spcp-titles3d-list'" in body
 
 
-def test_titles_module_v1_supports_billboard_true_only():
-    """Per the prompt + spec §4.7: v1 SUPPORTS BILLBOARD=TRUE ONLY.
-    Non-billboard CSS3D rendering is documented as a future
-    extension. The renderer code MUST skip an entry with
-    `billboard === false` so a hand-authored CSS3D-expecting entry
-    does NOT silently render as a CSS2D billboard (which would be a
-    UI lie). The `_buildFromCfg` function carries the explicit
-    `if (t3d.billboard === false) continue;` guard."""
+def test_titles_module_billboard_modes_both_supported():
+    """R2 Batch E1 (#155): the real-3D-text renderer supports BOTH
+    billboard modes. billboard=true (the default) re-orients the mesh
+    to face the camera each frame in `_titlesTick`
+    (`m.quaternion.copy(_cam.quaternion)`); billboard=false orients the
+    mesh in WORLD space via the (previously-reserved) `quat` at build
+    time in `_buildMesh` (`mesh.quaternion.fromArray(t3d.quat)`). Both
+    still foreshorten via perspective. The default stays billboard=true
+    in TITLE_DEFAULTS."""
     html = html_for("HarnessScene")
     titles_top = html.index("//  TitlesModule (Phase 8")
-    # Find the _buildFromCfg function inside the module.
-    bf_i = html.index("function _buildFromCfg() {", titles_top)
-    bf_end = html.index("\n    }\n", bf_i) + len("\n    }\n")
-    bf_block = html[bf_i:bf_end]
-    # The explicit skip-when-billboard-false guard
-    assert "billboard === false" in bf_block
-    # And the spec billboard:true default lives in TITLE_DEFAULTS.
-    assert "billboard: true," in html[titles_top:titles_top + 8000], (
+    # billboard=false world-space quat orientation in _buildMesh.
+    bm_i = html.index("function _buildMesh(t3d) {", titles_top)
+    bm_end = html.index("\n    }\n", bm_i) + len("\n    }\n")
+    bm_block = html[bm_i:bm_end]
+    assert "t3d.billboard === false" in bm_block
+    assert "mesh.quaternion.fromArray(t3d.quat)" in bm_block, (
+        "billboard=false must orient the mesh in world space via the "
+        "previously-reserved quat field"
+    )
+    # billboard=true camera-facing re-orientation in _titlesTick.
+    tt_i = html.index("function _titlesTick(_t) {", titles_top)
+    tt_end = html.index("\n    }\n", tt_i) + len("\n    }\n")
+    tt_block = html[tt_i:tt_end]
+    assert "s.t3d.billboard !== false" in tt_block
+    assert "m.quaternion.copy(_cam.quaternion)" in tt_block, (
+        "billboard=true must re-point the mesh at the camera each frame"
+    )
+    # The default stays billboard=true in TITLE_DEFAULTS.
+    assert "billboard: true," in html[titles_top:titles_top + 12000], (
         "TITLE_DEFAULTS.billboard must default to true per spec §4.7 "
         "and the schema example in scene_cuts.py"
     )
