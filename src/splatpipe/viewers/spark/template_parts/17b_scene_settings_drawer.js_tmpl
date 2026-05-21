@@ -255,18 +255,39 @@
     //      registers AND it has a renderSceneSettings(parentEl)
     //      hook, append its section into the drawer body. The
     //      hook is OPTIONAL per the contract -- modules without
-    //      scene-level controls skip it. v1 has zero such modules
-    //      (the placeholder sections above stand in until Phases
-    //      3-7 land); this listener is wired now so the contract
-    //      is honoured when the first module ships its hook.
+    //      scene-level controls skip it.
+    function _ssRenderModuleSection(mod) {
+      if (!mod || typeof mod.renderSceneSettings !== 'function') return;
+      try { mod.renderSceneSettings(_ssBody); }
+      catch (e) {}
+    }
     try {
-      EditorModuleRegistry.on('register', (mod) => {
-        if (!mod || typeof mod.renderSceneSettings !== 'function') {
-          return;
+      EditorModuleRegistry.on('register', _ssRenderModuleSection);
+    } catch (e) {}
+    // UX-Phase11A Issue 9 (2026-05-21): the 'register' listener above
+    // only catches modules that register AFTER this 17b IIFE runs. But
+    // EVERY editor module fragment (15a-15g) is concatenated BEFORE 17b
+    // in the bundle (lexical order 15x < 17b), so they all ALREADY
+    // registered by the time this listener is wired -- their
+    // renderSceneSettings was NEVER called. The 15b/15e/15f modules
+    // happen to work around this with their own setTimeout(_attach, 0),
+    // but 15c (Annotations), 15d (Cuts), 15g (Titles) rely SOLELY on
+    // this 17b listener -> their sections stayed as the "(Phase N) goes
+    // here" PLACEHOLDER (user-reported: "the annotations ... that's all
+    // placeholders, right?"). Fix: after wiring the listener, walk the
+    // already-registered modules ONCE and render each one's section. A
+    // module whose section was ALSO attached via its own setTimeout is
+    // idempotent (renderSceneSettings replaces/re-finds its section), so
+    // a double-call is harmless. This makes 17b the SINGLE guaranteed
+    // point that every module's drawer section gets rendered, regardless
+    // of registration order.
+    try {
+      if (typeof EditorModuleRegistry.list === 'function') {
+        const _already = EditorModuleRegistry.list();
+        for (const mod of _already) {
+          _ssRenderModuleSection(mod);
         }
-        try { mod.renderSceneSettings(_ssBody); }
-        catch (e) {}
-      });
+      }
     } catch (e) {}
 
     // ---- TEST SURFACE on window.__editor.sceneSettings. The

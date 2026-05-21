@@ -188,6 +188,30 @@ def test_intro_startview_dont_touch_contested_fragments():
             )
 
 
+def test_drawer_renders_already_registered_module_sections():
+    """Phase 11A Issue 9 fixup. The 17b Scene Settings drawer's
+    'register' listener only catches modules that register AFTER the
+    17b IIFE runs -- but EVERY editor module fragment (15a-15i)
+    concatenates BEFORE 17b in the bundle, so they all already
+    registered by the time the listener is wired. Modules that rely
+    SOLELY on that listener (15c Annotations / 15d Cuts / 15g Titles --
+    no own setTimeout self-attach) left their drawer section as the
+    "(Phase N) goes here" placeholder. The fix: after wiring the
+    listener, 17b walks ``EditorModuleRegistry.list()`` once + calls
+    each module's ``renderSceneSettings``. This test pins the walk +
+    its helper in the rendered HTML."""
+    html = html_for("HarnessScene")
+    # The shared helper used by BOTH the listener and the catch-up walk.
+    assert "function _ssRenderModuleSection(mod) {" in html, (
+        "17b must factor the render call into _ssRenderModuleSection"
+    )
+    # The catch-up walk over already-registered modules.
+    assert "EditorModuleRegistry.list === 'function'" in html
+    assert "const _already = EditorModuleRegistry.list();" in html
+    assert "for (const mod of _already) {" in html
+    assert "_ssRenderModuleSection(mod);" in html
+
+
 def test_startview_uses_openstartviewcard_helper_from_frame_loop():
     """The StartViewModule's save button delegates to
     window.__editor.openStartViewCard -- the helper 18_frame_loop

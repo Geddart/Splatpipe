@@ -143,6 +143,19 @@ PIN UPDATES:
     pose (09 line 30) -- the extension is a "hold at end" segment,
     safe + DCC-standard. All 6 fixtures shifted by the same +2091
     byte delta in lockstep; pins re-pinned.
+  * 2026-05-21 (Phase 11A Issue 9 fixup): 17b now renders the drawer
+    section for EVERY already-registered module, not just modules that
+    register AFTER it. The 'register' listener only caught
+    post-17b registrations, but every 15x module concatenates BEFORE
+    17b -> 15c (Annotations) / 15d (Cuts) / 15g (Titles), which rely
+    SOLELY on that listener (no own setTimeout self-attach), left their
+    drawer sections as the "(Phase N) goes here" placeholder
+    (user-reported: "the annotations ... that's all placeholders,
+    right?"). Fix: after wiring the listener, ``17b`` walks
+    ``EditorModuleRegistry.list()`` once + calls each module's
+    ``renderSceneSettings`` (idempotent for the setTimeout-based
+    modules). All 6 fixtures shifted by the same +1214 byte delta in
+    lockstep; pins re-pinned.
   * 2026-05-21 (Phase 11A Issue 3): EditHistory ``_restore`` no longer
     swaps out aliased array references. The undo/redo restore did a
     plain ``Object.assign(cfg, clone)`` which set ``cfg.camera_paths``
@@ -274,42 +287,45 @@ from splatpipe.viewers.spark.template import html_for
 # window.__spTransport surface; +6054 in lockstep), then re-pinned
 # 2026-05-21 (Phase 11A Issue 3: EditHistory _restore mutates the
 # aliased camera_paths array in place + 10_camera_select rebuilds the
-# dropdown on undo/redo so the dropdown survives undo; +5180).
+# dropdown on undo/redo so the dropdown survives undo; +5180), then
+# re-pinned 2026-05-21 (Phase 11A Issue 9 fixup: 17b renders sections
+# for already-registered modules so Annotations/Cuts/Titles populate;
+# +1214 in lockstep).
 CORPUS: list[tuple[str, tuple, dict, int, str]] = [
     (
         "harness_defaults",
         ("HarnessScene",),
         {},
-        758082,
-        "f2610710b389b85486647710bcf732709ddcda94d7a703f84fc70ae1458b825b",
+        759296,
+        "2b048ba26b2cf8c22ede107cd68febf6aa1539cd0574cea2ad8b28db360d0f11",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        758054,
-        "d620d1c6c05be83737bd7677e36349f6a653c05af77b220b3eea9e294cde6cd3",
+        759268,
+        "e2ed7198d3c8be5b87f6f9e06241078e531da0bb76fc1be99aaf4b3d8b641280",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        758049,
-        "b99d2fea58f9c36df64d466b3d3936fc3aaf97cea12162ace29496ccb054e9b3",
+        759263,
+        "4bcde77b7b1ea6cfb7665ebcd937ef9f0a446fb29883ebb24739c82f4b4db4ff",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        758028,
-        "95a795569e639da7c5b333f97386d71cfd38eddcc840a750b78f5ae464f85747",
+        759242,
+        "c739c988eb9eb61b777c5941b3158048ffd7b7d55f1402f97247f5389c002393",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        758093,
-        "add260271c120432a5a65a9c57b38fcc9c9861ca0b139d3663f9e04a7a5877e7",
+        759307,
+        "fa0f0f4a0f5d1f92ed05442ea8e42c9f0a307b3dcf9c8a19bba09814ebbc1ea2",
     ),
     (
         "share_card",
@@ -319,8 +335,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        757952,
-        "617a291656f9249e8894b3d5fd7b6c900543e717ab4c08aaeab0872b00277517",
+        759166,
+        "63a031dfbe52d703e7428380e13ddd45a730d3b69310d12aafc1c44dc0faf549",
     ),
 ]
 
