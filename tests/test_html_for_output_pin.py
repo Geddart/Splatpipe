@@ -313,6 +313,20 @@ PIN UPDATES:
     steps forward symmetrically; the ring cap is respected for the
     materialised head too. All 6 fixtures shifted by the same +2309 code
     points in lockstep; pins re-pinned.
+  * 2026-05-21 (Phase 11G WF-H3 #144): visible Undo/Redo affordance + a
+    drawer-friendly undo hotkey. ``16_editor_timeline`` adds clickable
+    ``↶`` Undo + ``↷`` Redo buttons to the always-reachable transport row
+    (delegating to ``EditorModuleRegistry.undo/redo``, dimmed/disabled per
+    ``canUndo()``/``canRedo()`` -- synced every frame off ``_tlSyncPlayhead``
+    + on every ``history:*`` event). ``04_js_prologue`` adds a NARROWER
+    ``_editorUndoHotkeyBlocked()`` guard (blocks only real text-entry focus:
+    INPUT text/number/etc, TEXTAREA, contenteditable -- NOT SELECT/range/
+    checkbox/file/buttons, NOT [role=dialog]/[role=menu]); ``17a``'s
+    Ctrl+Z/Y handler now uses it instead of the broad ``_editorHotkeyBlocked()``
+    so Ctrl+Z works inside the Scene Settings [role=dialog] drawer. The
+    destructive single-key hotkeys (T/R/X/K/V/B) keep the broad guard so H6
+    stays intact. All 6 fixtures shifted by the same +5959 code points in
+    lockstep; pins re-pinned.
 """
 
 from __future__ import annotations
@@ -394,36 +408,36 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
         "harness_defaults",
         ("HarnessScene",),
         {},
-        788973,
-        "11a5ad1bcd2005cb74bdefabdf033b802ddfe71190fb385c6716d4f7d4cc3fbd",
+        794932,
+        "03b65cd6dd6ed333b1488424dc98e45781d3d5b2457f0948d7ba5fa01ae33312",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        788945,
-        "5354ec5c0e9daf8b5deddd47998b928eaad5692ed230a537e38e057b50e560fc",
+        794904,
+        "b374e1f7d09608eef807d8ed6b6143bb98f3ee2b61068d14b84016b4afa3397e",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        788940,
-        "047630ed90293e01f3fa6b178c1b7e8863d3a27177e9cfbc7d37ee38fd0f8ef3",
+        794899,
+        "671cae613ad1b7f2672f281287c0541b0063780942ffc7b374c2c538e72913c1",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        788919,
-        "b99e95d186940c49458049337c402bb57cc46e25f0928fa15e6fa94c17bd2991",
+        794878,
+        "f7753190d7c0b588bc7957d88423f40b470c726478a1923ad97ee370516b317d",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        788984,
-        "f2666bc5bd3a7ee7e98c2a3f7f7f771932e756c87ea94a8ad6906ceca199f46e",
+        794943,
+        "83e197e204c24384cdcd0018f6d4ecae1d04d058202405aa1b99db3cb73ce4b4",
     ),
     (
         "share_card",
@@ -433,8 +447,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        788843,
-        "7afbf05c5f2aeb46ea3077f2810a41ff490c9df892cfb3b41feb8b7b84466984",
+        794802,
+        "b7138e86dd3c83ad41b24b11dc7f13e66d1690c2c5d5969d5ac62390a6a36b68",
     ),
 ]
 

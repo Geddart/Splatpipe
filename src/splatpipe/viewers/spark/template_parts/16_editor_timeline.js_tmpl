@@ -181,7 +181,21 @@
     const _tlPlay = _tlBtn('\u25B6', 'Play / Pause');
     const _tlLoop = _tlBtn('\u21BB', 'Loop');
     const _tlFpsBtn = _tlBtn('fps', 'Toggle fps grid (relabels ruler only)');
+    // UX-Phase11G WF-H3 (#144): VISIBLE Undo / Redo affordance. The editor
+    // had Ctrl+Z/Y wired (17a) but NO clickable button, so a user who never
+    // tried the hotkey could not undo at all (the WF-H3 "undo is dead in the
+    // drawer + no button" report). The transport row is the always-reachable
+    // author surface (it is built unconditionally in author mode + never
+    // hidden behind the closed Scene Settings drawer), so the buttons live
+    // here next to Play. They delegate to EditorModuleRegistry.undo/redo (the
+    // ONE coordinator) and their disabled state follows canUndo()/canRedo()
+    // -- synced every frame by _tlSyncUndoRedo() off _tlSyncPlayhead (same
+    // per-frame path the Play glyph uses) so a programmatic edit / hotkey
+    // undo keeps the buttons accurate without a manual refresh.
+    const _tlUndo = _tlBtn('\u21B6', 'Undo (Ctrl+Z)');
+    const _tlRedo = _tlBtn('\u21B7', 'Redo (Ctrl+Y)');
     _tlBar.appendChild(_tlPlay);
+    _tlBar.appendChild(_tlUndo); _tlBar.appendChild(_tlRedo);
     _tlBar.appendChild(_tlLoop); _tlBar.appendChild(_tlFpsBtn);
 
     // ---- Phase 2C (#122 \u00A74.1.1): Prev/Next-keyframe skip + total-time
@@ -429,6 +443,38 @@
       // below _tlSyncPlayPauseIcon? -> hoisted function declaration, so
       // forward-reference is safe.
       if (typeof _tlSyncPlayPauseIcon === 'function') _tlSyncPlayPauseIcon();
+      // UX-Phase11G WF-H3: keep the Undo/Redo buttons' enabled state in sync
+      // with the EditHistory cursor every frame (a programmatic edit, a hotkey
+      // undo, or a drawer gesture all move the cursor without touching these
+      // buttons directly).
+      if (typeof _tlSyncUndoRedo === 'function') _tlSyncUndoRedo();
+    }
+
+    // UX-Phase11G WF-H3: Undo/Redo enabled state mirrors the registry's
+    // canUndo()/canRedo(). A disabled button is dimmed + non-interactive
+    // (pointer-events:none) so it reads as unavailable. Guard the registry
+    // lookups -- the surface may not exist on a non-author boot / early frame.
+    function _tlSyncUndoRedo() {
+      let cu = false, cr = false;
+      try {
+        if (typeof EditorModuleRegistry !== 'undefined') {
+          if (typeof EditorModuleRegistry.canUndo === 'function') {
+            cu = !!EditorModuleRegistry.canUndo();
+          }
+          if (typeof EditorModuleRegistry.canRedo === 'function') {
+            cr = !!EditorModuleRegistry.canRedo();
+          }
+        }
+      } catch (e) {}
+      _tlApplyBtnEnabled(_tlUndo, cu);
+      _tlApplyBtnEnabled(_tlRedo, cr);
+    }
+    function _tlApplyBtnEnabled(btn, on) {
+      if (!btn) return;
+      btn.disabled = !on;
+      btn.style.opacity = on ? '1' : '0.35';
+      btn.style.pointerEvents = on ? 'auto' : 'none';
+      btn.style.cursor = on ? 'pointer' : 'default';
     }
 
     // ---- Phase 2C (#122 §3.7): effectiveScrubRange JS mirror of the
@@ -862,6 +908,37 @@
       _tlSyncPlayPauseIcon();
       _tlSyncPlayhead();
     });
+    // UX-Phase11G WF-H3: Undo / Redo click -> the ONE registry coordinator.
+    _tlUndo.addEventListener('click', () => {
+      try {
+        if (typeof EditorModuleRegistry !== 'undefined' &&
+            typeof EditorModuleRegistry.undo === 'function') {
+          EditorModuleRegistry.undo();
+        }
+      } catch (e) {}
+      _tlSyncUndoRedo();
+    });
+    _tlRedo.addEventListener('click', () => {
+      try {
+        if (typeof EditorModuleRegistry !== 'undefined' &&
+            typeof EditorModuleRegistry.redo === 'function') {
+          EditorModuleRegistry.redo();
+        }
+      } catch (e) {}
+      _tlSyncUndoRedo();
+    });
+    // Immediate enabled-state sync (don't wait for the first frame) + react
+    // to every history mutation so the buttons flip the instant an edit /
+    // undo / redo lands (the per-frame _tlSyncPlayhead path is the backstop).
+    try {
+      if (typeof EditorModuleRegistry !== 'undefined' &&
+          typeof EditorModuleRegistry.on === 'function') {
+        EditorModuleRegistry.on('history:push', _tlSyncUndoRedo);
+        EditorModuleRegistry.on('history:undo', _tlSyncUndoRedo);
+        EditorModuleRegistry.on('history:redo', _tlSyncUndoRedo);
+      }
+    } catch (e) {}
+    _tlSyncUndoRedo();
     _tlLoop.addEventListener('click', () => {
       const p = _tlActivePath();
       if (!p) return;

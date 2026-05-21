@@ -359,13 +359,18 @@
     try {
       if (!ModeManager.is('author')) return;
     } catch (e) { return; }
-    // Don't hijack when typing into a text input / textarea (native undo)
-    // / a focused menu or dialog. UX-Phase11F H6: route through the shared
-    // _editorHotkeyBlocked() guard (04_js_prologue) -- supersets the prior
-    // INPUT/TEXTAREA/SELECT + contenteditable check AND adds
-    // [role=menu]/[role=dialog] so Ctrl+Z does not undo with the kebab
-    // menu / a Save dialog focused.
-    if (_editorHotkeyBlocked()) return;
+    // Don't hijack when typing into a real text-entry field (the browser's
+    // native text undo must win there). UX-Phase11G WF-H3 (#144): use the
+    // NARROWER _editorUndoHotkeyBlocked() guard (04_js_prologue) -- NOT the
+    // broad _editorHotkeyBlocked() the destructive single-key hotkeys use.
+    // The broad guard blocks ALL hotkeys inside a [role=dialog], but the
+    // Scene Settings drawer IS a [role=dialog], so it killed Ctrl+Z while
+    // editing there. Undo/redo is safe inside a dialog/menu (it only
+    // restores cfg) -- it must merely defer to a focused TEXT input /
+    // textarea / contenteditable. H6 stays intact: the destructive T/R/X/K/
+    // V/B hotkeys still route through the broad guard, so K/X never fire
+    // behind the kebab menu or a dialog.
+    if (_editorUndoHotkeyBlocked()) return;
     const mod = ev.metaKey || ev.ctrlKey;
     if (!mod) return;
     const k = (ev.key || '').toLowerCase();

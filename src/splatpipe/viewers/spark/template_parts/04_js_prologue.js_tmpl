@@ -63,6 +63,42 @@
     return false;
   }
 
+  // UX-Phase11G WF-H3 (#144): a NARROWER guard for the non-destructive
+  // undo/redo hotkeys (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z). The broad
+  // _editorHotkeyBlocked() above blocks ALL hotkeys while a [role=dialog]
+  // owns focus -- but the Scene Settings drawer IS a [role=dialog], so it
+  // killed Ctrl+Z while the user was editing in the drawer (the WF-H3 "undo
+  // dead in drawer" report). Undo/redo is SAFE inside a dialog: the only
+  // thing it must NOT hijack is a real TEXT-ENTRY field (INPUT text/number/
+  // search/etc, TEXTAREA, contenteditable) where the browser's NATIVE text
+  // undo must win. SELECT / range / checkbox / file / buttons carry no
+  // editable text, so Ctrl+Z there is free to drive the editor's undo.
+  // Returns true = the undo/redo hotkey MUST be ignored (a text field is
+  // focused); false = let it through (incl. inside a [role=dialog]/[role=menu]).
+  // The DESTRUCTIVE single-key hotkeys (T/R/X/K/V/B) keep using the broad
+  // _editorHotkeyBlocked() so H6 stays intact (K/X never fire behind the
+  // kebab menu or a dialog).
+  const _EDITOR_NON_TEXT_INPUT_TYPES = {
+    button: true, checkbox: true, color: true, file: true, hidden: true,
+    image: true, radio: true, range: true, reset: true, submit: true,
+  };
+  function _editorUndoHotkeyBlocked() {
+    let a;
+    try { a = document.activeElement; } catch (e) { return false; }
+    if (!a) return false;
+    if (a.isContentEditable === true) return true;
+    const tag = a.tagName;
+    if (tag === 'TEXTAREA') return true;
+    if (tag === 'INPUT') {
+      // Default <input> type is 'text'. Block every type EXCEPT the
+      // explicitly-non-text ones (so type=text/number/search/email/url/
+      // tel/password/date/... all block; range/checkbox/file/button allow).
+      const t = (a.getAttribute('type') || 'text').toLowerCase();
+      return !_EDITOR_NON_TEXT_INPUT_TYPES[t];
+    }
+    return false;
+  }
+
   // UX-Phase11F H7 (2026-05-21): cross-fragment coordinator for the modal
   // editor overlays that live in SEPARATE IIFEs -- the Save-camera card
   // (#gz-save-overlay, 17_editor_gizmo) and the Set-start-view card
