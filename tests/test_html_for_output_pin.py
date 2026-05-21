@@ -103,6 +103,19 @@ PIN UPDATES:
     CameraPathModule's lane auto-registered via the EditorModuleRegistry
     'register' event). All 6 fixtures shifted by the same +16029 byte
     delta in lockstep; pins re-pinned.
+  * 2026-05-21 (Phases 3-8 integration #122): six new editor module
+    fragments concatenated into the bundle in one integration pass --
+    PanoramaModule (equirect backdrop + rotation + intensity),
+    PostFXModule (tonemapping + exposure sliders), AnnotationModule
+    (dot_unfold + animatable + distance), CutsModule (edit-time NLE
+    wrapping ClipPlayer), AudioModule (track CRUD + edit-time UI),
+    TitlesModule (CSS2D renderer + editor for titles3d). Each phase
+    deselected this output-pin during its individual commit to avoid
+    double-baselining; this pin update re-baselines all 6 fixtures in
+    ONE integration pass. All 6 fixtures shifted by the same +180878
+    byte delta in lockstep -- perfect proof the module additions are
+    additive only (no spooky-action elsewhere). Pins re-pinned to the
+    new baseline.
 """
 
 from __future__ import annotations
@@ -131,42 +144,45 @@ from splatpipe.viewers.spark.template import html_for
 # 3 timeline addenda -- total-time UI, Prev/Next, Ctrl+Left/Right;
 # all 6 fixtures +10141 bytes in lockstep), then re-pinned 2026-05-21
 # (Phase 2D #122: Scene Settings 17b + multi-lane registry; all 6
-# fixtures +16029 bytes in lockstep).
+# fixtures +16029 bytes in lockstep), then re-pinned 2026-05-21
+# (Phases 3-8 integration #122: six editor module fragments --
+# Panorama + PostFX + Annotations + Cuts + Audio + Titles3D -- all 6
+# fixtures +180878 bytes in lockstep; modules are additive only).
 CORPUS: list[tuple[str, tuple, dict, int, str]] = [
     (
         "harness_defaults",
         ("HarnessScene",),
         {},
-        533219,
-        "445e457d614f6a7209917d7f47208cd8c4fb2c07d4419aac59314ba1173c7b4a",
+        714097,
+        "4b35fba4d9eb1048542357d28dd40523542cf683f530d22ac99ce87ece2ae64e",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        533191,
-        "57a73c0b47c1fe20a069465317d860aa867711bf9a72ab68d290581d2b97f866",
+        714069,
+        "e2028a5d2d02557e9e735df8088f8aad45728f012042f1a0f4e0725bea645303",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        533186,
-        "261afc9c850145436e2849ccfc54df856336aaf94a79ead3bb89efdc9a158d2c",
+        714064,
+        "3fa94cad8223dbf21124103ef20bad28702f0c089fa1a5c32ebc5e92e79dcb99",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        533165,
-        "c6a20177c140cc30534bb0b3f23d9c9d7d0fdc59b50991e0d3db20adca3a9aa5",
+        714043,
+        "e7e446bbbd423faa2a8c658481571c1db2e69594ade0e0916517f1f81dbc8971",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        533230,
-        "d0daeec0c04016bec591c9284bc0082360bdef963e0e044f72e19c1e9f4000fb",
+        714108,
+        "1898c6bf8cf296033a2439dae838e6ddc35965cb81e549bb004210fd13e10578",
     ),
     (
         "share_card",
@@ -176,8 +192,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        533089,
-        "7005729a8ad244329b1d67d4b67c9fa28aeebf47f10e60546dbda4572aaec64a",
+        713967,
+        "1d38db221930d102a907842b3666ef6c6aa0a80828c1ab2e8fb559bad4bb7848",
     ),
 ]
 
