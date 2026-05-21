@@ -301,6 +301,18 @@ PIN UPDATES:
     the other card first (each card registers its idempotent closer). All
     6 fixtures shifted by the same +7025 code points in lockstep; pins
     re-pinned.
+  * 2026-05-21 (Phase 11G WF-H2 #143): EditHistory undo off-by-one fix.
+    The pre-gesture-snapshot convention (every module pushes ONE snapshot
+    BEFORE its mutation; NO init-time baseline) was mismatched against
+    ``canUndo()=`_cursor>1``` (so the FIRST edit, at cursor=1, was not
+    undoable) and ``undo()`` restoring ``_stack[_cursor-2]`` (skipping the
+    intermediate state). Fix in ``17a_edit_history``: ``canUndo`` is now
+    ``_cursor>0``; ``undo`` lazily materialises the live (redo) head on the
+    FIRST undo then steps back exactly one gesture restoring
+    ``_stack[_cursor]``; ``canRedo`` is ``_cursor<length-1`` and ``redo``
+    steps forward symmetrically; the ring cap is respected for the
+    materialised head too. All 6 fixtures shifted by the same +2309 code
+    points in lockstep; pins re-pinned.
 """
 
 from __future__ import annotations
@@ -382,36 +394,36 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
         "harness_defaults",
         ("HarnessScene",),
         {},
-        786664,
-        "28c332999366849761415341471445b2ea396620225cbbbd6a450d178af542e9",
+        788973,
+        "11a5ad1bcd2005cb74bdefabdf033b802ddfe71190fb385c6716d4f7d4cc3fbd",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        786636,
-        "9532e209256d46b7d133d8a970137707e055796a677034e9227a16f4a2c26068",
+        788945,
+        "5354ec5c0e9daf8b5deddd47998b928eaad5692ed230a537e38e057b50e560fc",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        786631,
-        "4fcd99c885ffd71fac4b994bf36c375ef4626589cf46e4fb3c5256eeddecb94e",
+        788940,
+        "047630ed90293e01f3fa6b178c1b7e8863d3a27177e9cfbc7d37ee38fd0f8ef3",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        786610,
-        "f5898944ae2bba4d56b93e180021708523e95be7f4fb6761bf71165595986c3d",
+        788919,
+        "b99e95d186940c49458049337c402bb57cc46e25f0928fa15e6fa94c17bd2991",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        786675,
-        "4691547fd80e35473d5acadb9b33debce2077063aeb35337868a7b0994412762",
+        788984,
+        "f2666bc5bd3a7ee7e98c2a3f7f7f771932e756c87ea94a8ad6906ceca199f46e",
     ),
     (
         "share_card",
@@ -421,8 +433,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        786534,
-        "cda8e2d58d3aec3531e659324f595522090298f80b398fcc1019b4ae33e1a826",
+        788843,
+        "7afbf05c5f2aeb46ea3077f2810a41ff490c9df892cfb3b41feb8b7b84466984",
     ),
 ]
 

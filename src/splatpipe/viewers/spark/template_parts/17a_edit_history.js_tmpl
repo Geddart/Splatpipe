@@ -53,11 +53,31 @@
   const EditHistory = (() => {
     // R8 cap: 200 entries * ~200 KB worst-case = ~40 MB heap ceiling.
     const _HISTORY_CAP = 200;
-    // Stack of snapshots. _cursor is the *next* index to write (= one
-    // past the most-recent entry). undo() returns _stack[_cursor-1]
-    // (the snapshot taken just BEFORE the last gesture); the post-undo
-    // state is the snapshot one step earlier. Redo walks _cursor
-    // forward through previously-undone entries.
+    // Stack of snapshots. CONVENTION (WF-H2 fix, #143): every gesture
+    // pushes ONE snapshot of the PRE-gesture cfg BEFORE mutating (NO
+    // init-time baseline is ever pushed -- every module's pushUndo fires
+    // before its own mutation; see the call-site list above). So after
+    // N edits the stack holds N pre-state snapshots [S0..S(N-1)] and the
+    // CURRENT live cfg (= S(N)) is NOT yet in the stack.
+    //
+    //   _cursor == _stack.length  => the current live cfg is NOT in the
+    //       stack; _stack[_cursor-1] is the immediately-prior state. This
+    //       is the state right after every push (and at boot, cursor=0).
+    //   _cursor <  _stack.length  => we are sitting on a snapshot (after
+    //       an undo/redo); _stack[_cursor] == the current live cfg.
+    //
+    // The current state has no snapshot during pushing, so the FIRST undo
+    // materialises it (clones the present onto the top of the stack) so a
+    // later redo has a state to return to -- the "lazy redo head" pattern.
+    // After that one capture, undo/redo are a symmetric cursor walk:
+    //   canUndo => _cursor > 0            (a prior snapshot exists)
+    //   canRedo => _cursor < length - 1   (a later snapshot exists)
+    //   undo    => [capture present if at head] _cursor-=1; restore _stack[_cursor]
+    //   redo    => _cursor+=1; restore _stack[_cursor]
+    // This makes the FIRST user edit undoable (cursor 1 -> 0) and every
+    // undo step back exactly ONE gesture (no skipping) -- the WF-H2 bug
+    // was canUndo=`_cursor>1` (first edit not undoable) + undo restoring
+    // _stack[_cursor-2] (skipping the intermediate state).
     const _stack = [];
     let _cursor = 0;
 
@@ -194,19 +214,39 @@
       return true;
     }
 
-    function canUndo() { return _cursor > 1; }
-    function canRedo() { return _cursor < _stack.length; }
+    // canUndo: a prior pre-gesture snapshot exists to roll back to. The
+    // FIRST edit (cursor=1 after its single push) IS undoable -> `> 0`.
+    function canUndo() { return _cursor > 0; }
+    // canRedo: a later snapshot exists beyond the current position. Only
+    // possible after an undo materialised the redo head, so the live cfg
+    // sits at _stack[_cursor] with at least one snapshot above it.
+    function canRedo() { return _cursor < _stack.length - 1; }
 
     function undo() {
       if (!canUndo()) return null;
-      // To undo gesture N (entry _stack[_cursor-1] was the snapshot
-      // taken BEFORE gesture N), restore from entry _stack[_cursor-2]
-      // -- the state before gesture N-1's mutation. Actually: a
-      // gesture pushes snapshot BEFORE mutating, so _stack[_cursor-1]
-      // IS the pre-gesture state. Restoring it = undoing the most
-      // recent gesture. _cursor moves back by 1.
+      // Lazy redo head: the current live cfg is only in the stack once an
+      // undo materialises it. If we are at the head (_cursor == length),
+      // clone the present onto the top so a later redo can return to it.
+      if (_cursor === _stack.length) {
+        const present = _clone(_liveCfg());
+        if (present != null) {
+          _stack.push({ label: '(current)', snap: present, t: Date.now() });
+          // Respect the ring cap even for the materialised head: evict the
+          // oldest and shift the cursor down so it still points at the same
+          // logical snapshot (front eviction renumbers every index).
+          if (_stack.length > _HISTORY_CAP) {
+            const drop = _stack.length - _HISTORY_CAP;
+            _stack.splice(0, drop);
+            _cursor = Math.max(0, _cursor - drop);
+            _warn('overflow: evicted ' + drop +
+              ' oldest snapshot(s); cap=' + _HISTORY_CAP);
+          }
+        }
+      }
+      // Step back exactly one gesture and restore the snapshot now at the
+      // new cursor (the pre-state of the gesture we just undid).
       _cursor -= 1;
-      const entry = _stack[_cursor - 1] || _stack[_cursor];
+      const entry = _stack[_cursor];
       const live = _liveCfg();
       if (entry && live) {
         _restore(live, entry.snap);
@@ -223,11 +263,10 @@
 
     function redo() {
       if (!canRedo()) return null;
-      // Move cursor forward; restore the snapshot at the new cursor
-      // position (the "post-mutation" state captured by the next push
-      // -- which was the pre-state of the gesture AFTER it).
-      const entry = _stack[_cursor];
+      // Step forward exactly one gesture and restore the snapshot now at
+      // the new cursor (the state that gesture produced).
       _cursor += 1;
+      const entry = _stack[_cursor];
       const live = _liveCfg();
       if (entry && live) {
         _restore(live, entry.snap);

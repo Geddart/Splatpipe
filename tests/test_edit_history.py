@@ -171,15 +171,55 @@ def _history_preamble() -> str:
 
 
 @pytest.mark.skipif(_NODE is None, reason="node not available")
-def test_push_then_canundo_true():
-    """Two pushes wired around a mutation make canUndo true; canRedo stays false."""
-    # An initial baseline snapshot is needed for canUndo to work; a single
-    # push leaves cursor=1 which fails the `cursor > 1` canUndo predicate
-    # (there is no prior state to roll back to).
+def test_single_edit_is_undoable():
+    """WF-H2 (#143) regression. The FIRST user edit pushes ONE pre-gesture
+    snapshot (no init-time baseline -- every module's pushUndo fires before
+    its own mutation). canUndo MUST be true after that single push (cursor 1
+    -> `_cursor > 0`), and the undo restores the pre-edit baseline."""
     js = _history_preamble() + _extract_history_js() + r"""
-EditHistory.push('baseline');   // pre-gesture state
+const before = {
+  canUndo0: EditHistory.canUndo(),    // nothing pushed yet -> false
+};
+EditHistory.push('ann-add');          // pre-gesture snapshot (empty cfg)
+cfg.camera_paths.push({id: 'p1'});    // the gesture mutation
+const afterPush = {
+  canUndo: EditHistory.canUndo(),     // MUST be true (the bug returned false)
+  canRedo: EditHistory.canRedo(),
+  length: EditHistory.length,
+  cursor: EditHistory.cursor,
+};
+EditHistory.undo();                   // restore the pre-edit baseline
+const afterUndo = {
+  paths: cfg.camera_paths.map(p => p.id),  // back to [] (baseline)
+  canUndo: EditHistory.canUndo(),
+  canRedo: EditHistory.canRedo(),
+};
+process.stdout.write(JSON.stringify({ before, afterPush, afterUndo }));
+"""
+    r = _run_node(js)
+    assert r["before"]["canUndo0"] is False
+    assert r["afterPush"]["canUndo"] is True, (
+        "the FIRST edit must be undoable -- canUndo was `_cursor > 1` which "
+        "left the single-edit case (cursor=1) un-undoable"
+    )
+    assert r["afterPush"]["canRedo"] is False
+    assert r["afterPush"]["length"] == 1
+    assert r["afterPush"]["cursor"] == 1
+    # The undo rolls the cfg back to the empty pre-edit baseline.
+    assert r["afterUndo"]["paths"] == []
+    assert r["afterUndo"]["canUndo"] is False
+    assert r["afterUndo"]["canRedo"] is True
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not available")
+def test_two_edits_canundo_canredo():
+    """Two pushes (two edits, pre-gesture convention) make canUndo true;
+    canRedo stays false until an undo materialises the redo head."""
+    js = _history_preamble() + _extract_history_js() + r"""
+EditHistory.push('e1');         // pre-gesture state (empty)
 cfg.camera_paths.push({id: 'p1'});
-EditHistory.push('add-path');   // pre-second-gesture state
+EditHistory.push('e2');         // pre-second-gesture state ([p1])
+cfg.camera_paths.push({id: 'p2'});
 process.stdout.write(JSON.stringify({
   canUndo: EditHistory.canUndo(),
   canRedo: EditHistory.canRedo(),
@@ -196,63 +236,99 @@ process.stdout.write(JSON.stringify({
 
 @pytest.mark.skipif(_NODE is None, reason="node not available")
 def test_undo_restores_prior_cfg_state():
-    """undo() restores the cfg to the snapshot captured BEFORE the most
-    recent gesture. The live cfg object is mutated in place (callers
-    hold a reference)."""
+    """undo() steps back exactly ONE gesture. With the pre-gesture
+    convention each push captures the state BEFORE its mutation, so one
+    undo from a two-edit history lands on the intermediate state (the
+    pre-state of the second gesture = the result of the first), NOT all
+    the way back to the empty baseline. The live cfg is mutated in place
+    (callers hold a reference)."""
     js = _history_preamble() + _extract_history_js() + r"""
 const origRef = cfg;
-EditHistory.push('baseline');         // snap = { camera_paths:[], annotations:[] }
-cfg.camera_paths.push({id: 'p1'});    // gesture mutation
-EditHistory.push('add-path');         // snap = AFTER mutation? NO -- push captures CURRENT
-                                       // state which is the POST-gesture state.
-                                       // Per the IIFE design: gesture handlers push BEFORE
-                                       // they mutate, so the entry pushed before mutation
-                                       // IS the pre-state. The test mirrors that ordering.
-                                       // To test undo cleanly we follow the documented
-                                       // pattern: push BEFORE the next mutation.
-cfg.camera_paths.push({id: 'p2'});
-// Now undo should restore the state captured at 'add-path' push:
-// camera_paths = [{id:'p1'}], i.e. before the p2 mutation.
+EditHistory.push('e1');               // pre-gesture-1 snapshot: camera_paths == []
+cfg.camera_paths.push({id: 'p1'});    // gesture-1 mutation -> [p1]
+EditHistory.push('e2');               // pre-gesture-2 snapshot: camera_paths == [p1]
+cfg.camera_paths.push({id: 'p2'});    // gesture-2 mutation -> [p1,p2]
+// One undo steps back exactly one gesture: [p1,p2] -> [p1] (the e2
+// pre-state). It must NOT skip to the empty baseline (the WF-H2 bug
+// restored _stack[_cursor-2], skipping the intermediate state).
 const undone = EditHistory.undo();
 process.stdout.write(JSON.stringify({
   sameRef: cfg === origRef,
-  camera_paths: cfg.camera_paths,
+  camera_paths: cfg.camera_paths.map(p => p.id),
   undoneLabel: undone ? undone.label : null,
 }));
 """
     r = _run_node(js)
     assert r["sameRef"] is True, "undo must MUTATE cfg in place, not swap it"
-    # After undo from 2 -> 1, we restore the snapshot at index 0 = baseline.
-    # camera_paths should be empty (baseline state).
-    assert r["camera_paths"] == []
-    assert r["undoneLabel"] == "baseline"
+    # One undo lands on the intermediate state [p1], not the empty baseline.
+    assert r["camera_paths"] == ["p1"]
+    assert r["undoneLabel"] == "e2"
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not available")
+def test_three_edits_undo_visits_each_intermediate_state():
+    """WF-H2 (#143). Three distinct edits, then three undos: each undo
+    steps back exactly ONE gesture, visiting every intermediate state in
+    turn (no skipping), ending at the pre-first-edit baseline. Redo then
+    walks forward symmetrically through the same states."""
+    js = _history_preamble() + _extract_history_js() + r"""
+const seq = [];
+function ids() { return cfg.camera_paths.map(p => p.id); }
+EditHistory.push('e1'); cfg.camera_paths.push({id: 'a'});   // -> [a]
+EditHistory.push('e2'); cfg.camera_paths.push({id: 'b'});   // -> [a,b]
+EditHistory.push('e3'); cfg.camera_paths.push({id: 'c'});   // -> [a,b,c]
+const live = ids();                                          // [a,b,c]
+const u1 = EditHistory.undo(); const s1 = ids();             // [a,b]
+const u2 = EditHistory.undo(); const s2 = ids();             // [a]
+const u3 = EditHistory.undo(); const s3 = ids();             // []
+const canUndoAtBase = EditHistory.canUndo();                 // false
+// Redo back up, one gesture each.
+EditHistory.redo(); const r1 = ids();                        // [a]
+EditHistory.redo(); const r2 = ids();                        // [a,b]
+EditHistory.redo(); const r3 = ids();                        // [a,b,c]
+const canRedoAtTop = EditHistory.canRedo();                  // false
+process.stdout.write(JSON.stringify({
+  live, s1, s2, s3, canUndoAtBase, r1, r2, r3, canRedoAtTop,
+  labels: [u1 && u1.label, u2 && u2.label, u3 && u3.label],
+}));
+"""
+    r = _run_node(js)
+    assert r["live"] == ["a", "b", "c"]
+    # Each undo visits exactly one intermediate state -- no skipping.
+    assert r["s1"] == ["a", "b"]
+    assert r["s2"] == ["a"]
+    assert r["s3"] == []
+    assert r["canUndoAtBase"] is False
+    # Undo labels follow the gestures in reverse order.
+    assert r["labels"] == ["e3", "e2", "e1"]
+    # Redo walks forward symmetrically through the same states.
+    assert r["r1"] == ["a"]
+    assert r["r2"] == ["a", "b"]
+    assert r["r3"] == ["a", "b", "c"]
+    assert r["canRedoAtTop"] is False
 
 
 @pytest.mark.skipif(_NODE is None, reason="node not available")
 def test_redo_walks_forward_through_history():
-    """redo() walks the cursor forward through previously-undone snapshots."""
+    """redo() walks the cursor forward through previously-undone states.
+    Pre-gesture convention: each push captures the state BEFORE its
+    mutation; the first undo lazily materialises the live (redo) head."""
     js = _history_preamble() + _extract_history_js() + r"""
-EditHistory.push('s0');
-cfg.camera_paths.push({id: 'p1'});
-EditHistory.push('s1');
-cfg.camera_paths.push({id: 'p2'});
-EditHistory.push('s2');
-// length 3, cursor 3, canUndo true, canRedo false
+EditHistory.push('e1'); cfg.camera_paths.push({id: 'p1'});   // -> [p1]
+EditHistory.push('e2'); cfg.camera_paths.push({id: 'p2'});   // -> [p1,p2]
+// _stack = [ []  , [p1] ], cursor=2 (live [p1,p2] not yet snapshotted)
 const before = {
   length: EditHistory.length, cursor: EditHistory.cursor,
   canUndo: EditHistory.canUndo(), canRedo: EditHistory.canRedo(),
   paths: cfg.camera_paths.map(p => p.id),
 };
-EditHistory.undo();    // cursor=2; cfg reverted to s1 state ([p1])
+EditHistory.undo();    // materialise live head [p1,p2]; step to [p1]
 const afterUndo = {
   cursor: EditHistory.cursor,
   paths: cfg.camera_paths.map(p => p.id),
   canRedo: EditHistory.canRedo(),
 };
-EditHistory.redo();   // cursor=3; cfg back to s2 state ([])
-                       // wait -- s2 snapshot was taken AFTER both pushes...
-                       // actually the snapshot at s2 was {p1,p2}. Undo to s1
-                       // restores {p1}. Redo to s2 restores {p1,p2}.
+EditHistory.redo();    // forward one gesture -> back to [p1,p2]
 const afterRedo = {
   cursor: EditHistory.cursor,
   paths: cfg.camera_paths.map(p => p.id),
@@ -261,37 +337,44 @@ const afterRedo = {
 process.stdout.write(JSON.stringify({ before, afterUndo, afterRedo }));
 """
     r = _run_node(js)
-    # The snapshot at s2 was captured AFTER both pushes; it contains both p1+p2.
     assert r["before"]["paths"] == ["p1", "p2"]
+    assert r["before"]["canRedo"] is False
     assert r["afterUndo"]["paths"] == ["p1"]
     assert r["afterUndo"]["canRedo"] is True
     assert r["afterRedo"]["paths"] == ["p1", "p2"]
+    assert r["afterRedo"]["canRedo"] is False
 
 
 @pytest.mark.skipif(_NODE is None, reason="node not available")
 def test_push_after_undo_truncates_redo_tail():
-    """A fresh push after an undo invalidates any redo path (truncates the tail)."""
+    """A fresh push after an undo invalidates any redo path (truncates the
+    tail). Pre-gesture convention: two edits push two snapshots; an undo
+    materialises the live head; a new edit drops the abandoned redo head."""
     js = _history_preamble() + _extract_history_js() + r"""
-EditHistory.push('s0');
-cfg.camera_paths.push({id: 'p1'});
-EditHistory.push('s1');
-cfg.camera_paths.push({id: 'p2'});
-EditHistory.push('s2');
-// length 3, cursor 3
-EditHistory.undo();    // cursor 2, canRedo true
-EditHistory.push('s3-branch');   // truncates the s2 tail
+EditHistory.push('e1'); cfg.camera_paths.push({id: 'p1'});   // -> [p1]
+EditHistory.push('e2'); cfg.camera_paths.push({id: 'p2'});   // -> [p1,p2]
+EditHistory.undo();              // materialise head; cfg -> [p1], canRedo true
+EditHistory.push('e3-branch');   // truncates the materialised redo head
+cfg.camera_paths.push({id: 'p3'});
 process.stdout.write(JSON.stringify({
-  length: EditHistory.length,    // should be 3 (s0, s1, s3-branch)
+  length: EditHistory.length,
   cursor: EditHistory.cursor,
   canRedo: EditHistory.canRedo(), // false -- tail was truncated
+  canUndo: EditHistory.canUndo(),
   labels: EditHistory.labels().map(e => e.label),
+  paths: cfg.camera_paths.map(p => p.id),
 }));
 """
     r = _run_node(js)
-    assert r["length"] == 3
-    assert r["cursor"] == 3
+    # After undo the stack was [ []  , [p1] , [p1,p2](materialised) ] cursor=1.
+    # push('e3-branch') truncates to cursor (len=1 -> [ [] ]) then captures the
+    # live [p1] state -> [ [] , [p1] ], cursor=2.
     assert r["canRedo"] is False
-    assert r["labels"] == ["s0", "s1", "s3-branch"]
+    assert r["canUndo"] is True
+    assert r["labels"] == ["e1", "e3-branch"]
+    assert r["length"] == 2
+    assert r["cursor"] == 2
+    assert r["paths"] == ["p1", "p3"]
 
 
 @pytest.mark.skipif(_NODE is None, reason="node not available")
@@ -356,15 +439,15 @@ process.stdout.write(JSON.stringify({
 def test_snapshot_is_a_deep_clone_not_a_reference():
     """A snapshot's contents are JSON-cloned -- later mutations to cfg
     must NOT alter the captured snapshot (otherwise undo restores the
-    *current* state and is a no-op)."""
+    *current* state and is a no-op). Pre-gesture: ONE push captures the
+    empty pre-state, the gesture mutates, undo restores the empty snap."""
     js = _history_preamble() + _extract_history_js() + r"""
-EditHistory.push('s0');                     // snap = empty
-cfg.camera_paths.push({id: 'mutate-me'});
-cfg.camera_paths[0].id = 'mutated';
-EditHistory.push('s1');                     // snap = [{id:'mutated'}]
+EditHistory.push('s0');                     // snap = empty (pre-gesture)
+cfg.camera_paths.push({id: 'mutate-me'});   // the gesture mutation
 cfg.camera_paths[0].id = 'mutated-again';   // post-snapshot mutation
-const undone = EditHistory.undo();
-// After undo (cursor 2 -> 1), cfg should reflect the s0 snap (= empty).
+const undone = EditHistory.undo();          // restore the s0 (empty) snap
+// After undo, cfg should reflect the s0 snap (= empty); the deep clone
+// means the post-push mutations never touched the captured snapshot.
 const len = cfg.camera_paths.length;
 process.stdout.write(JSON.stringify({
   cameraLen: len, undoneLabel: undone ? undone.label : null,
@@ -380,19 +463,31 @@ process.stdout.write(JSON.stringify({
 
 @pytest.mark.skipif(_NODE is None, reason="node not available")
 def test_undo_with_empty_history_returns_null():
-    """A no-op undo on an empty (or single-entry) history returns null + leaves cfg alone."""
+    """A no-op undo on an EMPTY history returns null + leaves cfg alone.
+    After a single push (one edit) undo IS available (WF-H2 fix) and
+    returns that entry -- the FIRST edit must be undoable."""
     js = _history_preamble() + _extract_history_js() + r"""
 const r0 = EditHistory.undo();              // empty -> null
-EditHistory.push('only');
-const r1 = EditHistory.undo();              // 1 entry -> can't undo back
+const canUndo0 = EditHistory.canUndo();     // false
+EditHistory.push('only');                   // one pre-gesture snapshot
+cfg.camera_paths.push({id: 'p1'});          // the gesture
+const r1 = EditHistory.undo();              // 1 entry -> undoable now
 process.stdout.write(JSON.stringify({
-  r0, r1, canUndo: EditHistory.canUndo(),
+  r0,
+  canUndo0,
+  r1Label: r1 ? r1.label : null,
+  pathsAfterUndo: cfg.camera_paths.map(p => p.id),
+  canUndoAfter: EditHistory.canUndo(),
 }));
 """
     r = _run_node(js)
     assert r["r0"] is None
-    assert r["r1"] is None
-    assert r["canUndo"] is False
+    assert r["canUndo0"] is False
+    # The single edit is undoable -- undo returns the pushed entry and
+    # rolls the cfg back to the empty pre-edit baseline.
+    assert r["r1Label"] == "only"
+    assert r["pathsAfterUndo"] == []
+    assert r["canUndoAfter"] is False
 
 
 @pytest.mark.skipif(_NODE is None, reason="node not available")
@@ -423,13 +518,12 @@ def test_restore_clears_keys_added_after_snapshot():
     """When a snapshot did NOT contain a key but the live cfg later gained
     one, restore must DELETE that key (else restored state has stale keys)."""
     js = _history_preamble() + _extract_history_js() + r"""
-// Snapshot WITHOUT 'audio' key
+// Snapshot WITHOUT 'audio' key (pre-gesture state of the "add audio" edit).
 EditHistory.push('s0');
-// Mutate: add a new top-level key not in s0
+// The gesture: add a new top-level key not in s0, then mutate it.
 cfg.audio = [{id: 'a1'}];
-EditHistory.push('s1');             // snap NOW has audio
-cfg.audio.push({id: 'a2'});         // further mutation
-const undone = EditHistory.undo();  // restore s0
+cfg.audio.push({id: 'a2'});
+const undone = EditHistory.undo();  // restore s0 (no audio)
 process.stdout.write(JSON.stringify({
   hasAudio: 'audio' in cfg,
   undoneLabel: undone ? undone.label : null,
@@ -458,9 +552,8 @@ def test_restore_preserves_camera_paths_array_identity():
     js = _history_preamble() + _extract_history_js() + r"""
 // Capture the live camera_paths array reference (== the 09 alias).
 const aliasRef = cfg.camera_paths;
-EditHistory.push('baseline');           // snapshot: camera_paths == []
-cfg.camera_paths.push({id: 'p_new'});   // mutate in place (like _camSelCreate)
-EditHistory.push('added');              // snapshot: camera_paths == [p_new]
+EditHistory.push('add-path');           // pre-gesture snapshot: camera_paths == []
+cfg.camera_paths.push({id: 'p_new'});   // the gesture: mutate in place (like _camSelCreate)
 EditHistory.undo();                     // restore baseline ([])
 const afterUndo = {
   sameRef: cfg.camera_paths === aliasRef,
