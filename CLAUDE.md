@@ -9,7 +9,7 @@ CLI-first Gaussian splatting pipeline. Takes COLMAP data through: auto-clean →
 ```bash
 cd H:\001_ProjectCache\1000_Coding\Splatpipe
 pip install -e ".[dev]"
-pytest tests/ -v                    # Run tests (946 collected; 919 passed, 26 skipped, ~36s)
+pytest tests/ -v                    # Run tests (1006 collected; 944 passed, 62 skipped, ~32s)
 splatpipe --help                    # CLI commands
 splatpipe web                       # Launch dashboard
 ```
@@ -185,6 +185,8 @@ splatpipe/                    # repo root
     test_html_for_save_mode.py     # Generated viewer save_mode/save_endpoint plumbing + NEGATIVE-CONTROL author-mode UX/gizmo/overlay tests (v0.8+)
     test_html_for_output_pin.py    # Output-pin byte-lock: html_for() len+SHA-256 for 6 corpus fixtures + UTF-8 LF fragment sanity (modularization-safe replacement for the retired excised-region source-level lock; T6 of #118)
     test_intro_startview_modules.py # IntroModule (15h) + StartViewModule (15i) Scene Settings sections: contract markers + fragment ordering + openStartViewCard helper (Phase 11A Issue 9)
+    test_undo_redo_ui.py           # WF-H3 (#144): visible Undo/Redo transport buttons + narrow _editorUndoHotkeyBlocked() guard (Ctrl+Z works in the drawer; text-entry-only block matrix; Phase 11G)
+    test_edit_history.py           # EditHistory snapshot ring-buffer (pre-gesture convention; WF-H2 #143 first-edit-undoable + per-gesture undo/redo; 200-cap; Phase 2A/11G)
     test_php_save_oracle.py        # PHP save adapter cross-language merge oracle (v0.8+)
     test_upload_asset_oracle.py    # PHP upload-asset.php server-behaviour oracle: auth/ext/size/slug gates (UX-H3; Phase 11E)
     test_cloudflare_save_oracle.py # Cloudflare Worker save cross-language merge oracle (v0.8+)
@@ -422,7 +424,7 @@ Key config sections: `[tools]`, `[colmap_clean]`, `[postshot]` (profile, gpu, ma
 ## Tests
 
 ```bash
-pytest tests/ -v              # 946 collected (919 passed, 26 skipped)
+pytest tests/ -v              # 1006 collected (944 passed, 62 skipped)
 pytest tests/ -k colmap       # Just COLMAP tests
 pytest tests/ -k integration  # End-to-end with tiny data
 pytest tests/ -k trainers     # Trainer abstraction tests
