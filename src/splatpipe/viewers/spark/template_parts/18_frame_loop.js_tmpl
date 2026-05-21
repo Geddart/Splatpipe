@@ -284,6 +284,13 @@
   // the token carries only a camera pose. Round-trips cleanly because
   // the early camera block consumes start_view.pos/quat/fov/target the
   // same way it is captured here (same world frame as camera-paths).
+  //
+  // UX-Phase11A Issue 8 (2026-05-21): the top-bar #setstart-btn was
+  // removed (it moves into the Scene Settings drawer's Start View
+  // section). The handler is now wired conditionally on #setstart-btn
+  // presence (legacy), AND exposes the open-card logic on
+  // window.__editor.openStartViewCard for the StartViewModule's
+  // "Save current as start view" button to call.
   {
     const _ssBtn = document.getElementById('setstart-btn');
     const _projName = (document.querySelector('#title h1') && document.querySelector('#title h1').textContent || 'scene').trim();
@@ -295,7 +302,7 @@
     }
     const _r = n => Math.round(n * 1e5) / 1e5;
     function _ssClose() { const o = document.getElementById('ss-overlay'); if (o) o.remove(); }
-    _ssBtn.addEventListener('click', () => {
+    function _openStartViewCard() {
       _ssClose();
       const pose = {
         project: _projName,
@@ -340,7 +347,22 @@
           try { document.execCommand('copy'); } catch (e) {}
         });
       });
-    });
+      return token;
+    }
+    // Legacy top-bar button (Phase 11A Issue 8 removes it from
+    // 03_body_chrome but keep the binding so any external embed /
+    // older bundle that still ships the button keeps working).
+    if (_ssBtn) {
+      _ssBtn.addEventListener('click', _openStartViewCard);
+    }
+    // StartViewModule entry point (Phase 11A Issue 9). The
+    // StartViewModule is loaded later in the bundle so we defer the
+    // window.__editor extension to the next tick; harmless when the
+    // module is absent (the property is just unused).
+    try {
+      if (!window.__editor) window.__editor = {};
+      window.__editor.openStartViewCard = _openStartViewCard;
+    } catch (e) {}
   }
 
   function tick() {

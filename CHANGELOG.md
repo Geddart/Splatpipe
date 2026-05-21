@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Phase 11A Issue 8 (v0.8.0 UX bug-fix sprint): "Set start view" moves from the top bar into the Scene Settings drawer.** User report: "Also, if set start view is in the scene settings, We don't need it in the drop-down selection in the top anymore." The legacy top-bar `#setstart-btn` is REMOVED from `template_parts/03_body_chrome.html_tmpl`. The handler in `18_frame_loop.js_tmpl` was refactored: the open-card logic (capture pose + emit SPV1 token + show overlay card) is now a named `_openStartViewCard()` function exposed on `window.__editor.openStartViewCard` so the upcoming StartViewModule (Phase 11A Issue 9) can call the SAME flow. The legacy click handler still binds when `#setstart-btn` is present (for any external embed shipping the old chrome). Verified live: top-bar no longer contains the button; `window.__editor.openStartViewCard` is a function.
+
 ### Fixed
 - **Phase 11A Issue 4 (v0.8.0 UX bug-fix sprint): interp popover applies to multi-selection.** The V popover (`_gzOpenPopover` -> `_gzSetInterp`) wrote only to the gizmo-selected kf (`_gzSelKf`). A box-select of 3 kfs followed by V + click was a no-op for kfs 2 and 3. User report: "When I select several keyframes and change the interpolation, it doesn't seem to work for multiple keyframes. But it should." Fix in `template_parts/17_editor_gizmo.js_tmpl`:
   - `_gzSetInterp(val)` now reads `window.__editor.tlSelection` (the Phase 2D timeline selection surface, an Array<number> sorted asc) and when it has >=2 entries iterates over EVERY index, writing the chosen interp to each + pushes ONE `EditorModuleRegistry.pushUndo('interp-multi')` snapshot for the batch (R8 §4.2 anti-pattern: NEVER per-target). The multi-write branch takes precedence over the gizmo-target branch (a multi-select implies the user is operating on the batch).

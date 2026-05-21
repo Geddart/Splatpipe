@@ -90,8 +90,14 @@
       </div>
       <button id="bench-btn" class="quality-btn"
               title="Run the selected benchmark (dropdown at left). Click again to stop early; downloads a JSON trace (+ contact sheet for probe/rotate).">Bench</button>
-      <button id="setstart-btn" class="quality-btn"
-              title="Use the current camera as this scene's start view. Generates a token to send to Claude to save it for everyone.">Set start view</button>
+      <!-- UX-Phase11A Issue 8 (2026-05-21): the top-bar "Set start
+           view" button is REMOVED. It moves into the Scene Settings
+           drawer's "Start View" section (StartViewModule, Phase 11A
+           Issue 9). The handler in 18_frame_loop is preserved + now
+           hides itself when #setstart-btn is absent; the
+           StartViewModule's "Save current as start view" button
+           dispatches the same logic via _setStartFromCurrentCamera()
+           hoisted from the original 18_frame_loop closure. -->
     </div>
   </div>
 
