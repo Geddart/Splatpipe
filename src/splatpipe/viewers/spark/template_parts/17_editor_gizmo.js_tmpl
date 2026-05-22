@@ -1939,25 +1939,88 @@
       // p.keyframes.length === 0 -> t stays 0 (kf #1 at t=0; the canonical
       // first-keyframe origin).
       _gzStopTour();
-      const kf = {
-        t: _GZ_R(t),
-        pos: [_GZ_R(camera.position.x), _GZ_R(camera.position.y),
-          _GZ_R(camera.position.z)],
-        quat: [_GZ_R(camera.quaternion.x), _GZ_R(camera.quaternion.y),
-          _GZ_R(camera.quaternion.z), _GZ_R(camera.quaternion.w)],
-        fov: _GZ_R(camera.fov),
+      // The LIVE camera pose to capture (shared by the overwrite + append
+      // branches below).
+      const _pos = [_GZ_R(camera.position.x), _GZ_R(camera.position.y),
+        _GZ_R(camera.position.z)];
+      const _quat = [_GZ_R(camera.quaternion.x), _GZ_R(camera.quaternion.y),
+        _GZ_R(camera.quaternion.z), _GZ_R(camera.quaternion.w)];
+      const _fov = _GZ_R(camera.fov);
+      const _pushSnap = (label) => {
+        // UX-Phase11-R2 #3 (2026-05-21): record (K hotkey OR Rec button, both
+        // reach here) was NOT pushing an EditHistory snapshot, so a freshly
+        // recorded / overwritten keyframe could not be undone + the undo
+        // button greyed out wrongly. Snapshot the pre-mutation cfg BEFORE the
+        // mutation (gesture-start, once-per-gesture -- a single discrete
+        // K/Rec action).
+        try {
+          if (typeof EditorModuleRegistry !== 'undefined' &&
+              typeof EditorModuleRegistry.pushUndo === 'function') {
+            EditorModuleRegistry.pushUndo(label);
+          }
+        } catch (e) {}
       };
-      // UX-Phase11-R2 #3 (2026-05-21): record (K hotkey OR Rec button, both
-      // reach here) was NOT pushing an EditHistory snapshot, so a freshly
-      // recorded keyframe could not be undone + the undo button greyed out
-      // wrongly. Snapshot the pre-mutation cfg BEFORE the append (gesture-
-      // start, once-per-gesture -- a single discrete K/Rec action).
+      // #166: OVERWRITE-IN-PLACE when the playhead is parked AT (within a
+      // small epsilon of) an existing keyframe's t. Pressing Rec/K there
+      // should UPDATE that keyframe's pose (pos/quat/fov) rather than insert
+      // a DUPLICATE at the same time (two keyframes at ~the same t collapse a
+      // spline segment to ~zero duration and are impossible to tell apart on
+      // the diamond row). Off any existing keyframe -> fall through to the
+      // APPEND branch (create a new keyframe), exactly as before.
+      //   * Gated on >= 2 existing keyframes: a 0/1-kf path is still being
+      //     BOOTSTRAPPED (the UX-5 "two K presses -> a scrub-able path" loop
+      //     above deliberately places kf #2 at last_t + DT, NOT on top of
+      //     kf #1 at t=0) -- overwriting there would break that loop. The
+      //     #166 scenario is editing a parked keyframe on a real (>= 2-kf)
+      //     authored path.
+      //   * The matched keyframe KEEPS its own t (and easing_out / hold_s /
+      //     annotation_id / interp / tangents) -- only the pose is rewritten;
+      //     the playhead t is an approximation of the parked keyframe's exact
+      //     t, so writing _GZ_R(t) onto it would nudge the keyframe in time.
+      //   * EPSILON is a hair above the #path-scrub quantisation (the slider
+      //     is 0..1000 of the player duration, so one step ~= duration/1000;
+      //     0.05 s covers a deliberate "park on this keyframe" -- incl. via
+      //     Prev/Next-skip which scrubs to the EXACT kf.t -- without
+      //     swallowing a genuinely-distinct nearby keyframe an author placed
+      //     by hand).
+      //   * The match is against the GENUINE current playhead (the timeline's
+      //     effective tlPlayheadT, which is valid incl. exactly 0 -- parked on
+      //     the first keyframe), NOT the bootstrap-adjusted `t` above (which
+      //     only matters for the 0/1-kf append cases this branch excludes).
+      const _KF_OVERWRITE_EPS = 0.05;
+      let _parkedT = null;
       try {
-        if (typeof EditorModuleRegistry !== 'undefined' &&
-            typeof EditorModuleRegistry.pushUndo === 'function') {
-          EditorModuleRegistry.pushUndo('kf-record');
+        if (window.__editor &&
+            typeof window.__editor.tlPlayheadT === 'number' &&
+            isFinite(window.__editor.tlPlayheadT)) {
+          _parkedT = Math.max(0, window.__editor.tlPlayheadT);
         }
       } catch (e) {}
+      if (_parkedT === null && phResolved) _parkedT = t;  // fallback
+      if (p.keyframes.length >= 2 && _parkedT !== null) {
+        let bestI = -1, bestD = Infinity;
+        for (let i = 0; i < p.keyframes.length; i++) {
+          const kt = (p.keyframes[i] && typeof p.keyframes[i].t === 'number')
+            ? p.keyframes[i].t : null;
+          if (kt === null || !isFinite(kt)) continue;
+          const d = Math.abs(kt - _parkedT);
+          if (d <= _KF_OVERWRITE_EPS && d < bestD) { bestD = d; bestI = i; }
+        }
+        if (bestI >= 0) {
+          _pushSnap('kf-overwrite');
+          const ex = p.keyframes[bestI];
+          ex.pos = _pos;
+          ex.quat = _quat;
+          ex.fov = _fov;
+          _gzAfterEdit();
+          return ex;
+        }
+      }
+      // No existing keyframe under the playhead -> APPEND a new one (the
+      // pre-#166 behaviour). buildPlayer sorts by t, so a record at any
+      // playhead lands in chronological order.
+      const kf = { t: _GZ_R(t), pos: _pos, quat: _quat, fov: _fov };
+      _pushSnap('kf-record');
       p.keyframes.push(kf);
       _gzAfterEdit();
       return kf;

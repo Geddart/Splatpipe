@@ -653,6 +653,35 @@ PIN UPDATES:
     range. All 6 fixtures shifted by the same +11274 code points in
     lockstep -- additive only (isolated to the 16/17 edits). Pins re-pinned
     to the new baseline.
+  * 2026-05-22 (R4 follow-up #167 + #166 -- clip drill-in + Rec overwrite):
+    two editor fixes across ``16_editor_timeline`` + ``17_editor_gizmo``.
+    (#167 clip-block click drills in) at CLIP level the cuts blocks render
+    in the labelled "Cuts" MODULE LANE below the diamond row (``_tlDrawLanes``),
+    but ``_tlOnDown`` had NO hit-test for that band -- a real pixel-click on a
+    clip block there fell through to the empty-lane box-select and did NOTHING
+    (so a scene that booted WITHOUT clips, then had clips added via the Scene
+    Settings cuts card -- which keeps ``_tlLevel='clip'`` -- could never switch
+    clips by clicking, the user-confirmed break). A new ``_tlHitCutsLaneClip``
+    walks ``_tlLaneList()`` the SAME way ``_tlDrawLanes`` does to find the cuts
+    band's y-range + maps x->clip via the EXACT ``[_LABEL_W, _tlW]`` / 0..Σdur
+    mapping ``CutsModule.timelineLane.render`` uses; a new ``_tlOnDown`` (3b)
+    branch calls the EXISTING ``_tlEnterClip`` drill verb for a hit (sequence-
+    level primary-band clicks were already correct via ``_tlHitClip``). Plus a
+    TEST-ONLY ``tlHitCutsLaneClipAt`` surface getter. (#166 Rec overwrites the
+    parked keyframe) ``17_editor_gizmo::_gzRecordKeyframe`` always APPENDED;
+    it now OVERWRITES in place (pos/quat/fov, keeping the matched keyframe's
+    own t + easing/hold/annotation/interp) when the genuine playhead
+    (``window.__editor.tlPlayheadT``, valid incl. exactly 0) is within
+    ``_KF_OVERWRITE_EPS`` (0.05 s) of an existing keyframe's t, gated on a
+    >=2-kf path (a 0/1-kf path is still bootstrapped via the UX-5 last_t+DT
+    rule); off any keyframe it APPENDS as before. One EditHistory snapshot
+    (``kf-overwrite`` overwriting, ``kf-record`` appending) via a shared
+    ``_pushSnap`` helper. Both fixes REAL-click / real-Rec verified in the
+    Playwright harness (clip drill-in at sequence AND clip level + the ◂
+    Sequence back; overwrite count-unchanged-pose-updated + off-kf +1 + undo
+    restores both). All 6 fixtures shifted by the same +8279 code points in
+    lockstep -- additive only (isolated to the 16/17 edits + the test hook).
+    Pins re-pinned to the new baseline.
 """
 
 from __future__ import annotations
@@ -742,36 +771,36 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
         "harness_defaults",
         ("HarnessScene",),
         {},
-        930810,
-        "11af968f99428d114400da79d2278ec07cb07468bb733ba6396a5a12538cea2d",
+        939089,
+        "c3974c2f7a40c24d2ce0eee1cca7d165ec1773c33a10b18e711ceca2d31f0546",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        930782,
-        "e4a2143d37b7468c439d3a2fce3244b73cffc90d0f1770f5434a0410e6209609",
+        939061,
+        "cdcf20c3cd3a104d543e596a5f96748baf85c5bbe2a7aa819e496ca54ded5e96",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        930777,
-        "f180ed0bf35daefbcd30eac6b69c2d8ae1572ed30cdf9f8d1f77d632f95bb480",
+        939056,
+        "f201884f52411f01f5488d0c3a08486e178b6fe63dc6e04b6fce834cde6e376d",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        930756,
-        "0e2fd9834b674d5debc7a38526b969de9cab04d65e2463e4b7138d4246cac0d3",
+        939035,
+        "0abf1ae9256dea0b3bee908700444e02034e147f2e97874c5af910e74691366b",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        930821,
-        "56bf2b03a6da52737ed75970313580deb6a525964cd43e05458752dda974c135",
+        939100,
+        "4ed49e8066d8ebf190af268c944eb2b1ad602f2f2b35f810dba766caef94911f",
     ),
     (
         "share_card",
@@ -781,8 +810,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        930680,
-        "8176d00399e5f9cf87477379703a36e8fb356e2c4b41b87c7127ed3beb9aab8e",
+        938959,
+        "bafbaf0edf1cd984e8a0f7a49217c5e0876829d3b8f44350b7b710745fa52cc4",
     ),
 ]
 

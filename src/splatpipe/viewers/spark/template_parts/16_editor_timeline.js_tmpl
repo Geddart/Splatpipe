@@ -1503,6 +1503,64 @@
       }
       return null;
     }
+    // ---- #167 clip editor: CLIP-LEVEL hit-test on the registered CUTS
+    //      MODULE LANE (the labelled "Cuts" band that stacks BELOW the
+    //      diamond row at clip level -- _tlDrawLanes). At clip level the
+    //      cuts track is NOT the primary band (_tlHitClip covers that at
+    //      sequence level); it is a module lane, and a real pixel-click on
+    //      a coloured clip block in it previously fired NOTHING (the
+    //      pointerdown router had no branch for the module-lane band, so a
+    //      click there fell through to the empty-lane box-select and did
+    //      not switch clips). This made the clip-block drill-in look broken
+    //      for the common author flow: a scene that booted WITHOUT clips
+    //      (so _tlLevel stayed 'clip') and then had clips added via the
+    //      Scene Settings cuts card NEVER enters sequence level on its own,
+    //      so the only clip blocks the author ever sees are these module-
+    //      lane ones -- and clicking them did nothing.
+    //      Returns the clip id whose block (in the cuts module-lane band,
+    //      0..Σdur mapped over [_LABEL_W, _tlW] -- the EXACT mapping
+    //      CutsModule.timelineLane.render uses) contains the lane (x,y);
+    //      null = miss / outside the cuts band. Walks _tlLaneList() the
+    //      SAME way _tlDrawLanes does to find the cuts band's y-range, so
+    //      the hit-test tracks the lane stack order + any future lane
+    //      above it without a hard-coded offset.
+    function _tlHitCutsLaneClip(x, y) {
+      let lanes;
+      try { lanes = _tlLaneList(); } catch (e) { return null; }
+      if (!lanes || !lanes.length) return null;
+      const total = _tlSeqTotalDur();
+      if (total <= 0) return null;
+      const laneW = Math.max(1, _tlW - _LABEL_W);
+      // Find the 'cuts' lane's vertical band by replaying the same stacking
+      // _tlDrawLanes does (each lane band = rows * _TL_LANE_ROW_H).
+      let yTop = _tlLaneBandTop();
+      let bandTop = -1, bandBot = -1;
+      for (const e of lanes) {
+        const lane = e && e.lane;
+        if (!lane) continue;
+        const rows = (lane.rows && lane.rows > 0) ? (lane.rows | 0) : 1;
+        const bandH = rows * _TL_LANE_ROW_H;
+        if (e.name === 'cuts') { bandTop = yTop; bandBot = yTop + bandH; break; }
+        yTop += bandH;
+      }
+      if (bandTop < 0 || y < bandTop || y > bandBot) return null;
+      if (x < _LABEL_W) return null;             // left gutter (label cell)
+      // x -> clip block. The lane render maps 0..Σdur onto [_LABEL_W,
+      // _LABEL_W+laneW] with per-clip blocks at clip_start..clip_start+dur
+      // (the SAME ordered clip walk the render + the sequence hit-test use).
+      const ordered = _tlClipsLive();
+      for (const k of ordered) {
+        const start = (typeof k.clip_start === 'number' && k.clip_start >= 0)
+          ? k.clip_start : 0;
+        const d = (typeof k.duration === 'number' && k.duration > 0)
+          ? k.duration : 0;
+        if (d <= 0) continue;
+        const bx = _LABEL_W + (start / total) * laneW;
+        const bw = (d / total) * laneW;
+        if (x >= bx && x <= bx + bw) return k.id;
+      }
+      return null;
+    }
     function _tlOnDown(ev) {
       if (ev.button !== undefined && ev.button !== 0) return;
       const xy = _tlLaneXY(ev);
@@ -1593,6 +1651,26 @@
         _tlScrubbing = true;
         _tlScrubToTime(Math.max(0, _tlX2T(xy.x)));
         return;
+      }
+      // (3b) #167: a clip BLOCK in the CUTS MODULE LANE (the labelled
+      //      "Cuts" band below the diamond row at clip level) -> drill into
+      //      that clip's camera, the SAME _tlEnterClip verb the sequence-
+      //      level primary-band click uses. This is the fix for the
+      //      user-confirmed "clicking a clip block does NOT drill in": at
+      //      clip level the cuts blocks live in this module lane, and the
+      //      router had no branch for it (a click fell through to the
+      //      box-select below + did nothing). Clicking the ALREADY-active
+      //      clip is a harmless no-op re-bind (it just re-fits the same
+      //      camera). NOT a drag -> _tlDragMode stays '' so pointermove is
+      //      inert. Below the ruler/diamond/edge bands, so it never steals a
+      //      diamond/scrub gesture.
+      {
+        const cutClipId = _tlHitCutsLaneClip(xy.x, xy.y);
+        if (cutClipId) {
+          _tlDragMode = '';            // a select, not a drag
+          _tlEnterClip(cutClipId);     // load its camera (stays clip level)
+          return;
+        }
       }
       // (4) empty lane -> box-select marquee.
       _tlDragMode = 'box';
@@ -2567,6 +2645,12 @@
             const path = clip ? _tlClipPath(clip) : null;
             return (path && path.id) || null;
           },
+          // #167: the CLIP-LEVEL cuts-module-lane clip hit-test (the SAME
+          // _tlHitCutsLaneClip the pointerdown router runs). Returns the
+          // clip id at the given LANE-coord (x,y) (relative to the lane top-
+          // left, the _tlLaneXY space) or null. Lets the harness confirm a
+          // real-pixel coordinate maps to the expected clip without a click.
+          tlHitCutsLaneClipAt(x, y) { return _tlHitCutsLaneClip(+x, +y); },
           // Click-a-clip -> load its camera + drop to clip level (the SAME
           // _tlEnterClip the sequence-level pointerdown runs). Returns the
           // post-enter level + the now-bound selEl path id.
