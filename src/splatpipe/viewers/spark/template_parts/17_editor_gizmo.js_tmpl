@@ -447,23 +447,31 @@
     function _gzAfterEdit() {
       const p = _gzActivePath();
       if (!p) return;
+      // R4 (#165) Rec-latency fix: rebuild the trajectory ONCE per edit.
+      // The prior body called _trajRebuild(p) + buildPlayer(p) HERE and
+      // THEN window.__editor.rebuild() (which calls _trajRebuild + a 3rd
+      // buildPlayer + _trajRefreshActive AGAIN) -- so every Record / gizmo
+      // edit ran the full geometry rebuild (nSeg*96 polyline samples + 240
+      // speed-dot samples) TWICE and built the spline 3-4 times. _trajRebuild
+      // is the reliable direct call (15 concatenates before 17); we reuse
+      // the player it builds and add the active-key refresh inline, dropping
+      // the redundant window.__editor.rebuild() round-trip. Same visible
+      // result (one rebuild + one refresh), about half the synchronous work
+      // -- the rebuild cost scales with keyframe count, so this keeps Rec
+      // snappy as a real authored path grows. The OverlayScene update()
+      // sig-check still rebuilds on the next tick if a later edit races
+      // (idempotent), so no rebuild is ever missed.
       try {
         _trajRebuild(p);
-        _trajPhPlayer = p ? buildPlayer(p) : null;
-      } catch (e) {}
-      // Bump the built-sig mismatch so the OverlayScene update()
-      // path also rebuilds (belt-and-braces; _trajRebuild already
-      // reset it -- this just guarantees a mismatch if a later
-      // tick races).
-      try {
-        if (window.__editor && typeof window.__editor.rebuild ===
-            'function') window.__editor.rebuild();
+        _trajPhPlayer = buildPlayer(p);
+        if (typeof _trajRefreshActive === 'function') _trajRefreshActive();
       } catch (e) {}
       if (_player && _activePathId === (p.id || _activePathId)) {
-        // A pose edit while the player drives this path: rebuild it
-        // in place (reuse buildPlayer -- the one spline impl) so the
-        // edit is not lost; if it cannot build, stop cleanly.
-        const np = buildPlayer(p);
+        // A pose edit while the player drives this path: rebuild it in
+        // place (reuse the player just built above -- the one spline impl,
+        // NOT a fresh buildPlayer) so the edit is not lost; if it cannot
+        // build, stop cleanly.
+        const np = _trajPhPlayer;
         if (np) _player = np;
         else { try { stopPath(); } catch (e) {} }
       }
@@ -1469,22 +1477,27 @@
     //      menu, byte-behaviourally consistent with before.
     function _gzGoToKeyframe(idx) {
       // Reuse the REAL #path-scrub mechanism via the timeline's
-      // _tlScrubToTime surface (window.__editor.tlScrub, frac in 0..1)
-      // -- the single source of truth that takes _player over + rebases
-      // _t0. Compute the frac from the keyframe's t over the player
-      // duration (buildPlayer is the one spline impl). The timeline IIFE
-      // (16) loads AFTER this fragment but the surface exists by the time
-      // a user right-clicks, so the lookup is safe at runtime.
+      // _tlScrubToTime surface -- the single source of truth that takes
+      // _player over + rebases _t0. R4 (#165): scrub to the keyframe's
+      // ABSOLUTE seconds via window.__editor.tlScrubSeconds (the timeline
+      // playhead now scrubs over the effective range, NOT a 0..1 frac of
+      // the player duration -- a frac mapping would land at frac*effDur,
+      // not the keyframe time). The timeline surface exists by the time a
+      // user right-clicks, so the lookup is safe at runtime.
       const p = _gzActivePath();
       if (!p || !Array.isArray(p.keyframes) || !p.keyframes[idx]) return;
-      let dur = 0;
-      try { const pl = buildPlayer(p); if (pl) dur = pl.duration || 0; }
-      catch (e) {}
       const t = Math.max(0, p.keyframes[idx].t || 0);
-      const frac = (dur > 0) ? Math.max(0, Math.min(1, t / dur)) : 0;
       try {
-        if (window.__editor && typeof window.__editor.tlScrub === 'function') {
-          window.__editor.tlScrub(frac);
+        if (window.__editor &&
+            typeof window.__editor.tlScrubSeconds === 'function') {
+          window.__editor.tlScrubSeconds(t);
+        } else if (window.__editor &&
+            typeof window.__editor.tlScrub === 'function') {
+          // Legacy fallback (older surface): frac over effective range.
+          let dur = 0;
+          try { const pl = buildPlayer(p); if (pl) dur = pl.duration || 0; }
+          catch (e) {}
+          window.__editor.tlScrub(dur > 0 ? Math.min(1, t / dur) : 0);
         }
       } catch (e) {}
     }
@@ -1867,28 +1880,64 @@
       if (!Array.isArray(p.keyframes)) p.keyframes = [];
       // Read the real elapsed playhead BEFORE stopping the tour
       // (stopPath() clears _player; we want the elapsed time the
-      // user is parked at -- the same value _trajPlayhead returns).
-      // UX-5 (2026-05-20): on a <2-kf path buildPlayer returns null
-      // so _trajPlayhead is unavailable. We default t to (last_kf_t +
-      // _GZ_DEFAULT_KF_DT) for kf #2, or 0 for the very first kf, so
-      // the second K after Add-camera builds a real (duration > 0)
-      // scrubbable spline instead of collapsing two kfs at t=0.
+      // user is parked at).
+      // R4 (#165): PREFER the timeline's EFFECTIVE playhead seconds
+      // (window.__editor.tlPlayheadT) -- it returns the live player clock
+      // while playing AND the _tlScrubSeconds scrub position when not
+      // playing, which (unlike the old _trajPlayhead) is NOT capped at the
+      // last keyframe time. So if the user scrubbed the playhead PAST the
+      // last keyframe (now possible -- the scrub range is the effective
+      // 10 s floor / total_duration_s), Record drops the new keyframe THERE
+      // instead of clamping it back onto the last one. This is the in-
+      // viewer "scrub forward, then Rec to extend the path" loop the user
+      // expects. Falls back to _trajPlayhead (legacy) then the 1-kf
+      // bootstrap below.
+      // UX-5 (2026-05-20): on a <2-kf path buildPlayer returns null so the
+      // playhead is 0; we default t to (last_kf_t + _GZ_DEFAULT_KF_DT) for
+      // kf #2, or 0 for the very first kf, so the second K after Add-camera
+      // builds a real (duration > 0) scrubbable spline instead of
+      // collapsing two kfs at t=0.
       let t = 0;
-      try {
-        const ph = buildPlayer(p);
-        if (ph) {
-          const v = _trajPlayhead(ph);
-          if (typeof v === 'number' && isFinite(v)) t = Math.max(0, v);
-        } else if (p.keyframes.length === 1) {
-          // Exactly one kf -> ph is null. Place kf #2 at last_t + DT
-          // so the new path has nonzero duration and is scrub-able.
-          const lastT = (typeof p.keyframes[0].t === 'number' &&
-            isFinite(p.keyframes[0].t)) ? p.keyframes[0].t : 0;
-          t = Math.max(0, lastT) + _GZ_DEFAULT_KF_DT;
-        }
-        // p.keyframes.length === 0 -> ph still null but t stays 0 (kf
-        // #1 at t=0; this is the canonical first-keyframe origin).
-      } catch (e) {}
+      // R4 (#165): the VERY FIRST keyframe (0-kf path) ALWAYS anchors at
+      // t=0 -- the canonical path origin -- regardless of where the
+      // playhead happens to sit. The path should start at 0; recording kf
+      // #1 at a scrubbed-forward playhead would leave a [0, t) gap with no
+      // keyframe and start the spline mid-air. Only kf #2+ follow the
+      // playhead (the "scrub forward then Rec to extend" loop below).
+      let phResolved = (p.keyframes.length === 0);
+      if (!phResolved) {
+        try {
+          if (window.__editor &&
+              typeof window.__editor.tlPlayheadT === 'number') {
+            const v = window.__editor.tlPlayheadT;
+            if (typeof v === 'number' && isFinite(v) && v > 0) {
+              t = Math.max(0, v);
+              phResolved = true;
+            }
+          }
+        } catch (e) {}
+      }
+      if (!phResolved) {
+        try {
+          const ph = buildPlayer(p);
+          if (ph) {
+            const v = _trajPlayhead(ph);
+            if (typeof v === 'number' && isFinite(v) && v > 0) {
+              t = Math.max(0, v);
+              phResolved = true;
+            }
+          }
+        } catch (e) {}
+      }
+      if (!phResolved && p.keyframes.length === 1) {
+        // Exactly one kf + playhead at 0 -> place kf #2 at last_t + DT so
+        // the new path has nonzero duration and is scrub-able.
+        const lastT = (typeof p.keyframes[0].t === 'number' &&
+          isFinite(p.keyframes[0].t)) ? p.keyframes[0].t : 0;
+        t = Math.max(0, lastT) + _GZ_DEFAULT_KF_DT;
+      }
+      // p.keyframes.length === 0 -> t stays 0 (kf #1 at t=0; the canonical
+      // first-keyframe origin).
       _gzStopTour();
       const kf = {
         t: _GZ_R(t),
@@ -2462,6 +2511,26 @@
             return _gzCtl ? (_gzCtl.axis || null) : null;
           },
           gzDetach() { _gzDetach(); return _gzSelKf; },
+          // R4 (#165): delete the GIZMO-selected keyframe (the one the
+          // user selected by clicking its 3D frustum). The X / Delete
+          // hotkey + the timeline contextmenu Delete only ever consulted
+          // _tlSel (the bottom-timeline selection); a keyframe selected via
+          // the frustum left _tlSel empty, so X did NOTHING ("can't delete
+          // keyframes"). The 16 X handler now falls back to THIS when
+          // _tlSel is empty. Reuses _gzDeleteKeyframe (>=2-keyframe clamp +
+          // 'kf-delete' EditHistory snapshot + _gzDetach + _gzAfterEdit --
+          // the SAME mutation the frustum right-click Delete runs).
+          // Returns true when a keyframe was actually removed.
+          gzDeleteSel() {
+            if (_gzSelKf < 0) return false;
+            const p = _gzActivePath();
+            if (!p || !Array.isArray(p.keyframes) ||
+                _gzSelKf >= p.keyframes.length) return false;
+            const before = p.keyframes.length;
+            _gzDeleteKeyframe(_gzSelKf);
+            const after = (p.keyframes || []).length;
+            return after < before;
+          },
           // Simulate a gizmo TRANSLATE drag: move the proxy by a
           // world delta + run the SAME objectChange write-back the
           // real drag fires (we cannot synthesise a pointer drag on

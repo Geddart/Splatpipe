@@ -623,6 +623,36 @@ PIN UPDATES:
     shifted by the same +33261 code points in lockstep (no spooky action
     elsewhere; the fixtures carry no clips so the sequence paths never run).
     Pins re-pinned to the new baseline.
+  * 2026-05-22 (#165 R4 -- core gestures always work): three CORE
+    keyframe-editing gestures made state-independent across
+    ``16_editor_timeline`` + ``17_editor_gizmo``. (1 Rec near-instant)
+    ``_gzAfterEdit`` rebuilt the trajectory + the spline TWICE per
+    Record/gizmo edit (a direct ``_trajRebuild`` + ``buildPlayer`` THEN a
+    redundant ``window.__editor.rebuild()`` round-trip that rebuilt again);
+    it now rebuilds ONCE + reuses the player it built (about half the
+    synchronous work; the rebuild cost scales with keyframe count).
+    (2 always-scrubbable full-range playhead) a new ``_tlScrubSeconds`` +
+    ``_tlEffectiveDur`` decouple the PLAYHEAD time (over the effective
+    ``max(last_kf, 10)`` / ``total_duration_s`` range) from the camera
+    SAMPLE time; ``_tlScrubToTime`` no longer early-returns on a 0/1-kf
+    path nor clamps to the last keyframe, and ``_tlPlayheadT`` reports
+    ``_tlScrubSeconds`` whenever NOT truly-playing (incl. a paused-at-scrub
+    freeze, gated on ``_pausedAt===null``) so the marker drags the full
+    Length in every state (path-cam / Perspective / clip level). The
+    camera-WRITE stays gated by the R3 #6 ``_CAM_PERSP`` check + the UX-3
+    #7 ``_pausedAt``/``_pausedAtPlayer`` reuse is untouched. Record reads
+    this effective playhead (so a scrub PAST the last kf records there to
+    extend the path); the FIRST keyframe still anchors at t=0. (3 delete in
+    every state) the X/Delete handler, which consulted ONLY ``_tlSel``,
+    now falls back to a new ``window.__editor.gzDeleteSel()`` (deletes the
+    GIZMO/frustum-selected keyframe via the existing ``_gzDeleteKeyframe``
+    -- same >=2 clamp + ``kf-delete`` snapshot) when the timeline selection
+    is empty; the H6 ``_editorHotkeyBlocked`` text-input guard is preserved.
+    New test surface: ``tlScrubSeconds`` / ``tlEffectiveDur`` / ``gzDeleteSel``;
+    ``tlScrub(frac)`` + ``_gzGoToKeyframe`` remapped onto the effective
+    range. All 6 fixtures shifted by the same +11274 code points in
+    lockstep -- additive only (isolated to the 16/17 edits). Pins re-pinned
+    to the new baseline.
 """
 
 from __future__ import annotations
@@ -712,36 +742,36 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
         "harness_defaults",
         ("HarnessScene",),
         {},
-        919536,
-        "a8d82e512c93c9f566d193eb59bc26ebe735f5baeb3e5499799f11167860395c",
+        930810,
+        "11af968f99428d114400da79d2278ec07cb07468bb733ba6396a5a12538cea2d",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        919508,
-        "72aa4ff94985e4aae53e4b12e57d1ede0fa2512f6e22590e194d89980a5a2aa1",
+        930782,
+        "e4a2143d37b7468c439d3a2fce3244b73cffc90d0f1770f5434a0410e6209609",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        919503,
-        "400ec07f39a0f11a03453e68e00f151983e40b7fc2e8c7ed6ac298050dc08342",
+        930777,
+        "f180ed0bf35daefbcd30eac6b69c2d8ae1572ed30cdf9f8d1f77d632f95bb480",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        919482,
-        "75f860ab69712d69f60d65fb36686cd28d4cf9d9daf52e9ba4ebea169467b1c1",
+        930756,
+        "0e2fd9834b674d5debc7a38526b969de9cab04d65e2463e4b7138d4246cac0d3",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        919547,
-        "ba1eab38dd7477c25675fc6788cf272ce83fa093b6a95628190e1e8385eead80",
+        930821,
+        "56bf2b03a6da52737ed75970313580deb6a525964cd43e05458752dda974c135",
     ),
     (
         "share_card",
@@ -751,8 +781,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        919406,
-        "9746337339f2474ab2d13326bcd872e4deb20fad2c090c50d48d5431d9fc1468",
+        930680,
+        "8176d00399e5f9cf87477379703a36e8fb356e2c4b41b87c7127ed3beb9aab8e",
     ),
 ]
 

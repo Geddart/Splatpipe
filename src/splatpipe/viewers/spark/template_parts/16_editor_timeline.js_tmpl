@@ -98,6 +98,25 @@
     let _tlBoxX0 = 0;              // marquee start x (lane px)
     let _tlBoxX1 = 0;
     let _tlScrubbing = false;      // playhead being live-dragged
+    // R4 (#165) core-gesture fix -- the playhead position in SECONDS over
+    // the EFFECTIVE scrub range (max(last kf, 10) or total_duration_s),
+    // the SINGLE source of truth for the marker when not playing. The
+    // prior code mapped the playhead through _tlDuration(p) (= the LAST
+    // keyframe time), which (a) CLAMPED the scrub to the last kf even
+    // though the Length field + _tlFitToPath laid the lane out over the
+    // 10 s floor -- the user "only gets ~2 s" -- and (b) early-returned in
+    // _tlScrubToTime when _tlDuration<=0 (a fresh 0/1-kf camera), so the
+    // user could not scrub to place the SECOND keyframe at a later time
+    // (chicken-and-egg). _tlScrubSeconds decouples the PLAYHEAD time from
+    // the camera-SAMPLE time: the playhead is always draggable across the
+    // full effective range; the camera samples min(t, playerDuration) and
+    // HOLDS at the last pose past the end (the CubicSpline.evaluate clamp,
+    // 09 line 30 -- the SAME "hold at end" total_duration_s relies on), so
+    // scrubbing PAST the last keyframe is safe + lets Record drop a kf
+    // there. The camera-WRITE stays gated by the R3 #6 _CAM_PERSP check in
+    // the #path-scrub handler (we never reintroduce the Perspective
+    // hijack) and the UX-3 #7 _pausedAt/_pausedAtPlayer reuse is untouched.
+    let _tlScrubSeconds = 0;
 
     // ---- Multi-camera CLIP EDITOR (#164 -- stacked two-level timeline).
     //      The bottom strip is a TWO-LEVEL editor that reuses the EXISTING
@@ -228,6 +247,20 @@
         return p.total_duration_s;
       }
       return kfDur;
+    }
+    // R4 (#165): the EFFECTIVE scrub-range ceiling (seconds) -- the SAME
+    // value the Length field + _tlFitToPath frame the lane to. This is the
+    // range the PLAYHEAD scrubs over (always >= 10 s floor, or
+    // total_duration_s when set; NEVER the bare last-kf time and NEVER 0).
+    // _tlDuration above stays the player-clock-aware kf duration (used for
+    // the camera SAMPLE-time mapping); the two are deliberately distinct
+    // so the playhead can scrub PAST the last keyframe (camera holds at the
+    // last pose there) to record a new keyframe further along. Hoisted
+    // function declaration -> referencing _effectiveScrubRange (defined
+    // below) is safe (both are function declarations in this IIFE).
+    function _tlEffectiveDur(p) {
+      const r = _effectiveScrubRange(p);
+      return (r && isFinite(r[1]) && r[1] > 0) ? r[1] : 10.0;
     }
     // time (seconds) -> x within the lane (px); inverse for hit-test
     // / drag. Pure display math (zoom/scroll) -- never a stored t.
@@ -927,21 +960,35 @@
     //      single source of truth, no parallel clock.
     function _tlPlayheadT() {
       const p = _tlActivePath();
-      const dur = _tlDuration(p);
-      if (dur <= 0) return 0;
-      if (_player && _activePathId &&
-          _trajBuiltPathId && _activePathId === _trajBuiltPathId) {
+      const effDur = _tlEffectiveDur(p);
+      // TRULY PLAYING: a live tour drives this path AND it is NOT a
+      // paused-at-scrub freeze (R4 #165). _pausedAt !== null means the
+      // scrub/pause path froze _player at a scrub frame (the UX-3 #7
+      // mechanism) -- in that state the marker must track _tlScrubSeconds
+      // (the full effective-range scrub position) NOT the player clock,
+      // which is clamped to _player.duration (= the last kf) and would
+      // re-clamp the playhead to the last keyframe the instant a scrub
+      // builds _player (the #path-scrub handler builds it on first
+      // input). Only an actually-advancing tour (_pausedAt === null) uses
+      // the player clock here -- the SAME formula tick() uses.
+      const trulyPlaying = _player && _activePathId &&
+        _trajBuiltPathId && _activePathId === _trajBuiltPathId &&
+        (typeof _pausedAt === 'undefined' || _pausedAt === null);
+      if (trulyPlaying) {
         const sp = _player.playSpeed || 1.0;
         let tn = ((performance.now() - _t0) / 1000) * sp;
         if (_player.loop && tn > _player.duration)
           tn = tn % _player.duration;
-        return Math.max(0, Math.min(tn, dur));
+        return Math.max(0, Math.min(tn, _player.duration));
       }
-      if (scrubEl) {
-        const f = (parseFloat(scrubEl.value) || 0) / 1000;
-        return Math.max(0, Math.min(1, f)) * dur;
-      }
-      return 0;
+      // NOT PLAYING (idle OR paused-at-scrub): the playhead is
+      // _tlScrubSeconds over the EFFECTIVE range. ALWAYS valid (effDur >=
+      // 10 floor, never 0) so the marker is draggable across the full
+      // Length in every state -- a fresh 0/1-kf camera, a paused scrub,
+      // Perspective -- and never clamps to the last keyframe. The
+      // camera-SAMPLE mapping (min(t, playerDuration)) lives in
+      // _tlScrubToTime; here we report only the marker time.
+      return Math.max(0, Math.min(_tlScrubSeconds, effDur));
     }
     function _tlSyncPlayhead() {
       // #164 clip editor: at SEQUENCE level the playhead is the canvas-
@@ -984,6 +1031,20 @@
         }
       }
       const t = _tlPlayheadT();
+      // R4 (#165): while a tour is TRULY PLAYING this path (advancing, NOT
+      // a paused-at-scrub freeze), mirror the live player time into
+      // _tlScrubSeconds so the moment playback stops the marker HOLDS at
+      // the last played position instead of snapping back to a stale
+      // pre-play scrub time. The SAME _pausedAt===null gate _tlPlayheadT
+      // uses -- so a paused scrub does NOT overwrite _tlScrubSeconds with
+      // the clamped player clock (which would re-clamp the playhead to the
+      // last keyframe).
+      const _trulyPlaying = _player && _activePathId &&
+        _trajBuiltPathId && _activePathId === _trajBuiltPathId &&
+        (typeof _pausedAt === 'undefined' || _pausedAt === null);
+      if (_trulyPlaying) {
+        _tlScrubSeconds = t;
+      }
       const x = _tlT2X(t);
       _tlPlayhead.style.left = x + 'px';
       _tlPlayhead.style.display =
@@ -1233,19 +1294,41 @@
     //      a real user. We never reimplement the scrub math.
     function _tlScrubToTime(t) {
       const p = _tlActivePath();
-      const dur = _tlDuration(p);
-      if (!scrubEl || dur <= 0) return;
-      // Make sure the scrub handler binds to the path the timeline
-      // is editing (it reads selEl.value when _player is null).
-      if (p && p.id && selEl && selEl.value !== p.id &&
-          !_player) {
-        try { selEl.value = p.id; } catch (e) {}
+      // R4 (#165): the PLAYHEAD scrubs over the EFFECTIVE range (never
+      // clamps to the last kf, never early-returns on a 0/1-kf path).
+      // _tlScrubSeconds is the marker's single source of truth; set it
+      // FIRST + UNCONDITIONALLY so the playhead always moves, in every
+      // state (path-cam / Perspective / clip level), even when there is
+      // no spline yet to drive the camera (a fresh 0/1-kf camera). This
+      // is what makes "scrub past the last keyframe to record more" work
+      // (Record reads this effective playhead) and kills the old
+      // chicken-and-egg ("can't scrub a 1-kf camera to place kf #2").
+      const effDur = _tlEffectiveDur(p);
+      let st = +t;
+      if (!isFinite(st)) st = 0;
+      st = Math.max(0, Math.min(st, effDur));
+      _tlScrubSeconds = st;
+      // Camera SAMPLE-time mapping: the #path-scrub slider value is a
+      // fraction of the player duration (== _tlDuration(p) -- the SAME
+      // max(kfDuration, total_duration_s) buildPlayer computes; no extra
+      // buildPlayer here). Past the last knot the spline holds the last
+      // pose, so we sample min(st, playerDur) -> the camera stops at the
+      // end while the playhead keeps moving over the effective range.
+      const playerDur = _player ? _player.duration : _tlDuration(p);
+      if (scrubEl && playerDur > 0) {
+        // Bind the scrub handler to the path the timeline is editing (it
+        // reads selEl.value when _player is null). A bind, NOT a camera
+        // write -- the #path-scrub handler's R3 #6 _CAM_PERSP gate still
+        // decides whether the camera moves (Perspective => playhead only).
+        if (p && p.id && selEl && selEl.value !== p.id && !_player) {
+          try { selEl.value = p.id; } catch (e) {}
+        }
+        const f = Math.max(0, Math.min(1, Math.min(st, playerDur) / playerDur));
+        scrubEl.value = String(f * 1000);
+        try {
+          scrubEl.dispatchEvent(new Event('input', { bubbles: true }));
+        } catch (e) {}
       }
-      const f = Math.max(0, Math.min(1, t / dur));
-      scrubEl.value = String(f * 1000);
-      try {
-        scrubEl.dispatchEvent(new Event('input', { bubbles: true }));
-      } catch (e) {}
       _tlSyncPlayhead();
     }
 
@@ -1971,8 +2054,28 @@
       // [role=menu]/[role=dialog]. Critical here: X DELETES the selected
       // keyframe(s); without the menu/dialog guard, Tab-ing to the kebab
       // menu (or a Save dialog) and pressing X silently dropped a keyframe.
+      // The guard preserves the H6 intent (never fire X while TYPING in a
+      // text field) -- but a plain BUTTON / the canvas does NOT block it,
+      // so X works whether focus is on the canvas or a transport button.
       if (_editorHotkeyBlocked()) return;
-      if (!_tlSel.size) return;
+      // R4 (#165): X with NO timeline (diamond) selection falls back to the
+      // GIZMO-selected keyframe -- the one the user selected by clicking
+      // its 3D frustum. Previously X consulted ONLY _tlSel, so a frustum-
+      // selected keyframe could NOT be deleted with X ("can't delete
+      // keyframes"). gzDeleteSel() reuses _gzDeleteKeyframe (same >=2 clamp
+      // + 'kf-delete' snapshot + detach + rebuild). This makes delete work
+      // from EITHER selection surface, in every state.
+      if (!_tlSel.size) {
+        try {
+          if (window.__editor &&
+              typeof window.__editor.gzDeleteSel === 'function') {
+            if (window.__editor.gzDeleteSel()) {
+              ev.preventDefault();
+            }
+          }
+        } catch (e) {}
+        return;
+      }
       const p = _tlActivePath();
       if (!p || !p.keyframes) return;
       const keep = [];
@@ -1993,6 +2096,7 @@
       _tlPushHistorySnap('kf-delete');
       p.keyframes = keep;
       _tlSel.clear();
+      ev.preventDefault();
       _tlAfterEdit();
     });
 
@@ -2183,10 +2287,22 @@
           // mechanism (single source of truth -- takes _player over
           // + rebases _t0, robust to the auto-tour). frac in 0..1.
           tlScrub(frac) {
-            const dur = _tlDuration(_tlActivePath());
-            _tlScrubToTime(Math.max(0, Math.min(1, +frac || 0)) * dur);
+            // R4 (#165): frac maps over the EFFECTIVE range (the full
+            // Length the playhead scrubs over), NOT the bare last-kf
+            // _tlDuration -- so tlScrub(1.0) reaches the 10 s floor /
+            // total_duration_s, matching the lane the user sees.
+            const eff = _tlEffectiveDur(_tlActivePath());
+            _tlScrubToTime(Math.max(0, Math.min(1, +frac || 0)) * eff);
             return _tlPlayheadT();
           },
+          // R4 (#165): scrub to an absolute SECONDS position over the
+          // effective range (drives the SAME _tlScrubToTime the ruler
+          // drag runs). Returns the resulting playhead seconds.
+          tlScrubSeconds(t) {
+            _tlScrubToTime(+t || 0);
+            return _tlPlayheadT();
+          },
+          get tlEffectiveDur() { return _tlEffectiveDur(_tlActivePath()); },
           // Temporal edit: set keyframe[idx].t = newT (the SAME
           // mutation a diamond drag performs) + rebuild.
           tlDragKf(idx, newT) {

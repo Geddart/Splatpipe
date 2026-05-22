@@ -12,7 +12,7 @@
   <img src="https://img.shields.io/badge/python-3.12+-blue?logo=python&logoColor=white" alt="Python 3.12+">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-0078D4?logo=windows" alt="Windows / Linux">
-  <img src="https://img.shields.io/badge/tests-919%20passed-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-967%20passed-brightgreen" alt="Tests">
 </p>
 
 ---
@@ -189,7 +189,7 @@ MyProject/
 
 ```bash
 pip install -e ".[dev]"     # Install with dev dependencies
-pytest tests/ -v            # 945 collected; 919 passed, 26 skipped (~36s)
+pytest tests/ -v            # 1029 collected; 967 passed, 62 skipped (~32s)
 ```
 
 Key design principle: **debug data over fallbacks**. No try/except — every step writes a `_debug.json` with full command, stdout/stderr, file stats, metrics, timing, and environment. When something fails, the debug JSON tells you exactly why.
