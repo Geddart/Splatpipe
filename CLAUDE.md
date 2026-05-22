@@ -9,7 +9,7 @@ CLI-first Gaussian splatting pipeline. Takes COLMAP data through: auto-clean →
 ```bash
 cd H:\001_ProjectCache\1000_Coding\Splatpipe
 pip install -e ".[dev]"
-pytest tests/ -v                    # Run tests (1019 collected; 957 passed, 62 skipped, ~32s)
+pytest tests/ -v                    # Run tests (1029 collected; 967 passed, 62 skipped, ~32s)
 splatpipe --help                    # CLI commands
 splatpipe web                       # Launch dashboard
 ```
@@ -98,7 +98,7 @@ splatpipe/                    # repo root
           15g_titles_module.js_tmpl       # TitlesModule (Phase 8)
           15h_intro_module.js_tmpl        # IntroModule -- Scene Settings Intro section (Phase 11A Issue 9)
           15i_startview_module.js_tmpl    # StartViewModule -- Scene Settings Start View section (Phase 11A Issue 9)
-          16_editor_timeline.js_tmpl   # Author editor -- bottom timeline + total-time UI + multi-lane registry
+          16_editor_timeline.js_tmpl   # Author editor -- bottom timeline + total-time UI + multi-lane registry + multi-camera CLIP EDITOR (#164): stacked two-level (sequence cuts track <-> click-clip-to-edit-keyframes via _camSelApply), master ruler/playhead/scrub-via-existing-path, ◂ Sequence back + breadcrumb
           17_editor_gizmo.js_tmpl      # Author editor -- gizmo + interp popover (multi-select, Phase 11A Issue 4) + Save (visible feedback, Phase 11A Issue 7) + SPCP
           17a_edit_history.js_tmpl     # EditHistory undo/redo ring + hotkeys (Phase 2A #122)
           17b_scene_settings_drawer.js_tmpl  # Scene Settings drawer scaffold + 6 sections (Phase 2D #122)
@@ -186,6 +186,7 @@ splatpipe/                    # repo root
     test_html_for_save_mode.py     # Generated viewer save_mode/save_endpoint plumbing + NEGATIVE-CONTROL author-mode UX/gizmo/overlay tests (v0.8+)
     test_html_for_output_pin.py    # Output-pin byte-lock: html_for() len+SHA-256 for 6 corpus fixtures + UTF-8 LF fragment sanity (modularization-safe replacement for the retired excised-region source-level lock; T6 of #118)
     test_intro_startview_modules.py # IntroModule (15h) + StartViewModule (15i) Scene Settings sections: contract markers + fragment ordering + openStartViewCard helper (Phase 11A Issue 9)
+    test_clip_editor.py       # Multi-camera CLIP EDITOR (#164): two-level stacked timeline (Cuts master track <-> per-clip camera keyframes) -- STATIC surface markers (level state, click->load via _camSelApply, back/breadcrumb, sequence draw, scrub-via-existing-path) + DYNAMIC Node master-time clip-boundary resolution (_tlClipAtMasterT)
     test_context_menu.py      # openContextMenu primitive (04b) contract markers + 5 author-gated surfaces wired (timeline/3D/camera/annotation+title+clip rows) + 08:223 non-author suppressor preserved + fragment ordering (R2 #2 / #156)
     test_undo_redo_ui.py           # WF-H3 (#144): visible Undo/Redo transport buttons + narrow _editorUndoHotkeyBlocked() guard (Ctrl+Z works in the drawer; text-entry-only block matrix; Phase 11G)
     test_edit_history.py           # EditHistory snapshot ring-buffer (pre-gesture convention; WF-H2 #143 first-edit-undoable + per-gesture undo/redo; 200-cap; Phase 2A/11G)
@@ -427,7 +428,7 @@ Key config sections: `[tools]`, `[colmap_clean]`, `[postshot]` (profile, gpu, ma
 ## Tests
 
 ```bash
-pytest tests/ -v              # 1019 collected (957 passed, 62 skipped)
+pytest tests/ -v              # 1029 collected (967 passed, 62 skipped)
 pytest tests/ -k colmap       # Just COLMAP tests
 pytest tests/ -k integration  # End-to-end with tiny data
 pytest tests/ -k trainers     # Trainer abstraction tests

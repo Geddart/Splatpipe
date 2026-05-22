@@ -99,6 +99,97 @@
     let _tlBoxX1 = 0;
     let _tlScrubbing = false;      // playhead being live-dragged
 
+    // ---- Multi-camera CLIP EDITOR (#164 -- stacked two-level timeline).
+    //      The bottom strip is a TWO-LEVEL editor that reuses the EXISTING
+    //      substrate (CutsModule.timelineLane / ClipPlayer / _camSelApply /
+    //      the diamond row) -- NO parallel scrub clock, NO drill-in modal.
+    //        _tlLevel === 'sequence' : the cuts track is the PRIMARY band
+    //          (master clip sequence + master-time ruler); the keyframe
+    //          diamond row dims to context (shows the active clip's camera).
+    //          Click a clip block -> load that clip's camera (via the
+    //          EXISTING _camSelApply drill primitive) + drop to 'clip' level.
+    //          Master Play = window.__clip.restart() (the cut chain);
+    //          master scrub previews the active clip's camera at the
+    //          scrubbed master time, cutting at clip boundaries.
+    //        _tlLevel === 'clip' : the diamond row is the live keyframe
+    //          editor for _tlActivePath() (the selected clip's camera) --
+    //          EXISTING behaviour, byte-unchanged (drag/scrub/box-select).
+    //      DEFAULT: 'sequence' WHEN cfg.clips is non-empty, else 'clip'.
+    //      A single-camera / no-clip scene (the 6 live scenes) therefore
+    //      stays in 'clip' level and behaves EXACTLY as today -- the
+    //      sequence-level code paths are present but inert (no clips =>
+    //      the cuts lane draws nothing, no clip hit-test fires). The
+    //      master/local scrub MUST reuse the just-fixed #path-scrub gate
+    //      (camera-write only when _camSel.value !== _CAM_PERSP); we never
+    //      create a second scrub clock (that re-introduces the camera-
+    //      hijack the R3 #6 fix just closed).
+    function _tlClipsLive() {
+      // The live cfg.clips array (NOT the const-bound _clipSeq snapshot --
+      // an editor add/delete must be visible to the cuts lane + hit-test
+      // without a reload). Sorted ascending by clip_start (playback order).
+      let c = null;
+      try { if (typeof cfg !== 'undefined' && cfg) c = cfg; } catch (e) {}
+      if (!c) { try { c = window.cfg; } catch (e) {} }
+      const raw = (c && Array.isArray(c.clips)) ? c.clips : [];
+      return raw.slice().sort(
+        (a, b) => ((a && a.clip_start) || 0) - ((b && b.clip_start) || 0));
+    }
+    function _tlHasClips() { return _tlClipsLive().length > 0; }
+    let _tlLevel = _tlHasClips() ? 'sequence' : 'clip';
+    let _tlActiveClipId = null;
+    // Resolve a clip -> its camera_paths ENTRY, reusing the EXACT two-step
+    // 11_clip_player::_clipPath resolution (clip.camera_id may name a
+    // cfg.cameras entry resolved via its path_id, OR a cfg.camera_paths id
+    // DIRECTLY). NEVER assumes camera_id === path_id. Returns the path
+    // OBJECT (so callers read `.id` for _camSelApply / `.keyframes` for the
+    // diamond row).
+    function _tlClipPath(clip) {
+      if (typeof _clipPath === 'function') {
+        try { return _clipPath(clip); } catch (e) {}
+      }
+      // Defensive fallback (never reached in the assembled bundle -- 11
+      // concatenates before 16 so _clipPath is always in scope).
+      if (!clip || !clip.camera_id) return null;
+      let c = null;
+      try { c = (typeof cfg !== 'undefined' && cfg) ? cfg : window.cfg; }
+      catch (e) {}
+      const paths = (c && Array.isArray(c.camera_paths)) ? c.camera_paths : [];
+      const cams = (c && Array.isArray(c.cameras)) ? c.cameras : [];
+      const cam = cams.find(x => x && x.id === clip.camera_id);
+      if (cam) return paths.find(p => p && p.id === cam.path_id) || null;
+      return paths.find(p => p && p.id === clip.camera_id) || null;
+    }
+    function _tlActiveClip() {
+      if (!_tlActiveClipId) return null;
+      return _tlClipsLive().find(k => k && k.id === _tlActiveClipId) || null;
+    }
+    // Cheap structural signature of the clip set (count + per-clip
+    // id/camera/start/duration) so the per-frame update() can detect a
+    // Scene-Settings cuts-card edit + repaint the sequence band without a
+    // full-cfg deep-watch. Tracked across frames in _tlSeqClipSig.
+    function _tlClipsSig() {
+      const ordered = _tlClipsLive();
+      let s = ordered.length + '|';
+      for (const k of ordered) {
+        s += (k && k.id || '') + ',' + (k && k.camera_id || '') + ',' +
+          ((k && k.clip_start) || 0) + ',' + ((k && k.duration) || 0) + ';';
+      }
+      return s;
+    }
+    let _tlSeqClipSig = '';
+    // The display name of a clip's bound camera (for the breadcrumb).
+    function _tlClipCamName(clip) {
+      const path = _tlClipPath(clip);
+      if (path && path.name) return path.name;
+      let c = null;
+      try { c = (typeof cfg !== 'undefined' && cfg) ? cfg : window.cfg; }
+      catch (e) {}
+      const cams = (c && Array.isArray(c.cameras)) ? c.cameras : [];
+      const cam = cams.find(x => x && x.id === (clip && clip.camera_id));
+      if (cam && cam.name) return cam.name;
+      return (clip && clip.camera_id) || '?';
+    }
+
     function _tlActivePath() {
       // The SAME in-memory object the live player + the Task-16
       // overlay use (reuse, never a parallel copy).
@@ -316,6 +407,27 @@
     _tlBar.appendChild(_tlTotalInput);
     _tlBar.appendChild(_tlTotalUnit);
 
+    // ---- #164 clip editor: a "Sequence" back button + a breadcrumb that
+    //      together expose the two-level model. The back button returns to
+    //      the cuts track (sequence level); the breadcrumb shows the
+    //      current level ("Sequence" / "Sequence > Clip N - CameraName").
+    //      Built like the existing _tlPlay/_tlLoop buttons (inline-styled,
+    //      no new CSS region). Both are appended to _tlBar BEFORE the A4
+    //      gizmo cluster merges onto the same row (_tlBarRow ref below) so
+    //      they sit with the transport controls. Visibility is driven by
+    //      _tlSyncLevelUI(): the back button shows only at clip level WHEN
+    //      the scene has clips; the breadcrumb shows only when the scene
+    //      has clips at all (a no-clip single-camera scene shows neither --
+    //      identical to today's transport row).
+    const _tlSeqBack = _tlBtn('◂ Sequence', 'Back to the clip sequence');
+    _tlSeqBack.style.background = 'rgba(53,224,255,0.20)';
+    const _tlCrumb = document.createElement('span');
+    _tlCrumb.style.cssText =
+      'color:#9aa;font:11px monospace;white-space:nowrap;overflow:hidden;' +
+      'text-overflow:ellipsis;max-width:220px;';
+    _tlBar.appendChild(_tlSeqBack);
+    _tlBar.appendChild(_tlCrumb);
+
     _tlStrip.appendChild(_tlBar);
     // A4: publish the transport row so _gzInit (runs AFTER this IIFE)
     // can merge the Rec/interp/tangents/Save cluster onto it instead
@@ -425,11 +537,225 @@
       }
       return pow * 10;
     }
+    // ---- #164 clip editor: master (sequence) time mapping. The whole
+    //      0..Σduration clip sequence is fit to the lane width (a simple,
+    //      stable mapping for the MVP -- NO wheel zoom at sequence level;
+    //      per-clip durations are edited in the Scene Settings cuts card).
+    //      Returns the master sequence duration (sum of clip durations).
+    function _tlSeqTotalDur() {
+      let total = 0;
+      for (const k of _tlClipsLive()) {
+        total += (typeof k.duration === 'number' && k.duration > 0)
+          ? k.duration : 0;
+      }
+      return total;
+    }
+    function _tlSeqUsableW() { return Math.max(1, _tlW - 2 * _TL_PAD); }
+    function _tlSeqT2X(t, total) {
+      const td = (total && total > 0) ? total : _tlSeqTotalDur();
+      if (td <= 0) return _TL_PAD;
+      return _TL_PAD + (t / td) * _tlSeqUsableW();
+    }
+    function _tlSeqX2T(x, total) {
+      const td = (total && total > 0) ? total : _tlSeqTotalDur();
+      if (td <= 0) return 0;
+      return ((x - _TL_PAD) / _tlSeqUsableW()) * td;
+    }
+    // The MASTER playhead time (seconds along the whole sequence). When a
+    // cut tour is live (window.__clip / _clipState.active) it is
+    // clip.clip_start + the within-clip elapsed; otherwise it is the
+    // sequence-scrub position (_tlSeqScrubT, set by a sequence-level scrub).
+    let _tlSeqScrubT = 0;
+    function _tlSeqPlayheadT() {
+      try {
+        if (typeof _clipState !== 'undefined' && _clipState &&
+            _clipState.active && _clipState.clip && _player) {
+          const cs = (typeof _clipState.clip.clip_start === 'number')
+            ? _clipState.clip.clip_start : 0;
+          const sp = _player.playSpeed || 1.0;
+          let tn = ((performance.now() - _t0) / 1000) * sp;
+          const cd = (typeof _clipState.clip.duration === 'number')
+            ? _clipState.clip.duration : 0;
+          if (cd > 0) tn = Math.max(0, Math.min(tn, cd));
+          return cs + tn;
+        }
+      } catch (e) {}
+      const total = _tlSeqTotalDur();
+      return Math.max(0, Math.min(_tlSeqScrubT, total));
+    }
+    // Find the clip active at master time `t` (clip_start <= t < end). The
+    // LAST clip owns t == total (so the end of the sequence previews the
+    // final clip's last pose). Returns {clip, idx} or null.
+    function _tlClipAtMasterT(t) {
+      const ordered = _tlClipsLive();
+      if (!ordered.length) return null;
+      let acc = 0;
+      for (let i = 0; i < ordered.length; i++) {
+        const k = ordered[i];
+        const d = (typeof k.duration === 'number' && k.duration > 0)
+          ? k.duration : 0;
+        if (t < acc + d || i === ordered.length - 1) {
+          return { clip: k, idx: i, clipStart: acc,
+            within: Math.max(0, Math.min(t - acc, d)) };
+        }
+        acc += d;
+      }
+      return null;
+    }
+    // The registered Cuts lane object (CutsModule.timelineLane), pulled
+    // from the SAME multi-lane registry the module-lane stack uses -- so
+    // the sequence-level primary band reuses the EXISTING per-clip block
+    // render (colours, labels, 0..Σdur mapping) verbatim, never a copy.
+    function _tlCutsLane() {
+      try {
+        const lanes = _tlLaneList();
+        for (const e of lanes) {
+          if (e && e.name === 'cuts' && e.lane) return e.lane;
+        }
+      } catch (e) {}
+      return null;
+    }
+    // ---- #164 clip editor: SEQUENCE-LEVEL draw. The cuts track is the
+    //      PRIMARY band (the EXISTING CutsModule.timelineLane.render across
+    //      the full diamond-band rect), with a master-time ruler on top,
+    //      the active-clip highlight, the master playhead, and a DIMMED
+    //      context strip of the active clip's keyframe diamonds mapped onto
+    //      their master-time positions (dim = colour, never a resize). An
+    //      empty (no-clip) scene never reaches here (_tlLevel defaults to
+    //      'clip' then). Returns nothing; the caller `return`s after.
+    function _tlDrawSequence(ctx) {
+      const total = _tlSeqTotalDur();
+      const bandTop = _TL_RULER_H;
+      const bandBot = _tlLaneBandTop();   // bottom of the ruler+diamond band
+      const bandH = Math.max(2, bandBot - bandTop);
+      const usableW = _tlSeqUsableW();
+
+      // (1) Master-time ruler (seconds across 0..total, fit to width).
+      ctx.fillStyle = 'rgba(53,224,255,0.06)';
+      ctx.fillRect(0, 0, _tlW, _TL_RULER_H);
+      if (total > 0) {
+        // A "nice" seconds step for the fit width.
+        const pxPerS = usableW / total;
+        let stepS = 1;
+        const cand = [0.5, 1, 2, 5, 10, 20, 30, 60, 120, 300];
+        for (const c of cand) { if (c * pxPerS >= 48) { stepS = c; break; }
+          stepS = c; }
+        ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+        ctx.fillStyle = '#9ad8e6';
+        ctx.lineWidth = 1;
+        ctx.font = '10px monospace';
+        ctx.textBaseline = 'top';
+        for (let t = 0; t <= total + 1e-6; t += stepS) {
+          const x = _tlSeqT2X(t, total);
+          ctx.beginPath();
+          ctx.moveTo(x + 0.5, 0);
+          ctx.lineTo(x + 0.5, _TL_RULER_H);
+          ctx.stroke();
+          ctx.fillText((Math.round(t * 100) / 100) + 's', x + 3, 2);
+        }
+      }
+
+      // (2) Primary cuts band -- reuse the EXISTING CutsModule lane render
+      //     across the full diamond-band rect (it maps 0..Σdur -> x..x+w
+      //     with the SAME math + per-camera colours + labels).
+      const lane = _tlCutsLane();
+      if (lane && typeof lane.render === 'function') {
+        try {
+          lane.render(ctx, _TL_PAD, bandTop, usableW, bandH,
+            _tlSeqPlayheadT());
+        } catch (e) {}
+      } else if (total <= 0) {
+        // No clips with a positive duration -> empty-state hint line.
+        ctx.fillStyle = '#9aa';
+        ctx.font = '11px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('No clips yet — + Add clip (Scene Settings) to build '
+          + 'your cut sequence', _TL_PAD + 4, bandTop + bandH / 2);
+      }
+
+      // (3) Active-clip highlight: a bright border around the selected
+      //     clip's block (so the click target reads as selected).
+      if (total > 0 && _tlActiveClipId) {
+        const ordered = _tlClipsLive();
+        let acc = 0;
+        for (const k of ordered) {
+          const d = (typeof k.duration === 'number' && k.duration > 0)
+            ? k.duration : 0;
+          if (k && k.id === _tlActiveClipId && d > 0) {
+            const bx = _tlSeqT2X(acc, total);
+            const bw = (d / total) * usableW;
+            ctx.strokeStyle = '#35e0ff';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(bx + 1, bandTop + 2, Math.max(1, bw - 2),
+              bandH - 4);
+            break;
+          }
+          acc += d;
+        }
+      }
+
+      // (4) DIMMED context diamonds: the active clip's camera keyframes,
+      //     mapped onto their master-time positions inside the clip's
+      //     block (kf.t - clip.in, offset by clip_start, scaled to the
+      //     clip's [in, in+duration] window). Context only -> low-opacity,
+      //     non-interactive at sequence level (dim by COLOUR, not resize).
+      if (total > 0 && _tlActiveClipId) {
+        const clip = _tlActiveClip();
+        const path = clip ? _tlClipPath(clip) : null;
+        const at = _tlClipAtMasterT(_tlSeqPlayheadT());
+        const clipStart = (clip && typeof clip.clip_start === 'number')
+          ? clip.clip_start : (at ? at.clipStart : 0);
+        if (path && Array.isArray(path.keyframes) && clip) {
+          const inT = (typeof clip.in === 'number' && clip.in > 0)
+            ? clip.in : 0;
+          const dur = (typeof clip.duration === 'number' && clip.duration > 0)
+            ? clip.duration : 0;
+          const cy = bandTop + 8;
+          ctx.globalAlpha = 0.55;
+          for (const k of path.keyframes) {
+            const kt = (k && typeof k.t === 'number') ? k.t : 0;
+            const rel = kt - inT;
+            if (dur > 0 && (rel < -1e-6 || rel > dur + 1e-6)) continue;
+            const cx = _tlSeqT2X(clipStart + Math.max(0, rel), total);
+            ctx.beginPath();
+            ctx.moveTo(cx, cy - 4);
+            ctx.lineTo(cx + 4, cy);
+            ctx.lineTo(cx, cy + 4);
+            ctx.lineTo(cx - 4, cy);
+            ctx.closePath();
+            ctx.fillStyle = '#ffd9b0';
+            ctx.fill();
+          }
+          ctx.globalAlpha = 1.0;
+        }
+      }
+
+      // (5) Master playhead (cyan vertical line at the master time).
+      if (total > 0) {
+        const px = _tlSeqT2X(_tlSeqPlayheadT(), total);
+        ctx.strokeStyle = '#35e0ff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(px + 0.5, 0);
+        ctx.lineTo(px + 0.5, bandBot);
+        ctx.stroke();
+      }
+    }
+
     function _tlDraw() {
       if (!_tlCtx) return;
       const ctx = _tlCtx;
       ctx.setTransform(_tlDpr, 0, 0, _tlDpr, 0, 0);
       ctx.clearRect(0, 0, _tlW, _tlHpx);
+      // #164 clip editor: SEQUENCE level draws the cuts track as the
+      // primary band (+ master ruler + master playhead + dimmed context
+      // diamonds) and returns; CLIP level is the EXISTING per-path
+      // diamond editor below (byte-unchanged for the 6 live no-clip
+      // scenes, which always stay at 'clip' level).
+      if (_tlLevel === 'sequence' && _tlHasClips()) {
+        _tlDrawSequence(ctx);
+        return;
+      }
       const p = _tlActivePath();
       const dur = _tlDuration(p);
 
@@ -618,6 +944,45 @@
       return 0;
     }
     function _tlSyncPlayhead() {
+      // #164 clip editor: at SEQUENCE level the playhead is the canvas-
+      // drawn MASTER playhead (in _tlDrawSequence), NOT the per-path DOM
+      // div. Hide the DOM div + repaint the canvas when a cut is actively
+      // playing so the master playhead tracks the live cut (the per-frame
+      // _tlLayer.update() calls this). A static sequence (no cut playing,
+      // not scrubbing) does not need a per-frame canvas repaint.
+      if (_tlLevel === 'sequence' && _tlHasClips()) {
+        _tlPlayhead.style.display = 'none';
+        let cutLive = false;
+        try {
+          cutLive = (typeof _clipState !== 'undefined' && _clipState &&
+            _clipState.active && !!_player);
+        } catch (e) {}
+        // Repaint when a cut is live (master playhead tracks it) OR when
+        // the clip set changed since the last frame (an add/delete/
+        // reorder/retime via the Scene Settings cuts card, which mutates
+        // cfg.clips but does not itself repaint the strip). Cheap sig
+        // compare avoids a per-frame full repaint of a static sequence.
+        const sig = _tlClipsSig();
+        if (cutLive || sig !== _tlSeqClipSig) {
+          _tlSeqClipSig = sig;
+          _tlSyncLevelUI();
+          _tlDraw();
+        }
+        if (typeof _tlSyncPlayPauseIcon === 'function') _tlSyncPlayPauseIcon();
+        if (typeof _tlSyncUndoRedo === 'function') _tlSyncUndoRedo();
+        return;
+      }
+      // #164: a clip set may have appeared (first clip added in a scene
+      // that booted with none -> we are still at 'clip' level). Detect the
+      // transition so the breadcrumb/back button + sequence affordances
+      // come alive without a reload. Cheap sig compare (clip-level path).
+      {
+        const sig = _tlClipsSig();
+        if (sig !== _tlSeqClipSig) {
+          _tlSeqClipSig = sig;
+          _tlSyncLevelUI();
+        }
+      }
       const t = _tlPlayheadT();
       const x = _tlT2X(t);
       _tlPlayhead.style.left = x + 'px';
@@ -719,6 +1084,95 @@
       _tlDraw();
       _tlSyncPlayhead();
     }
+
+    // ---- #164 clip editor: level transitions.
+    //  _tlEnterClip(clipId) -- the CLICK-A-CLIP -> LOAD-ITS-CAMERA verb.
+    //    Resolves the clip's camera_paths entry via the EXISTING two-step
+    //    _tlClipPath (NEVER camera_id===path_id), then calls the EXISTING
+    //    _camSelApply(pathId) drill primitive (10_camera_select) which does
+    //    the whole bind: mirrors selEl, rebuilds the trajectory + gizmo +
+    //    bottom-timeline diamonds (window.__editor.tlRedraw), snaps the
+    //    camera to the path's current scrub frame, and re-enables controls.
+    //    We do NOT duplicate any of that. Then drop to clip level + fit the
+    //    diamond row to the now-active camera path. NO scrub clock here.
+    function _tlEnterClip(clipId) {
+      const clip = _tlClipsLive().find(k => k && k.id === clipId);
+      if (!clip) return false;
+      const path = _tlClipPath(clip);
+      if (!path || !path.id) {
+        // Degenerate: clip references a camera with no resolvable path.
+        // Still select the clip so the breadcrumb + cuts highlight follow;
+        // the diamond row simply shows nothing (no spline) -- no crash.
+        _tlActiveClipId = clipId;
+        _tlLevel = 'clip';
+        _tlSyncLevelUI();
+        _tlDraw();
+        return true;
+      }
+      _tlActiveClipId = clipId;
+      _tlLevel = 'clip';
+      // THE drill primitive (author branch = bind + snap pose, no auto-play).
+      if (typeof _camSelApply === 'function') {
+        try { _camSelApply(path.id); } catch (e) {}
+      }
+      _tlSyncLevelUI();
+      // Fit the diamond row to the newly-bound camera path. _camSelApply
+      // already called tlRedraw() (which fits), but call it here too so the
+      // fit reflects the clip selection deterministically for the harness.
+      _tlFitToPath();
+      return true;
+    }
+    //  _tlEnterSequence() -- the BACK verb. Returns to the cuts track:
+    //    stop any path playback (reuse stopPath -- never a new mechanism),
+    //    clear the active-clip selection, and redraw with the cuts lane as
+    //    the primary band. Does NOT touch the camera dropdown selection
+    //    (the last-bound camera stays selected so the diamond row still
+    //    dims-to-context for it); the cuts track is the focus now.
+    function _tlEnterSequence() {
+      _tlLevel = 'sequence';
+      _tlActiveClipId = null;
+      try { if (typeof stopPath === 'function' && _player) stopPath(); }
+      catch (e) {}
+      _tlSyncLevelUI();
+      _tlFitToPath();
+    }
+    //  Keep the back button + breadcrumb in sync with the current level.
+    //  A scene with NO clips shows NEITHER (identical to today's transport
+    //  row); a clip scene shows the breadcrumb always + the back button
+    //  only at clip level.
+    function _tlSyncLevelUI() {
+      const hasClips = _tlHasClips();
+      // Back button: only meaningful at clip level in a clip scene.
+      const showBack = hasClips && _tlLevel === 'clip';
+      _tlSeqBack.style.display = showBack ? '' : 'none';
+      // Breadcrumb: shown whenever the scene has clips.
+      _tlCrumb.style.display = hasClips ? '' : 'none';
+      if (hasClips) {
+        if (_tlLevel === 'sequence') {
+          _tlCrumb.textContent = 'Sequence';
+          _tlCrumb.title = 'Clip sequence (click a clip to edit its camera)';
+        } else {
+          const clip = _tlActiveClip();
+          const ordered = _tlClipsLive();
+          const idx = clip
+            ? ordered.findIndex(k => k && k.id === clip.id) : -1;
+          const camName = clip ? _tlClipCamName(clip) : '?';
+          _tlCrumb.textContent = 'Sequence ▸ Clip ' +
+            (idx >= 0 ? (idx + 1) : '?') + ' · ' + camName;
+          _tlCrumb.title = 'Editing this clip’s camera keyframes';
+        }
+      }
+      // The Length field is a CAMERA-PATH ceiling (clip-level concept); at
+      // sequence level the master length is the sum of clip durations
+      // (edited per-clip in the Scene Settings cuts card), so hide the
+      // Length field + its caption/unit there to avoid implying it edits
+      // the master length.
+      const showLen = (_tlLevel === 'clip');
+      _tlTotalLabel.style.display = showLen ? '' : 'none';
+      _tlTotalInput.style.display = showLen ? '' : 'none';
+      _tlTotalUnit.style.display = showLen ? '' : 'none';
+    }
+
     function _tlSortedKfTimes(p) {
       if (!p || !p.keyframes) return [];
       const out = [];
@@ -793,6 +1247,51 @@
         scrubEl.dispatchEvent(new Event('input', { bubbles: true }));
       } catch (e) {}
       _tlSyncPlayhead();
+    }
+
+    // ---- #164 clip editor: SEQUENCE-LEVEL scrub. Maps a master time to
+    //      (active clip, within-clip path time) and previews the active
+    //      clip's camera at that pose -- CUTTING to the right camera at
+    //      clip boundaries -- by REUSING the EXISTING per-clip scrub path
+    //      (NO parallel scrub clock; the camera-write still goes through
+    //      the just-fixed #path-scrub gate, which only writes when
+    //      _camSel.value !== _CAM_PERSP). The cut: when the master time
+    //      crosses into a clip whose camera differs from the currently-
+    //      bound camera, call the EXISTING _camSelApply drill primitive to
+    //      switch (the hard cut), then scrub that camera's path to
+    //      clip.in + within (expressed as a frac of the full path
+    //      duration) so the previewed pose matches the clip's window.
+    function _tlSeqScrubToMasterT(t) {
+      const total = _tlSeqTotalDur();
+      const mt = Math.max(0, Math.min(t, total));
+      _tlSeqScrubT = mt;
+      const at = _tlClipAtMasterT(mt);
+      if (!at || !at.clip) { _tlDraw(); return; }
+      const clip = at.clip;
+      const path = _tlClipPath(clip);
+      if (!path || !path.id) { _tlDraw(); return; }
+      // CUT: ensure the active clip's camera is the bound one. _camSelApply
+      // mirrors selEl + snaps the pose; only call it when the camera
+      // actually changes (a no-op rebind every scrub frame would thrash
+      // the trajectory rebuild). selEl.value is the current bound path id.
+      let needCut = true;
+      try { needCut = !(selEl && selEl.value === path.id); } catch (e) {}
+      if (needCut && typeof _camSelApply === 'function') {
+        try { _camSelApply(path.id); } catch (e) {}
+        if (clip.id !== _tlActiveClipId) {
+          _tlActiveClipId = clip.id;
+          _tlSyncLevelUI();
+        }
+      }
+      // Drive the bound camera to (clip.in + within) via the EXISTING scrub
+      // path. _tlScrubToTime scrubs to a SECONDS value along the active
+      // path's duration; the previewed pose at clip.in + within is the
+      // clip's pose. (The bound camera is now `path`, NOT Perspective, so
+      // the #path-scrub gate writes the camera -- the just-fixed R3 #6
+      // behaviour, NOT a regression.)
+      const inT = (typeof clip.in === 'number' && clip.in > 0) ? clip.in : 0;
+      _tlScrubToTime(inT + at.within);
+      _tlDraw();
     }
 
     // ---- In-memory temporal edit + spline rebuild. Mutates the
@@ -898,6 +1397,29 @@
       if (Math.abs(x - _tlT2X(hi)) <= 6) return 'right';
       return '';
     }
+    // ---- #164 clip editor: SEQUENCE-LEVEL hit-test. Returns the clip id
+    //      whose block (in the primary cuts band, 0..Σdur fit to width)
+    //      contains the lane (x,y); null = miss / above the ruler. Reuses
+    //      the SAME start/Σdur*w math the cuts lane render uses.
+    function _tlHitClip(x, y) {
+      if (y <= _TL_RULER_H) return null;       // ruler band -> scrub, not select
+      if (y > _tlLaneBandTop()) return null;    // below the primary band
+      const total = _tlSeqTotalDur();
+      if (total <= 0) return null;
+      const usableW = _tlSeqUsableW();
+      const ordered = _tlClipsLive();
+      let acc = 0;
+      for (const k of ordered) {
+        const d = (typeof k.duration === 'number' && k.duration > 0)
+          ? k.duration : 0;
+        if (d <= 0) continue;
+        const bx = _TL_PAD + (acc / total) * usableW;
+        const bw = (d / total) * usableW;
+        if (x >= bx && x <= bx + bw) return k.id;
+        acc += d;
+      }
+      return null;
+    }
     function _tlOnDown(ev) {
       if (ev.button !== undefined && ev.button !== 0) return;
       const xy = _tlLaneXY(ev);
@@ -905,6 +1427,28 @@
         try { _tlLane.setPointerCapture(ev.pointerId); } catch (e) {}
       })();
       ev.preventDefault();
+      // #164 clip editor: SEQUENCE level -- the lane IS the cuts track.
+      // A click on a clip BLOCK loads that clip's camera (drop to clip
+      // level via the EXISTING _camSelApply drill primitive); a click on
+      // the master-time RULER scrubs the sequence (previewing the active
+      // clip's camera, cutting at boundaries -- via the EXISTING per-clip
+      // scrub path, NO parallel clock). NO diamond drag / box-select /
+      // edge-scale at sequence level (those are clip-level keyframe ops).
+      if (_tlLevel === 'sequence' && _tlHasClips()) {
+        if (xy.y <= _TL_RULER_H + 6) {
+          // Master-time ruler -> sequence scrub (live preview).
+          _tlDragMode = 'seqscrub';
+          _tlScrubbing = true;
+          _tlSeqScrubToMasterT(_tlSeqX2T(xy.x, _tlSeqTotalDur()));
+          return;
+        }
+        const clipId = _tlHitClip(xy.x, xy.y);
+        if (clipId) {
+          _tlDragMode = '';            // a select, not a drag
+          _tlEnterClip(clipId);        // load its camera + drop to clip level
+        }
+        return;
+      }
       // (1) selection-span edge handle -> proportional scale.
       const edge = _tlHitEdge(xy.x, xy.y);
       if (edge) {
@@ -976,6 +1520,12 @@
     function _tlOnMove(ev) {
       if (!_tlDragMode) return;
       const xy = _tlLaneXY(ev);
+      if (_tlDragMode === 'seqscrub') {
+        // #164: dragging the master-time ruler previews the sequence
+        // (cuts at clip boundaries via the EXISTING per-clip scrub path).
+        _tlSeqScrubToMasterT(_tlSeqX2T(xy.x, _tlSeqTotalDur()));
+        return;
+      }
       if (_tlDragMode === 'kf') {
         const p = _tlActivePath();
         if (!p || !p.keyframes || _tlDragKf < 0) return;
@@ -1235,6 +1785,40 @@
         (st === 'paused' ? 'Resume' : 'Play');
     }
     _tlPlay.addEventListener('click', () => {
+      // #164 clip editor: at SEQUENCE level, Play drives the CUT CHAIN
+      // (the ClipPlayer hard-cut sequence) via the EXISTING
+      // window.__clip.restart() rather than a single path tour. If a cut
+      // is already playing, fall through to the normal pause toggle (the
+      // just-fixed UX-3 pause path freezes _player mid-clip; the clip
+      // layer's update() only advances when _player goes null, so a
+      // pause does NOT advance the cut). NO parallel clock.
+      if (_tlLevel === 'sequence' && _tlHasClips()) {
+        let cutActive = false;
+        try {
+          cutActive = (typeof _clipState !== 'undefined' && _clipState &&
+            _clipState.active);
+        } catch (e) {}
+        if (!cutActive) {
+          try {
+            if (window.__clip && typeof window.__clip.restart === 'function') {
+              window.__clip.restart();
+            }
+          } catch (e) {}
+          _tlSyncPlayPauseIcon();
+          _tlSyncPlayhead();
+          return;
+        }
+        // A cut is live -> pause/resume via the existing transport.
+        try {
+          if (window.__spTransport &&
+              typeof window.__spTransport.playPauseToggle === 'function') {
+            window.__spTransport.playPauseToggle();
+          }
+        } catch (e) {}
+        _tlSyncPlayPauseIcon();
+        _tlSyncPlayhead();
+        return;
+      }
       // Bind the timeline's active path into selEl first so the toggle
       // drives the path the user is editing (mirrors the old play
       // handler's selEl bind).
@@ -1254,6 +1838,10 @@
       _tlSyncPlayPauseIcon();
       _tlSyncPlayhead();
     });
+    // #164 clip editor: the "◂ Sequence" back button returns to the cuts
+    // track. Author-only (the whole strip is); a no-op when already at
+    // sequence level or in a no-clip scene (the button is hidden then).
+    _tlSeqBack.addEventListener('click', () => { _tlEnterSequence(); });
     // UX-Phase11G WF-H3: Undo / Redo click -> the ONE registry coordinator.
     _tlUndo.addEventListener('click', () => {
       try {
@@ -1424,7 +2012,38 @@
       _tlResize();
       _tlRefreshTotalUI();
       _tlFitToPath();
+      // #164 clip editor: initialise the level UI (breadcrumb + back
+      // button visibility + Length-field show/hide) + seed the clip
+      // signature so the first real change is detected. A no-clip scene
+      // shows neither affordance (identical to today's transport row).
+      _tlSeqClipSig = _tlClipsSig();
+      _tlSyncLevelUI();
+      _tlDraw();
     });
+    // #164 clip editor: also refresh the level UI + repaint on every
+    // EditHistory mutation (a clip CRUD in the Scene Settings cuts card
+    // pushes a snapshot -> emits history:push; an undo/redo that restores
+    // cfg.clips emits history:undo/redo). The per-frame sig-compare in
+    // _tlSyncPlayhead is the backstop; this makes the response immediate.
+    try {
+      if (typeof EditorModuleRegistry !== 'undefined' &&
+          typeof EditorModuleRegistry.on === 'function') {
+        const _tlOnClipsMaybeChanged = function () {
+          // If clips vanished entirely (undo back to none), drop to clip
+          // level so the strip behaves like a single-camera scene.
+          if (!_tlHasClips() && _tlLevel === 'sequence') {
+            _tlLevel = 'clip';
+            _tlActiveClipId = null;
+          }
+          _tlSeqClipSig = _tlClipsSig();
+          _tlSyncLevelUI();
+          _tlDraw();
+        };
+        EditorModuleRegistry.on('history:push', _tlOnClipsMaybeChanged);
+        EditorModuleRegistry.on('history:undo', _tlOnClipsMaybeChanged);
+        EditorModuleRegistry.on('history:redo', _tlOnClipsMaybeChanged);
+      }
+    } catch (e) {}
 
     // ---- Phase 2D (#122 §4.10): multi-lane bottom-timeline registry.
     //      A module advertises a timeline-lane intent
@@ -1803,6 +2422,77 @@
             _tlRefreshTotalUI();
             _tlFitToPath();
             return p.total_duration_s;
+          },
+          // ---- #164 clip editor test surface (drive the REAL level
+          //      transitions + read the two-level state). Functions, not
+          //      getters where a live value is needed (the descriptor copy
+          //      preserves getters too, but the level mutates so plain
+          //      getters are fine here -- they recompute per access).
+          get tlLevel() { return _tlLevel; },
+          get tlActiveClipId() { return _tlActiveClipId; },
+          get tlHasClips() { return _tlHasClips(); },
+          get tlSeqTotalDur() { return _tlSeqTotalDur(); },
+          get tlSeqPlayheadT() { return _tlSeqPlayheadT(); },
+          // The breadcrumb text + back-button visibility (so the harness
+          // can assert the affordances without reading pixels).
+          get tlCrumbText() { return _tlCrumb.textContent; },
+          get tlSeqBackVisible() {
+            return _tlSeqBack.style.display !== 'none';
+          },
+          // The ordered clip ids (playback order) -- so the harness can map
+          // an id to its sequence index for the click/enter hooks.
+          get tlClipIds() {
+            return _tlClipsLive().map(k => k && k.id);
+          },
+          // Resolve a clip id -> its bound camera_paths id (the value
+          // _tlEnterClip passes to _camSelApply). null if unresolvable.
+          tlClipPathId(clipId) {
+            const clip = _tlClipsLive().find(k => k && k.id === clipId);
+            const path = clip ? _tlClipPath(clip) : null;
+            return (path && path.id) || null;
+          },
+          // Click-a-clip -> load its camera + drop to clip level (the SAME
+          // _tlEnterClip the sequence-level pointerdown runs). Returns the
+          // post-enter level + the now-bound selEl path id.
+          tlEnterClip(clipId) {
+            const ok = _tlEnterClip(clipId);
+            let bound = null;
+            try { bound = selEl ? selEl.value : null; } catch (e) {}
+            return { ok: ok, level: _tlLevel, boundPathId: bound,
+              activeClipId: _tlActiveClipId };
+          },
+          // Back to the cuts track (the SAME _tlEnterSequence the back
+          // button runs). Returns the post-transition level.
+          tlEnterSequence() { _tlEnterSequence(); return _tlLevel; },
+          // Master (sequence) scrub to a master time in SECONDS -- the SAME
+          // _tlSeqScrubToMasterT the ruler-drag runs (cuts at clip
+          // boundaries via the EXISTING per-clip scrub path). Returns the
+          // now-bound camera path id (the previewed camera) + the master t.
+          tlSeqScrub(masterT) {
+            _tlSeqScrubToMasterT(+masterT || 0);
+            let bound = null;
+            try { bound = selEl ? selEl.value : null; } catch (e) {}
+            return { boundPathId: bound, masterT: _tlSeqScrubT,
+              activeClipId: _tlActiveClipId };
+          },
+          // Sequence-level Play -> the cut chain (the SAME window.__clip
+          // .restart() the _tlPlay click runs at sequence level). Returns
+          // whether the cut sequence is now active.
+          tlSeqPlay() {
+            if (_tlLevel === 'sequence' && _tlHasClips()) {
+              try {
+                if (window.__clip &&
+                    typeof window.__clip.restart === 'function') {
+                  window.__clip.restart();
+                }
+              } catch (e) {}
+            }
+            let active = false;
+            try {
+              active = (typeof _clipState !== 'undefined' && _clipState &&
+                _clipState.active);
+            } catch (e) {}
+            return active;
           },
         };
         // Copy onto the Task-16 window.__editor PRESERVING getters as

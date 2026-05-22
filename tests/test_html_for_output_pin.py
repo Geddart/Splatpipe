@@ -601,6 +601,28 @@ PIN UPDATES:
     all 6 fixtures shifted by the same +1231 code points in lockstep --
     additive only (a removed ``modes`` line + the explanatory comment). Pins
     re-pinned to the new baseline.
+  * 2026-05-22 (#164 -- multi-camera CLIP EDITOR MVP): the
+    ``16_editor_timeline`` IIFE gains a STACKED, always-visible two-level
+    bottom timeline -- a Cuts master track (sequence level) <-> per-clip
+    camera keyframes (clip level). At sequence level the EXISTING
+    ``CutsModule.timelineLane.render`` is promoted to the PRIMARY band
+    (master-time ruler + master playhead + dimmed context diamonds);
+    clicking a clip block loads that clip's camera via the EXISTING
+    ``_camSelApply`` drill primitive (resolving the clip -> camera_paths
+    entry via the EXISTING two-step ``_clipPath``, NEVER assuming
+    camera_id===path_id) and drops to clip level (the unchanged per-path
+    diamond editor). A "◂ Sequence" back button + a breadcrumb expose the
+    levels; sequence Play drives the cut chain via ``window.__clip.restart``;
+    the sequence master scrub reuses the EXISTING per-clip ``#path-scrub``
+    path (NO parallel scrub clock -- the just-fixed R3 #6 camera-write gate
+    holds) and cuts at clip boundaries via ``_camSelApply``. The DEFAULT
+    level is 'sequence' WHEN ``cfg.clips`` is non-empty else 'clip', so the
+    6 live single-camera / no-clip scenes stay at clip level and behave
+    EXACTLY as today (the sequence-level branches are present in the bundle
+    but inert at runtime). The change is ADDITIVE only -- all 6 fixtures
+    shifted by the same +33261 code points in lockstep (no spooky action
+    elsewhere; the fixtures carry no clips so the sequence paths never run).
+    Pins re-pinned to the new baseline.
 """
 
 from __future__ import annotations
@@ -690,36 +712,36 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
         "harness_defaults",
         ("HarnessScene",),
         {},
-        886275,
-        "7b864ad5edb212bffc407f179e15f7c2c083d9865891992982bdb73e635d62f5",
+        919536,
+        "a8d82e512c93c9f566d193eb59bc26ebe735f5baeb3e5499799f11167860395c",
     ),
     (
         "http_basic",
         ("S",),
         {"save_mode": "http", "save_endpoint": "https://x.example/api/save"},
-        886247,
-        "1568b16f8dc0ee1a854386a728af7355d0f10199eaf14b9371c6ffa4de83d2d2",
+        919508,
+        "72aa4ff94985e4aae53e4b12e57d1ede0fa2512f6e22590e194d89980a5a2aa1",
     ),
     (
         "http_endpoint_quotes",
         ("S",),
         {"save_endpoint": 'https://x/"+evil()+"'},
-        886242,
-        "a757bc5361002fb87aec364a04a7a29464e2846276d778f9e00f1e461ca87dd8",
+        919503,
+        "400ec07f39a0f11a03453e68e00f151983e40b7fc2e8c7ed6ac298050dc08342",
     ),
     (
         "none_endpoint",
         ("S",),
         {"save_mode": "http", "save_endpoint": None},
-        886221,
-        "a975f1f7b1ddcffb9c68eba9e22249575c959a541fef33532a6e44d734581ff8",
+        919482,
+        "75f860ab69712d69f60d65fb36686cd28d4cf9d9daf52e9ba4ebea169467b1c1",
     ),
     (
         "sog_fallback",
         ("LegacySogScene",),
         {"primary_asset": "scene.sog", "paged": False},
-        886286,
-        "320c8dec0dc9eafeb5269355362ef8f642d82d6fcd6db8c0c0fec459b85a6b5d",
+        919547,
+        "ba1eab38dd7477c25675fc6788cf272ce83fa093b6a95628190e1e8385eead80",
     ),
     (
         "share_card",
@@ -729,8 +751,8 @@ CORPUS: list[tuple[str, tuple, dict, int, str]] = [
             "share_image": "https://splatpipe-cdn.b-cdn.net/share/preview.jpg",
             "description": "Custom share description text.",
         },
-        886145,
-        "edef7c8ee37c3656d10f7afecff1f7524a4a401e8640add34eb550f858780dd3",
+        919406,
+        "9746337339f2474ab2d13326bcd872e4deb20fad2c090c50d48d5431d9fc1468",
     ),
 ]
 
