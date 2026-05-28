@@ -654,9 +654,8 @@
         const delBtn = document.createElement('button');
         delBtn.type = 'button';
         delBtn.textContent = 'Delete annotation';
-        delBtn.style.cssText = 'background:#502020;color:#ffb0a0;' +
-          'border:1px solid #803030;border-radius:4px;font-size:10px;' +
-          'padding:4px 8px;cursor:pointer;margin-top:4px;';
+        delBtn.className = 'sp-del-btn';   // L11: shared delete look
+        delBtn.style.marginTop = '4px';
         delBtn.addEventListener('click', () => {
           _pushUndo('ann-delete');
           const c = _liveCfg(); if (!c) return;

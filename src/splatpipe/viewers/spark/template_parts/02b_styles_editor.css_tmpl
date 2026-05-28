@@ -8,6 +8,17 @@
     body.usermode #author-root { display: none; }
     body.authormode #user-transport { display: none; }
     body.authormode #path-mini { display: none !important; }
+    /* L11/M1: ONE shared delete-button look for the module Scene-Settings
+       cards (annotation / audio / title row deletes). Replaces 3 ad-hoc
+       inline styles. Behaviour is unified too: delete is immediate +
+       undoable (no modal confirm). The cuts-row 'x' icon button + the
+       guarded camera-delete are intentionally distinct control types. */
+    .sp-del-btn {
+      background: #502020; color: #ffb0a0;
+      border: 1px solid #803030; border-radius: 4px;
+      font-size: 10px; padding: 4px 8px; cursor: pointer;
+    }
+    .sp-del-btn:hover { background: #6a2a2a; }
     /* v2-C Phase 2 REFINE: AUTHOR-ONLY +Add camera + kebab (#cam-menu-btn
        opens #cam-menu-popup with Rename). CSS-only gate (mirrors the
        body.authormode #path-mini pattern above) so the chips + popup are

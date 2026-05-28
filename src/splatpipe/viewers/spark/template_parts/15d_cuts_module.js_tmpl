@@ -449,9 +449,8 @@
       const delBtn = _smallBtn('×', 'Delete clip');
       delBtn.style.color = '#ff8a8a';
       delBtn.addEventListener('click', () => {
-        if (confirm('Delete clip ' + (idx + 1) + '?')) {
-          _deleteClip(clip.id);
-        }
+        // L11/M1: immediate + undoable (cuts-delete snapshot), no modal.
+        _deleteClip(clip.id);
       });
       ctrls.appendChild(upBtn);
       ctrls.appendChild(dnBtn);

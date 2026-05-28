@@ -537,14 +537,9 @@
       const delBtn = document.createElement('button');
       delBtn.type = 'button';
       delBtn.textContent = 'Delete';
-      delBtn.style.cssText =
-        'background:rgba(255,80,80,0.20);color:#ffb0b0;' +
-        'border:0;border-radius:4px;padding:3px 8px;cursor:pointer;' +
-        'font-size:10px;';
+      delBtn.className = 'sp-del-btn';   // L11: shared delete look
       delBtn.addEventListener('click', function () {
-        if (typeof confirm === 'function') {
-          if (!confirm('Delete audio track "' + baseName + '"?')) return;
-        }
+        // L11/M1: immediate + undoable (audio-delete snapshot), no modal.
         _deleteTrack(idx);
       });
       head.appendChild(delBtn);
