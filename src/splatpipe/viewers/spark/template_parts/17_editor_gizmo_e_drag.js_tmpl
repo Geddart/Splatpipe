@@ -88,6 +88,50 @@
         ? _trajFrLen : 0.4;
       return fr * _TAN_BOX_OF_FR;
     }
+    // R5 item 1 (final): compress the DRAWN handle length so a spread-out
+    // path's (large-magnitude) tangents no longer read "way too long",
+    // while keeping it speed-dependent AND the stored tangent magnitude
+    // EXACT (the curve is never altered -- this is a DISPLAY remap only).
+    // SOFT-KNEE LOG remap of the natural length |tan|*_tanFrac():
+    //   drawnLen = _tanSquash(natural), natural = _tanUnsquash(drawnLen).
+    //   - BELOW the knee (~1 frustum of natural length): IDENTITY -> normal
+    //     tangents draw at their true (current) length, undistorted.
+    //   - ABOVE the knee: gentle logarithmic growth (knee + k*ln(1+(x-knee)/k))
+    //     -> a 10x-frustum tangent draws only modestly past the knee.
+    // CRUCIALLY this is UNBOUNDED + strictly monotonic, so it is EXACTLY
+    // invertible (_tanUnsquash) across the whole range -- a tanh/atanh
+    // "hard cap" SATURATES (drawn==cap for any large tangent) and is
+    // therefore NON-invertible at the top, which would CORRUPT a large
+    // stored tangent the moment its handle is touched. The log knee never
+    // loses magnitude: _tanUnsquash(_tanSquash(x)) == x for all x (proven
+    // in tests/test_gizmo_drag_math.py), so dragging recovers the true
+    // speed + merely selecting a fast keyframe never alters its curve.
+    const _TAN_KNEE_OF_FR = 1.0;     // linear (faithful) up to ~1 frustum
+    const _TAN_KSCALE_OF_FR = 0.6;   // log-compression scale above the knee
+    function _tanKnee() {
+      const fr = (typeof _trajFrLen === 'number' && _trajFrLen > 0)
+        ? _trajFrLen : 0.4;
+      return fr * _TAN_KNEE_OF_FR;
+    }
+    function _tanKScale() {
+      const fr = (typeof _trajFrLen === 'number' && _trajFrLen > 0)
+        ? _trajFrLen : 0.4;
+      return fr * _TAN_KSCALE_OF_FR;
+    }
+    function _tanSquash(x) {
+      const knee = _tanKnee();
+      if (!(knee > 0) || x <= knee) return x;
+      const k = _tanKScale();
+      if (!(k > 0)) return x;
+      return knee + k * Math.log(1 + (x - knee) / k);
+    }
+    function _tanUnsquash(d) {
+      const knee = _tanKnee();
+      if (!(knee > 0) || d <= knee) return d;
+      const k = _tanKScale();
+      if (!(k > 0)) return d;
+      return knee + k * (Math.exp((d - knee) / k) - 1);
+    }
 
     // Is the selected keyframe in explicit-tangent (bezier) mode?
     function _tanIsBezierSel() {
@@ -233,10 +277,19 @@
       const fr = _tanFrac();
       const bs = _tanBoxSize();
       const px = kf.pos[0], py = kf.pos[1], pz = kf.pos[2];
-      const outW = [px + v.outv[0] * fr, py + v.outv[1] * fr,
-        pz + v.outv[2] * fr];
-      const inW = [px - v.inv[0] * fr, py - v.inv[1] * fr,
-        pz - v.inv[2] * fr];
+      // R5 item 1: draw at the SQUASHED (clamped) distance along the
+      // tangent direction. natural = |tan|*fr; drawn = _tanSquash(natural);
+      // offset = dir * drawn = tan * (drawn / |tan|). `sign` puts OUT on
+      // the +tan side, IN on the -tan side. Degenerate |tan|~=0 -> handle
+      // sits on the keyframe (no direction).
+      const _handleW = (vec, sign) => {
+        const m = Math.hypot(vec[0], vec[1], vec[2]);
+        if (!(m > 1e-9)) return [px, py, pz];
+        const k = sign * _tanSquash(m * fr) / m;
+        return [px + vec[0] * k, py + vec[1] * k, pz + vec[2] * k];
+      };
+      const outW = _handleW(v.outv, 1);
+      const inW = _handleW(v.inv, -1);
       if (_tanActiveSide !== 'out') {
         _tanOutBox.position.set(outW[0], outW[1], outW[2]);
         _tanOutBox.scale.setScalar(bs);
@@ -301,8 +354,20 @@
       const dz = proxy.position.z - kf.pos[2];
       // OUT handle is on the +tan side, IN handle on the -tan side.
       const s = side === 'out' ? 1 : -1;
-      const tan = [_TAN_R(s * dx / fr), _TAN_R(s * dy / fr),
-        _TAN_R(s * dz / fr)];
+      // R5 item 1: invert the squashed draw. The proxy sits at the
+      // clamped draw distance `drawn`; the TRUE (clamp-free) magnitude is
+      // _tanUnsquash(drawn)/fr. tan = s * dir * mag = d * (s*mag/drawn).
+      // Exact inverse of _tanRefresh's _handleW (unsquash o squash = id),
+      // so the round-trip preserves the stored tangent magnitude.
+      const drawn = Math.hypot(dx, dy, dz);
+      let tan;
+      if (drawn > 1e-9) {
+        const mag = _tanUnsquash(drawn) / fr;
+        const k = s * mag / drawn;
+        tan = [_TAN_R(dx * k), _TAN_R(dy * k), _TAN_R(dz * k)];
+      } else {
+        tan = [0, 0, 0];
+      }
       if (!kf.tan_broken) {
         // R5 items 3+4 LOCK (default): mirror -> in_tan == out_tan (the
         // SAME vector). _tanRefresh draws OUT at pos+tan*fr and IN at

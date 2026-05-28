@@ -116,6 +116,104 @@
       } catch (e) { return false; }
       return _gzCtl.axis !== null && _gzCtl.axis !== undefined;
     }
+    // ---- R5 item 6: screen-plane FREE-DRAG of the selected keyframe.
+    //   "When clicking and dragging another keyframe, you should be able
+    //   to drag him right away, not click again to get the gizmo." A
+    //   frustum click already selects + attaches the gizmo (step 4), but
+    //   TransformControls only drags when an AXIS handle is under the
+    //   pointer -- a click on the frustum BODY grabs no axis, so the
+    //   click-drag motion moved nothing (the "two-gesture" feel). This
+    //   adds a free-drag: on the frustum-pick pointerdown we ARM a drag;
+    //   the FIRST pointermove past _KF_DRAG_PX begins moving the keyframe
+    //   in the camera-facing plane through it (depth fixed), reusing the
+    //   EXISTING _gzWriteProxyToKf write path (same kf.pos write +
+    //   _gzAfterEdit rebuild the gizmo uses) + one gesture-start undo
+    //   snapshot. THRESHOLD-GATED + bounded: a pure click (no move past
+    //   the threshold) never arms the move, so the core SELECT gesture is
+    //   byte-behaviourally identical to before -- a mis-fire cannot break
+    //   selection. Axis-precise edits still use the gizmo (this only adds
+    //   body-drag). Window-level listeners are torn down on up/cancel
+    //   (wedge-safe). Author-mode only (armed only from step 4).
+    let _kfFreeIdx = -1, _kfFreeMoved = false;
+    let _kfFreeStartX = 0, _kfFreeStartY = 0, _kfFreePid = -1;
+    const _KF_DRAG_PX = 4;            // move threshold (a click stays a click)
+    const _KF_FREE_N = new THREE.Vector3();   // plane normal (camera fwd)
+    const _KF_FREE_P = new THREE.Vector3();   // plane point (kf pos)
+    const _KF_FREE_NDC = new THREE.Vector2();
+    const _KF_FREE_HIT = [0, 0, 0];
+    // Pure ray<->plane intersection (Node-testable; mirrors
+    // _raycaster.ray.intersectPlane). plane: n.(X-P)=0; ray: O+tD;
+    // t=(n.(P-O))/(n.D). Returns true + writes `out` when t>=0.
+    function _kfPlaneHit(ox, oy, oz, dx, dy, dz, nx, ny, nz, px, py, pz, out) {
+      const nd = nx * dx + ny * dy + nz * dz;
+      if (Math.abs(nd) < 1e-9) return false;
+      const t = (nx * (px - ox) + ny * (py - oy) + nz * (pz - oz)) / nd;
+      if (t < 0) return false;
+      out[0] = ox + dx * t; out[1] = oy + dy * t; out[2] = oz + dz * t;
+      return true;
+    }
+    function _kfFreeArm(ev, idx) {
+      const kf = _gzSelKfObj();
+      if (!kf || !kf.pos || kf.pos.length !== 3) return;
+      _kfFreeIdx = idx; _kfFreeMoved = false;
+      _kfFreeStartX = ev.clientX; _kfFreeStartY = ev.clientY;
+      _kfFreePid = (ev.pointerId != null) ? ev.pointerId : -1;
+      camera.getWorldDirection(_KF_FREE_N);              // camera-facing plane
+      _KF_FREE_P.set(kf.pos[0], kf.pos[1], kf.pos[2]);   // through the keyframe
+      window.addEventListener('pointermove', _kfFreeMove, true);
+      window.addEventListener('pointerup', _kfFreeUp, true);
+      window.addEventListener('pointercancel', _kfFreeUp, true);
+    }
+    function _kfFreeMove(ev) {
+      if (_kfFreeIdx < 0) return;
+      if (_kfFreePid !== -1 && ev.pointerId != null &&
+          ev.pointerId !== _kfFreePid) return;
+      if (!_kfFreeMoved) {
+        const ax = ev.clientX - _kfFreeStartX, ay = ev.clientY - _kfFreeStartY;
+        if (ax * ax + ay * ay < _KF_DRAG_PX * _KF_DRAG_PX) return;  // still a click
+        _kfFreeMoved = true;
+        try {
+          if (typeof EditorModuleRegistry !== 'undefined' &&
+              typeof EditorModuleRegistry.pushUndo === 'function') {
+            EditorModuleRegistry.pushUndo('kf-free-drag');   // gesture-start, once
+          }
+        } catch (e) {}
+        _gzStopTour();
+        InteractionManager.requestPointer('tool');
+        controls.enabled = false;
+      }
+      if (_gzSelKf !== _kfFreeIdx || !_gzProxy) return;   // rebuild changed sel
+      const rect = renderer.domElement.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      _KF_FREE_NDC.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+      _KF_FREE_NDC.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+      _raycaster.setFromCamera(_KF_FREE_NDC, camera);
+      const r = _raycaster.ray;
+      if (_kfPlaneHit(r.origin.x, r.origin.y, r.origin.z,
+            r.direction.x, r.direction.y, r.direction.z,
+            _KF_FREE_N.x, _KF_FREE_N.y, _KF_FREE_N.z,
+            _KF_FREE_P.x, _KF_FREE_P.y, _KF_FREE_P.z, _KF_FREE_HIT)) {
+        _gzProxy.position.set(_KF_FREE_HIT[0], _KF_FREE_HIT[1], _KF_FREE_HIT[2]);
+        _gzProxy.updateMatrixWorld(true);
+        _gzWriteProxyToKf();   // kf.pos write + _gzAfterEdit (rebuild) -- same as gizmo
+      }
+      if (ev.cancelable) ev.preventDefault();
+    }
+    function _kfFreeUp(ev) {
+      if (_kfFreeIdx < 0) return;
+      if (_kfFreePid !== -1 && ev && ev.type !== 'pointercancel' &&
+          ev.pointerId != null && ev.pointerId !== _kfFreePid) return;
+      window.removeEventListener('pointermove', _kfFreeMove, true);
+      window.removeEventListener('pointerup', _kfFreeUp, true);
+      window.removeEventListener('pointercancel', _kfFreeUp, true);
+      const wasMoving = _kfFreeMoved;
+      _kfFreeIdx = -1; _kfFreeMoved = false; _kfFreePid = -1;
+      if (wasMoving) {
+        InteractionManager.releasePointer('tool');
+        if (!InteractionManager.isCameraOwned()) controls.enabled = true;
+        try { _gzApplySpace(); } catch (e) {}   // resync gizmo proxy + handles
+      }
+    }
     function _gzOnCanvasDown(ev) {
       if (!ModeManager.is('author')) return;
       if (ev.button !== undefined && ev.button !== 0) return;
@@ -179,6 +277,13 @@
         // the event so OrbitControls does not also start a drag
         // from the same pointerdown.
         ev.stopPropagation();
+        // R5 item 6: ARM the screen-plane free-drag so the SAME
+        // pointerdown's drag moves this keyframe in one gesture (no
+        // second click to grab a gizmo axis). Threshold-gated: a pure
+        // click never arms the move -> select-only behaviour unchanged.
+        // _gzAttach set _gzSelKf=idx + parked _gzProxy synchronously, so
+        // the proxy is ready for the free-drag immediately.
+        _kfFreeArm(ev, idx);
         return;
       }
       // 5. R2 #8 (2026-05-21): EMPTY-SPACE drag while PAUSED takes over.
