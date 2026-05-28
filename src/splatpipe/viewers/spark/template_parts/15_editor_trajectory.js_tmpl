@@ -518,8 +518,33 @@
     _trajBuiltSig = _trajKfSig(p);
     _trajActiveKf = -1;
     if (!p) return;
+    // UX-Phase11-R2 #146 (2026-05-28): a SINGLE-keyframe path has no spline
+    // (buildPlayer returns null for <2 kfs) so the polyline + speed dots
+    // can't draw -- but the author still needs 3D feedback that their FIRST
+    // Record landed. Draw just that one keyframe's frustum (no polyline /
+    // dots / active-ring) and return; >=2 kfs falls through to the full
+    // spline rebuild below. A 1-point bbox diagonal is 0, so _trajApplyScale
+    // already falls back to _TRAJ_FR_FALLBACK (no NaN/degenerate sizing).
+    {
+      const sk1 = (p.keyframes || []).filter(
+        k => k && k.pos && k.pos.length >= 3);
+      if (sk1.length === 1) {
+        _trajApplyScale(sk1);
+        const kf = sk1[0];
+        const q = (kf.quat && kf.quat.length === 4)
+          ? kf.quat : [0, 0, 0, 1];
+        const fr = _trajMakeFrustum(_TRAJ_COL);
+        fr.position.set(kf.pos[0], kf.pos[1], kf.pos[2]);
+        fr.quaternion.set(q[0], q[1], q[2], q[3]);
+        _trajGroup.add(fr);
+        _trajFrusta.push({ mesh: fr, kfIndex: 0,
+          baseQuat: [q[0], q[1], q[2], q[3]],
+          pos: [kf.pos[0], kf.pos[1], kf.pos[2]] });
+        return;
+      }
+    }
     const player = buildPlayer(p);
-    if (!player) return;   // < 2 keyframes -> nothing to draw
+    if (!player) return;   // 0 keyframes (or malformed) -> nothing to draw
     const times = player.times;
     const kfs = player.sortedKfs;
     const nSeg = times.length - 1;

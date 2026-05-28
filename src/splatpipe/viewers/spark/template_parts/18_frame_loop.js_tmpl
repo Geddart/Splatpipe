@@ -2,6 +2,17 @@
   const cam = cfg.camera || _DEFAULTS.camera;
   const splatCountEl = document.getElementById('splat-count');
 
+  // M8: when camera-bounds clamping is active (cfg.camera.enabled), the
+  // per-frame clamp below silently truncates recorded keyframe positions to
+  // the bounds box. Surface a one-time badge so the author knows poses are
+  // being clamped (nothing signalled this before).
+  try {
+    if (cam && cam.enabled === true) {
+      const _bb = document.getElementById('cam-bounds-badge');
+      if (_bb) _bb.style.display = '';
+    }
+  } catch (e) {}
+
   // FPS counter — count frames over a sliding 1-second window so the number
   // is stable. Returns 0 until the first window completes.
   let _fpsFrames = 0, _fpsStart = performance.now(), _fpsLast = 0;
@@ -991,7 +1002,11 @@
         //   Passive mode: bar full
         //   Always: hard timeout
         const orbitDrained = orbitPlayer && orbitIdx >= ORBIT_SAMPLES && inFlight === 0 && decoded === 0;
-        const passiveDone = !orbitPlayer && pct >= 1.0;
+        // L10: break as soon as the bar VISUALLY reads 100% (pct rounds to
+        // "100%" at >=0.995) instead of waiting for pct to creep to exactly
+        // 1.0 -- that last sliver is the "bar stuck at 100% for 1-3s" the
+        // user saw. Reveal quality is unchanged (<=~17ms / sub-page earlier).
+        const passiveDone = !orbitPlayer && pct >= 0.995;
         if (orbitDrained || passiveDone || elapsed > MAX_WAIT_MS) break;
         await new Promise(r => setTimeout(r, 100));
       }

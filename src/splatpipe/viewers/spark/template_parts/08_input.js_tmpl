@@ -430,7 +430,11 @@
     // the UI. Gate on the shared _editorHotkeyBlocked() (04_js_prologue).
     if (_editorHotkeyBlocked()) return;
     if (e.key === 'h' || e.key === 'H') { _hudOn = !_hudOn; _hud.style.display = _hudOn ? 'block' : 'none'; }
-    if (e.key === 'f' || e.key === 'F') { _afOn = !_afOn; if (!_afOn) _afClear(); }
+    // UX-M7 (2026-05-28): auto-focus toggle moved to SHIFT+F so plain F is
+    // freed for a future "frame the selected keyframe" gizmo action (that
+    // lives in the editor fragments 16/17, which own the selection/gizmo
+    // state -- TODO when it lands). Plain F is intentionally a no-op here.
+    if ((e.key === 'f' || e.key === 'F') && e.shiftKey) { _afOn = !_afOn; if (!_afOn) _afClear(); }
   });
 
   // ---- Touch gesture state machine ----

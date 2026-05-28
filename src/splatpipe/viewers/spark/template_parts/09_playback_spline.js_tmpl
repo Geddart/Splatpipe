@@ -248,9 +248,17 @@
     // ONE change here threads through every consumer (no per-callsite
     // edit). Mirrors the JS-side `_effectiveScrubRange` helper in
     // 16_editor_timeline + the Python `core/path_io.effective_scrub_range`.
+    // UX-Phase11-R2 #145 (2026-05-28): a SET total_duration_s is THE
+    // playback duration whether it EXTENDS past the last kf (hold the
+    // last pose -- the original Issue 6 case) OR is SHORTER than the kf
+    // range (Play now STOPS at the declared Length instead of overrunning
+    // to the last keyframe). The spline holds the last pose past the end
+    // and sampleAt() uses ABSOLUTE t (loop-wrap only), so a shorter
+    // duration cleanly TRUNCATES playback -- no speed rescale. Gate is now
+    // `> 0` (set + valid), not `> kfDuration`. total unset -> kfDuration.
     const totalDur = (typeof p.total_duration_s === 'number' &&
                       isFinite(p.total_duration_s) &&
-                      p.total_duration_s > kfDuration) ? p.total_duration_s : kfDuration;
+                      p.total_duration_s > 0) ? p.total_duration_s : kfDuration;
     const duration = totalDur;
     // Pass `meta` ONLY when at least one keyframe has a recognised interp;
     // otherwise pass undefined so the spline takes the byte-identical legacy

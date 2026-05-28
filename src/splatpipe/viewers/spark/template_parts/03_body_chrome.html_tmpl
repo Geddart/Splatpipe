@@ -174,6 +174,12 @@
        flash, mirroring the embed chrome strip. Empty placeholders now;
        Tasks 16-18 populate them (#author-root = the in-viewer editor UI,
        #user-transport = the end-user cinematic transport). -->
+  <!-- M8: camera-bounds clamping badge (shown by 18_frame_loop ONLY when
+       cfg.camera.enabled). Affects everyone, so not author-gated. -->
+  <div id="cam-bounds-badge" style="display:none;position:fixed;top:48px;left:50%;transform:translateX(-50%);z-index:40;background:rgba(180,120,20,.92);color:#fff;font:11px system-ui,sans-serif;padding:3px 10px;border-radius:6px;pointer-events:none;">&#8862; Camera bounds active &mdash; recorded positions are clamped</div>
+  <!-- #146: empty-scene authoring hint (author mode only; toggled by
+       17_editor_gizmo at author-bar build + hidden on first Rec). -->
+  <div id="editor-empty-hint" style="display:none;position:fixed;left:50%;bottom:120px;transform:translateX(-50%);z-index:40;background:rgba(20,20,24,.92);color:#cdd;font:13px system-ui,sans-serif;padding:8px 14px;border-radius:8px;border:1px solid #3a3a44;pointer-events:none;">+ Add camera, then press <b>K</b> to record a keyframe</div>
   <div id="author-root"></div>
   <div id="user-transport"></div>
 

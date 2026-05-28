@@ -2322,9 +2322,30 @@
         const saveBtn = _mkBtn('Save',
           'Save scene',
           'editor-save-btn');
-        recBtn.addEventListener('click', () => { _gzRecordKeyframe(); });
+        // #146 empty-state hint: hide it once the author records (the
+        // add-camera -> record flow the hint guides).
+        const _hideEmptyHint = function () {
+          try {
+            const _eh = document.getElementById('editor-empty-hint');
+            if (_eh) _eh.style.display = 'none';
+          } catch (e) {}
+        };
+        recBtn.addEventListener('click', () => { _gzRecordKeyframe(); _hideEmptyHint(); });
         interpBtn.addEventListener('click', () => { _gzOpenPopover(); });
         tanBtn.addEventListener('click', () => { _tanEnableBezier(); });
+        // #146: show the empty-scene guidance hint at author-bar build when
+        // there are no cameras/paths yet (author bar only builds in author
+        // mode). A live hide on +Add camera would need 10_camera_select; the
+        // Rec-hide above covers the common add->record flow.
+        try {
+          const _eh0 = document.getElementById('editor-empty-hint');
+          if (_eh0) {
+            const _noCams =
+              (!Array.isArray(cfg.cameras) || cfg.cameras.length === 0) &&
+              (!Array.isArray(cfg.camera_paths) || cfg.camera_paths.length === 0);
+            _eh0.style.display = _noCams ? '' : 'none';
+          }
+        } catch (e) {}
         // UX-Phase11A Issue 7 (2026-05-21): Save was silent in http mode
         // (no toast, no visible state change) -- user has no idea if
         // the POST succeeded. cli mode is fine because the token card

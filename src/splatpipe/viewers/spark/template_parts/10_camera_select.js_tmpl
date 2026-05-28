@@ -177,6 +177,15 @@
     if (selEl) {
       try { selEl.value = val; } catch (e) {}
     }
+    // UX clip-dropdown cosmetic (2026-05-28): also reflect the bind into
+    // the VISIBLE #camera-select so its label is not stale when the bind
+    // is PROGRAMMATIC (e.g. a clip drill-in calls _camSelApply directly,
+    // not via the dropdown's own 'change'). _camSelReflect is guarded
+    // (_camSelSyncing), idempotent (no-ops when _camSel.value already ===
+    // val, e.g. when this runs from the dropdown change handler), and only
+    // selects an option that actually exists -- so this never fights the
+    // mirror nor selects a non-listed path.
+    try { _camSelReflect(val); } catch (e) {}
     if (isUser) {
       // END-USER: drive/preview this path's tour, reusing the
       // existing path-playback machinery (a fresh explicit
@@ -676,7 +685,26 @@
     const _camMenuDel = document.getElementById('cam-menu-delete');
     let _camMenuOutside = null;
     let _camMenuEsc = null;
-    function _camMenuClose() {
+    // UX-M2 (2026-05-28): a window-resize listener installed while the
+    // popup is open so the absolutely-positioned menu never leaks to
+    // stale getBoundingClientRect coords.
+    let _camMenuResize = null;
+    // UX-M3 (2026-05-28): focusable menu items in DOM order, for keyboard
+    // navigation (ArrowUp/Down/Home/End move focus; Enter/Space activate).
+    function _camMenuItems() {
+      if (!_camMenuPop) return [];
+      return Array.prototype.slice.call(
+        _camMenuPop.querySelectorAll('[role="menuitem"], button')
+      );
+    }
+    function _camMenuFocusItem(items, idx) {
+      if (!items.length) return;
+      let i = idx;
+      if (i < 0) i = items.length - 1;
+      if (i >= items.length) i = 0;
+      try { items[i].focus(); } catch (e) {}
+    }
+    function _camMenuClose(opts) {
       if (!_camMenuPop) return;
       _camMenuPop.style.display = 'none';
       if (_camMenuBtn) _camMenuBtn.setAttribute('aria-expanded', 'false');
@@ -688,6 +716,16 @@
       if (_camMenuEsc) {
         document.removeEventListener('keydown', _camMenuEsc, true);
         _camMenuEsc = null;
+      }
+      if (_camMenuResize) {
+        window.removeEventListener('resize', _camMenuResize);
+        _camMenuResize = null;
+      }
+      // UX-M3: on a KEYBOARD close (Escape) return focus to the kebab
+      // trigger so keyboard users are not dumped to <body>. NOT on an
+      // outside-click close (yanking focus there would be rude).
+      if (opts && opts.restoreFocus && _camMenuBtn) {
+        try { _camMenuBtn.focus(); } catch (e) {}
       }
     }
     function _camMenuOpen() {
@@ -715,15 +753,37 @@
             t.closest('#cam-menu-popup'))) return;
         _camMenuClose();
       };
+      // UX-M3 (2026-05-28): focus the first item on open + full keyboard
+      // nav (ArrowDown/Up + Home/End move focus; Enter/Space activate the
+      // focused item; Escape closes + restores focus to the kebab).
+      const _items0 = _camMenuItems();
+      if (_items0.length) { try { _items0[0].focus(); } catch (e) {} }
       _camMenuEsc = function (e) {
-        if (e && e.key === 'Escape') {
-          _camMenuClose();
+        if (!e) return;
+        const items = _camMenuItems();
+        const cur = items.indexOf(document.activeElement);
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          _camMenuClose({ restoreFocus: true });
+        } else if (e.key === 'ArrowDown') {
+          e.preventDefault(); _camMenuFocusItem(items, cur + 1);
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault(); _camMenuFocusItem(items, cur - 1);
+        } else if (e.key === 'Home') {
+          e.preventDefault(); _camMenuFocusItem(items, 0);
+        } else if (e.key === 'End') {
+          e.preventDefault(); _camMenuFocusItem(items, items.length - 1);
+        } else if ((e.key === 'Enter' || e.key === ' ') && cur >= 0) {
+          e.preventDefault();
+          try { items[cur].click(); } catch (e2) {}
         }
       };
+      _camMenuResize = function () { _camMenuClose(); };
       // useCapture=true so an outside-click is caught before any
       // bubbling handler can swallow it.
       document.addEventListener('click', _camMenuOutside, true);
       document.addEventListener('keydown', _camMenuEsc, true);
+      window.addEventListener('resize', _camMenuResize);
     }
     if (_camMenuBtn && _camMenuPop) {
       _camMenuBtn.addEventListener('click', (e) => {

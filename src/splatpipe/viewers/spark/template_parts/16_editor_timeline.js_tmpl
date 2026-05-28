@@ -242,8 +242,16 @@
       // at the last kf even though the player + scrub can reach the
       // extended range, leaving a "phantom" scrub past the visible
       // ruler. Mirrors _effectiveScrubRange() below.
+      // UX-Phase11-R2 #145 (2026-05-28): mirror buildPlayer's duration --
+      // a SET total_duration_s is the player duration whether it EXTENDS
+      // OR TRUNCATES the kf range (gate `> 0`, not `> kfDur`), so this
+      // player-clock fallback agrees with 09::buildPlayer's `duration` and
+      // Play stops at the declared Length instead of overrunning to the
+      // last kf. (The SCRUB ceiling stays _effectiveScrubRange/_tlEffectiveDur,
+      // which already uses total when set -- so when total is unset the
+      // playhead can still scrub PAST the last kf to the 10s floor: R4.)
       if (p && typeof p.total_duration_s === 'number' &&
-          isFinite(p.total_duration_s) && p.total_duration_s > kfDur) {
+          isFinite(p.total_duration_s) && p.total_duration_s > 0) {
         return p.total_duration_s;
       }
       return kfDur;
@@ -539,6 +547,14 @@
     // ---- Diamond geometry (canvas-space hit test). Each keyframe
     //      is a diamond centred at (_tlT2X(kf.t), diamond-row-y).
     const _TL_DIAM = 7;            // half-size (px)
+    // UX-Phase11-R2 M4 (2026-05-28): touch-friendly hit slack. On a coarse
+    // pointer (touch) the ~11px Manhattan mouse target (DIAM 7 + slack 4) is
+    // far below the ~44px WCAG/Apple minimum, so a finger can't reliably grab
+    // a diamond. Widen the HIT radius (NOT the visual diamond) on touch
+    // devices; mouse precision is unchanged (slack 4).
+    const _TL_HIT_SLACK =
+      (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
+        ? 14 : 4;
     function _tlDiamRowY() { return _TL_RULER_H + 14; }
     function _tlHitKf(x, y) {
       // Topmost keyframe whose diamond contains (x,y); -1 = none.
@@ -550,7 +566,7 @@
         const k = p.keyframes[i];
         const cx = _tlT2X(k.t || 0);
         const d = Math.abs(x - cx) + Math.abs(y - cy);
-        if (d <= _TL_DIAM + 4 && d < bestd) { best = i; bestd = d; }
+        if (d <= _TL_DIAM + _TL_HIT_SLACK && d < bestd) { best = i; bestd = d; }
       }
       return best;
     }
@@ -1049,6 +1065,18 @@
       _tlPlayhead.style.left = x + 'px';
       _tlPlayhead.style.display =
         (x >= -2 && x <= _tlW + 2) ? 'block' : 'none';
+      // UX-Phase11-R2 L13 (2026-05-28): visual cue that playback is
+      // PAUSED-at-scrub (camera frozen at this playhead, not advancing).
+      // Tint the playhead amber when _pausedAt is set, else resting cyan.
+      // Cheap per-sync style write (no layout); same _pausedAt guard the
+      // rest of this fragment uses.
+      {
+        const _phPaused =
+          (typeof _pausedAt !== 'undefined' && _pausedAt !== null);
+        const _phCol = _phPaused ? '#ffb347' : '#35e0ff';
+        _tlPlayhead.style.background = _phCol;
+        _tlPlayhead.style.boxShadow = '0 0 4px ' + _phCol;
+      }
       // UX-Phase11A Issue 5: keep the Play/Pause glyph in sync with the
       // live play state every time the playhead syncs (incl. the
       // per-frame timeline update() tick + a tour reaching its natural
@@ -1779,6 +1807,12 @@
     //      stays SECONDS -- only the px mapping (zoom/scroll)
     //      changes; no stored t is touched.
     _tlLane.addEventListener('wheel', (ev) => {
+      // UX-Phase11-R2 M5 (2026-05-28): only intercept a VERTICAL zoom
+      // gesture. A horizontal trackpad swipe (deltaX-dominant) passes
+      // through (no preventDefault) so it can scroll instead of being
+      // eaten; a zero-deltaY event is ignored. Keeps { passive:false } so
+      // preventDefault is still allowed when we DO zoom.
+      if (Math.abs(ev.deltaX) > Math.abs(ev.deltaY) || !ev.deltaY) return;
       ev.preventDefault();
       const xy = _tlLaneXY(ev);
       const tAt = _tlX2T(xy.x);            // time under the cursor

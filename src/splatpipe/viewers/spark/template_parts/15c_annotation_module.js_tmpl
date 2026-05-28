@@ -501,18 +501,32 @@
         const body = document.createElement('div');
         body.style.cssText = 'padding:6px 0 4px 0;font-size:10px;' +
           'color:#aaa;display:flex;flex-direction:column;gap:6px;';
-        // Position summary (read-only -- drag-in-3D placement is
-        // Phase 9; the +Add button places at camera target which is
-        // an explicit gesture so its value is exact).
-        const posLine = document.createElement('div');
-        const px = (ann.pos && ann.pos[0] !== undefined) ?
-          ann.pos[0].toFixed(2) : '0';
-        const py = (ann.pos && ann.pos[1] !== undefined) ?
-          ann.pos[1].toFixed(2) : '0';
-        const pz = (ann.pos && ann.pos[2] !== undefined) ?
-          ann.pos[2].toFixed(2) : '0';
-        posLine.textContent = 'pos:  [' + px + ', ' + py + ', ' + pz + ']';
-        body.appendChild(posLine);
+        // L6 (#141): EDITABLE position. Was a read-only "pos: [x,y,z]"
+        // summary; now three numeric x/y/z inputs that write ann.pos and
+        // re-place the 3D dot (_rebuild re-reads ann.pos when building the
+        // marker). Commit on change (gesture-end -- ONE EditHistory snapshot
+        // per gesture, mirroring the title / t_in inputs).
+        const posRow = document.createElement('div');
+        posRow.style.cssText = 'display:flex;gap:6px;';
+        const _commitPos = function () {
+          _pushUndo('ann-pos');
+          if (!Array.isArray(ann.pos) || ann.pos.length < 3) ann.pos = [0, 0, 0];
+          ann.pos[0] = parseFloat(pxIn.value) || 0;
+          ann.pos[1] = parseFloat(pyIn.value) || 0;
+          ann.pos[2] = parseFloat(pzIn.value) || 0;
+          _writeBack();
+          _rebuild();
+        };
+        const _p0 = (ann.pos && ann.pos[0] !== undefined) ? ann.pos[0] : 0;
+        const _p1 = (ann.pos && ann.pos[1] !== undefined) ? ann.pos[1] : 0;
+        const _p2 = (ann.pos && ann.pos[2] !== undefined) ? ann.pos[2] : 0;
+        const pxIn = _ssNumInput('x', _p0, -100000, 100000, 0.1, _commitPos);
+        const pyIn = _ssNumInput('y', _p1, -100000, 100000, 0.1, _commitPos);
+        const pzIn = _ssNumInput('z', _p2, -100000, 100000, 0.1, _commitPos);
+        posRow.appendChild(pxIn.wrap);
+        posRow.appendChild(pyIn.wrap);
+        posRow.appendChild(pzIn.wrap);
+        body.appendChild(posRow);
         // UX-Phase11G WF-M (#145): editable Title + Text. The dot's unfold
         // panel (_buildPanelEl) renders BOTH ann.title (bold heading) and
         // ann.text (body), and the summary shows ann.title -- but there was
