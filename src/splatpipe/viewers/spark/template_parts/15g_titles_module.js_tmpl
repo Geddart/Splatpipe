@@ -816,9 +816,15 @@
       const idx = arr.findIndex(x => (x && x.id === id));
       if (idx < 0) return false;
       _pushUndo('title-delete');
+      const _prev = arr.slice();
       arr.splice(idx, 1);
       _rebuild();
       _ssRenderList();
+      // L7: broadcast the cfg change for consistency with the other
+      // modules (postfx/etc.) so any listener re-syncs on a delete.
+      try {
+        EditorModuleRegistry.notifyCfgChange('titles3d', _prev, arr);
+      } catch (e) {}
       return true;
     }
 

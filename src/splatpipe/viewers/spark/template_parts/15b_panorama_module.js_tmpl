@@ -367,11 +367,11 @@
       clearBtn.type = 'button';
       clearBtn.className = 'pan-clear';
       clearBtn.title = 'Remove panorama';
-      clearBtn.textContent = '×';   // U+00D7 MULTIPLICATION SIGN
+      clearBtn.textContent = 'Clear';   // explicit verb (was a '×' that read as delete)
       clearBtn.style.cssText =
         'background:rgba(255,255,255,0.10);color:#ccc;border:0;' +
-        'border-radius:4px;width:24px;height:24px;cursor:pointer;' +
-        'font-size:14px;line-height:1;';
+        'border-radius:4px;height:24px;padding:0 8px;cursor:pointer;' +
+        'font-size:11px;line-height:1;';
       fileRow.appendChild(clearBtn);
       wrap.appendChild(fileRow);
 

@@ -256,7 +256,7 @@
       if (typeof ann.media_url === 'string' && ann.media_url) {
         const img = document.createElement('img');
         img.src = ann.media_url;
-        img.alt = ann_title || ann_text || '';
+        img.alt = ann_title || ann_text || 'Annotation media';
         img.style.cssText = 'display:block;max-width:100%;' +
           'margin-top:8px;border-radius:4px;';
         // Failure to load = silent hide; never throw + never log spam.
@@ -583,9 +583,13 @@
         kindWrap.appendChild(document.createTextNode('kind:'));
         const kindSel = document.createElement('select');
         kindSel.dataset.field = 'kind';
+        var _KIND_LABELS = {
+          dot_unfold: 'Distance dot',
+          title3d_overlay: 'Always-visible 3D label',
+        };
         for (const opt of ['dot_unfold', 'title3d_overlay']) {
           const o = document.createElement('option');
-          o.value = opt; o.textContent = opt;
+          o.value = opt; o.textContent = _KIND_LABELS[opt] || opt;
           if (ann.kind === opt) o.selected = true;
           kindSel.appendChild(o);
         }
