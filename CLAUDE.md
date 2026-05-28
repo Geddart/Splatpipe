@@ -9,7 +9,7 @@ CLI-first Gaussian splatting pipeline. Takes COLMAP data through: auto-clean →
 ```bash
 cd H:\001_ProjectCache\1000_Coding\Splatpipe
 pip install -e ".[dev]"
-pytest tests/ -v                    # Run tests (1072 collected; 1049 passed, 23 skipped, ~33s)
+pytest tests/ -v                    # Run tests (1083 collected; 1060 passed, 23 skipped, ~35s)
 splatpipe --help                    # CLI commands
 splatpipe web                       # Launch dashboard
 ```
@@ -98,8 +98,21 @@ splatpipe/                    # repo root
           15g_titles_module.js_tmpl       # TitlesModule (Phase 8)
           15h_intro_module.js_tmpl        # IntroModule -- Scene Settings Intro section (Phase 11A Issue 9)
           15i_startview_module.js_tmpl    # StartViewModule -- Scene Settings Start View section (Phase 11A Issue 9)
-          16_editor_timeline.js_tmpl   # Author editor -- bottom timeline + total-time UI + multi-lane registry + multi-camera CLIP EDITOR (#164): stacked two-level (sequence cuts track <-> click-clip-to-edit-keyframes via _camSelApply), master ruler/playhead/scrub-via-existing-path, ◂ Sequence back + breadcrumb
-          17_editor_gizmo.js_tmpl      # Author editor -- gizmo + interp popover (multi-select, Phase 11A Issue 4) + Save (visible feedback, Phase 11A Issue 7) + SPCP
+          # 16_editor_timeline split into 6 byte-inert IIFE slices (concat = identical assembled HTML; for parallel editing):
+          16_editor_timeline.js_tmpl              # opener: IIFE open + author/root guards + view/clip-editor state + time/px math
+          16_editor_timeline_b_dom.js_tmpl        # DOM build (transport bar/buttons/undo-redo float/Length/lane/canvas/playhead) thru _tlSyncHeight
+          16_editor_timeline_c_draw.js_tmpl       # _tlResize + diamond geometry/hit-test + ruler/_tlDraw + _tlDrawLanes
+          16_editor_timeline_d_playhead_edit.js_tmpl  # playhead/sync + effectiveScrubRange/Length/fit + level transitions + scrub/_tlAfterEdit
+          16_editor_timeline_e_input.js_tmpl      # pointer router + wheel + context-menu + transport handlers + keydown + init/rAF + multi-lane registry
+          16_editor_timeline_z_tail.js_tmpl       # _api test-surface + Object.defineProperties + IIFE close
+          # 17_editor_gizmo split into 7 byte-inert IIFE slices (the gizmo-drag handlers isolated in _e_drag for the R5 rework):
+          17_editor_gizmo.js_tmpl                 # opener: IIFE open + author gate + auto-tour/start-view restore + slug
+          17_editor_gizmo_b_codec.js_tmpl         # SPCP1 codec (JS port) + patch builders
+          17_editor_gizmo_c_spine.js_tmpl         # tour-stop + gizmo/pick state + proxy-sync + _gzAfterEdit + _gzAttach/_gzDetach
+          17_editor_gizmo_e_drag.js_tmpl          # bezier tangent handles + tangent/gizmo DRAG (R5 #1/#6 land here)
+          17_editor_gizmo_f_router.js_tmpl        # pointer-pick/stacked-cycle + _gzOnCanvasDown + Alt-orbit + pointerdown install
+          17_editor_gizmo_g_ui.js_tmpl            # context-menu + interp popover (multi-select) + Record(K) + Save/SPCP card
+          17_editor_gizmo_z_tail.js_tmpl          # author HUD button cluster + global keydown + window.__editor test surface + IIFE close
           17a_edit_history.js_tmpl     # EditHistory undo/redo ring + hotkeys (Phase 2A #122)
           17b_scene_settings_drawer.js_tmpl  # Scene Settings drawer scaffold + 6 sections (Phase 2D #122)
           18_frame_loop.js_tmpl        # Frame loop + bench recorder + _openStartViewCard helper + preload IIFE
@@ -429,7 +442,7 @@ Key config sections: `[tools]`, `[colmap_clean]`, `[postshot]` (profile, gpu, ma
 ## Tests
 
 ```bash
-pytest tests/ -v              # 1072 collected (1049 passed, 23 skipped)
+pytest tests/ -v              # 1083 collected (1060 passed, 23 skipped)
 pytest tests/ -k colmap       # Just COLMAP tests
 pytest tests/ -k integration  # End-to-end with tiny data
 pytest tests/ -k trainers     # Trainer abstraction tests
