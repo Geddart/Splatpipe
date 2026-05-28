@@ -1,0 +1,213 @@
+    // ---- BYTE-IDENTICAL JS port of core/spcp_token.encode_spcp ----
+    // Python: json.dumps(payload, separators=(",",":")).encode()
+    //         -> base64.urlsafe_b64encode(...).rstrip("=")
+    //         -> "SPCP1:" + slug + ":" + that
+    // json.dumps defaults: ensure_ascii=True, NO sort_keys (key
+    // INSERTION order). We replicate ALL of that exactly.
+    //
+    // _spcpNum: reproduce CPython json/float repr so a value
+    // round-trips through Python json.loads -> json.dumps unchanged
+    // (the byte-identity gate). Key facts (verified against CPython):
+    //   * 0 / -0  -> "0"   (json.loads("0") is int 0 -> "0": a fixed
+    //                        point; JS String(-0) is "0" too).
+    //   * integer-valued, |n| < 1e21 -> String(n) (e.g. "2","-40").
+    //     json.loads parses it as an int and re-dumps the SAME
+    //     literal -> fixed point (covers the >=1e16 case too: JS
+    //     emits the integer literal, Python keeps it an int).
+    //   * fractional, 1e-4 <= |n| < 1e16 -> String(n): JS shortest
+    //     round-trip digits == CPython's, both fixed-notation ->
+    //     byte-identical.
+    //   * fractional, |n| < 1e-4 (CPython switches to sci here):
+    //     mantissa from toExponential() + Python-style exponent
+    //     "e" + sign + >=2-digit zero-padded magnitude (JS gives
+    //     "1e-5", Python "1e-05"; we pad to match).
+    //   * non-finite -> never valid JSON (the clean payload has
+    //     none); throw so a bug is loud, never silently NaN.
+    function _spcpNum(n) {
+      if (!isFinite(n)) throw new Error('non-finite number in payload');
+      if (n === 0) return '0';                 // also -0 (=== 0)
+      if (Number.isInteger(n) && Math.abs(n) < 1e21) return String(n);
+      if (Math.abs(n) >= 1e-4) return String(n);
+      // |n| < 1e-4, fractional -> CPython sci: mantissa + e[+-]NN.
+      const e = n.toExponential();             // e.g. "1.23e-5"
+      const m = e.indexOf('e');
+      const mant = e.slice(0, m);
+      let exp = parseInt(e.slice(m + 1), 10);   // negative here
+      const sign = exp < 0 ? '-' : '+';
+      let mag = String(Math.abs(exp));
+      if (mag.length < 2) mag = '0' + mag;      // zero-pad to >=2
+      return mant + 'e' + sign + mag;
+    }
+    // Python json string escaping with ensure_ascii=True: the JSON
+    // string escapes (\" \\ \b \f \n \r \t), other C0
+    // controls AND every non-ASCII codepoint as \uXXXX (surrogate
+    // pairs preserved as two \uXXXX -- exactly what CPython emits;
+    // JS strings are already UTF-16 so iterating code UNITS yields
+    // the same pair encoding).
+    function _spcpStr(s) {
+      let out = '"';
+      for (let i = 0; i < s.length; i++) {
+        const c = s.charCodeAt(i);
+        const ch = s[i];
+        if (ch === '"') out += '\\"';
+        else if (ch === '\\') out += '\\\\';
+        else if (c === 8) out += '\\b';
+        else if (c === 9) out += '\\t';
+        else if (c === 10) out += '\\n';
+        else if (c === 12) out += '\\f';
+        else if (c === 13) out += '\\r';
+        else if (c < 0x20 || c > 0x7e) {
+          out += '\\u' + c.toString(16).padStart(4, '0');
+        } else {
+          out += ch;
+        }
+      }
+      return out + '"';
+    }
+    // Compact JSON, key INSERTION order (NO sort), separators
+    // (",",":") -- byte-for-byte json.dumps(payload,
+    // separators=(",",":")). Arrays/objects recurse; null/bool
+    // exactly as Python; numbers via _spcpNum; strings via _spcpStr.
+    // (The payload we build holds only JSON-safe primitives, arrays
+    // and plain objects -- the SAME shape that came from the
+    // viewer-config JSON -- so this total covers it.)
+    function _spcpJson(v) {
+      if (v === null) return 'null';
+      const t = typeof v;
+      if (t === 'boolean') return v ? 'true' : 'false';
+      if (t === 'number') return _spcpNum(v);
+      if (t === 'string') return _spcpStr(v);
+      if (Array.isArray(v)) {
+        let s = '[';
+        for (let i = 0; i < v.length; i++) {
+          if (i) s += ',';
+          // Python json renders array None/NaN slots as null; an
+          // undefined/function slot cannot occur in our payload, map
+          // it to null defensively (never throw mid-encode).
+          const e = v[i];
+          s += (e === undefined || typeof e === 'function')
+            ? 'null' : _spcpJson(e);
+        }
+        return s + ']';
+      }
+      if (t === 'object') {
+        let s = '{';
+        let first = true;
+        // Object.keys preserves insertion order for string keys
+        // (the payload keys are all plain strings) -- the SAME order
+        // Python dict iteration would use for an equivalently-built
+        // dict; encode_spcp does NOT sort, so we must NOT either.
+        for (const k of Object.keys(v)) {
+          const val = v[k];
+          // Python json SKIPS no keys (it would serialise None);
+          // our payload never holds undefined/function values, but
+          // skip such a slot defensively rather than emit invalid
+          // JSON (a value Python could not have produced anyway).
+          if (val === undefined || typeof val === 'function') continue;
+          if (!first) s += ',';
+          first = false;
+          s += _spcpStr(k) + ':' + _spcpJson(val);
+        }
+        return s + '}';
+      }
+      // undefined / symbol: not representable -- our payload never
+      // contains these at the top level (guarded above for slots).
+      throw new Error('unserialisable value in payload');
+    }
+    function _b64urlBytes(str) {
+      // str is already pure ASCII (ensure_ascii=True), so its UTF-8
+      // == its byte values; btoa over it == Python
+      // base64.urlsafe_b64encode of the same bytes, then '+/' ->
+      // '-_' and strip '=' (encode_spcp's exact tail).
+      const b64 = btoa(str);
+      return b64.replace(/\+/g, '-').replace(/\//g, '_')
+        .replace(/=+$/, '');
+    }
+    function _encodeSpcp(slug, payload) {
+      if (String(slug).indexOf(':') !== -1) {
+        // Mirror encode_spcp's slug guard (a ':' would break the
+        // cross-language split(':',2) decode). Our sanitiser already
+        // strips ':' so this never fires in practice; defensive.
+        throw new Error("slug must not contain ':'");
+      }
+      const json = _spcpJson(payload);
+      return 'SPCP1:' + slug + ':' + _b64urlBytes(json);
+    }
+
+    // ---- Build the Contract-C camera-scope patch from the AUTHORED
+    //      in-memory state. ONLY the locked allow-list keys
+    //      (start_view, camera_paths, clips, cameras,
+    //      default_path_id, intro, titles3d, spark_render,
+    //      annotations) -- NEVER primary_asset (the Speicher-blank
+    //      invariant: merge_camera_scope force-keeps the live
+    //      pointer; emitting it here would be a critical breach).
+    //      Values are taken from the LIVE cfg object (the same
+    //      object the Task-16/17 in-memory edits + Record(K) + the
+    //      gizmo mutate in place) so the author's edits are exactly
+    //      what gets persisted. Missing keys are simply omitted (a
+    //      whole-replace merge -- absent key == leave the live
+    //      config's value untouched).
+    const _PATCH_KEYS = ['start_view', 'camera_paths', 'clips',
+      'cameras', 'default_path_id', 'intro', 'titles3d',
+      'spark_render', 'annotations'];
+    function _buildLegacyPatch() {
+      // The pre-Phase-2 hard-coded walk over the locked allow-list.
+      // Phase 2B uses this as the BASE that the EditorModuleRegistry's
+      // collectPatch() overlay merges into -- so a registered module's
+      // dirty patch slot WINS (cleaner, narrower payload) while every
+      // un-registered legacy key still rides along (byte-identical save
+      // shape for Phase 2 where only CameraPathModule is wired). When
+      // every module has registered (Phases 3-8), the legacy walk is
+      // pure belt-and-braces and the registry walk dominates.
+      const patch = {};
+      for (const k of _PATCH_KEYS) {
+        if (cfg && Object.prototype.hasOwnProperty.call(cfg, k) &&
+            cfg[k] !== undefined && cfg[k] !== null) {
+          patch[k] = cfg[k];
+        }
+      }
+      return patch;
+    }
+    function _buildPatch() {
+      // Phase 2B (#122): Save dispatch via EditorModuleRegistry.
+      //   1. Start with the legacy _PATCH_KEYS walk as the BASE (every
+      //      allow-listed key included if cfg has it -- byte-identical
+      //      to the pre-Phase-2 payload shape).
+      //   2. Overlay every registered module's getDirtyState().patchObject
+      //      keyed off the module's stateKey. The registry collectPatch
+      //      already filters to dirty modules; an empty registry (no
+      //      modules registered) is a clean fallback to step 1.
+      //   3. A registered module's slot WINS over the legacy slot of the
+      //      same name (the module is the canonical owner; the legacy
+      //      slot is the back-compat duplicate). For Phase 2B, only
+      //      CameraPathModule is registered -- so camera_paths comes
+      //      from the module and every other key (start_view, clips,
+      //      default_path_id, intro, titles3d, spark_render, annotations,
+      //      cameras) rides along from the legacy walk.
+      const base = _buildLegacyPatch();
+      try {
+        if (typeof EditorModuleRegistry !== 'undefined' &&
+            typeof EditorModuleRegistry.collectPatch === 'function') {
+          const collected = EditorModuleRegistry.collectPatch();
+          if (collected && collected.patch &&
+              typeof collected.patch === 'object') {
+            for (const k of Object.keys(collected.patch)) {
+              base[k] = collected.patch[k];
+            }
+          }
+        }
+      } catch (e) {}
+      return base;
+    }
+    function _buildSpcpPayload() {
+      // Exactly decode_spcp's gate shape: v + scope FIRST (insertion
+      // order), then the allow-listed camera-scope keys. (Python
+      // round-trip: decode_spcp checks v==1 & scope=='camera_paths';
+      // the cli backend's merge_camera_scope then ignores v/scope
+      // and applies only ALLOWED_PATCH_KEYS -- so including them in
+      // the token envelope is correct and required.)
+      const p = { v: 1, scope: 'camera_paths' };
+      const patch = _buildPatch();
+      for (const k of Object.keys(patch)) p[k] = patch[k];
+      return p;
+    }

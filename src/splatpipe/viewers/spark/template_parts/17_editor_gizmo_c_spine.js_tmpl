@@ -1,0 +1,287 @@
+
+    // ---- Explicit auto-tour stop (single source of truth). In
+    //      ?author=1 the default-path tour auto-plays; the first
+    //      authoring gesture stops it via the EXISTING stopPath()
+    //      (the SAME mechanism Task-17's pause uses) so the gizmo
+    //      drag / Record happen against a still camera. This is an
+    //      explicit interaction stop, NOT a _cinematic-gate change.
+    let _gzTourStopped = false;
+    function _gzStopTour() {
+      if (_player) {
+        try { stopPath(); } catch (e) {}
+        _gzTourStopped = true;
+      }
+    }
+
+    // ---- Selection + gizmo state. _gzProxy is a bare Object3D the
+    //      TransformControls drives; we mirror its pose to/from the
+    //      selected keyframe. It is added to the scene ONLY while a
+    //      key is selected and removed on deselect (no leak). The
+    //      TransformControls 'helper' (its visible gizmo) is added/
+    //      removed alongside.
+    let _gzCtl = null;            // TransformControls instance (lazy)
+    let _gzProxy = null;          // THREE.Object3D the gizmo drives
+    let _gzSelKf = -1;            // selected keyframe index (-1 none)
+    let _gzMode = 'translate';    // 'translate' | 'rotate'
+    let _gzScreen = false;        // false = World, true = Screen
+    let _gzDragging = false;
+    let _gzImportPromise = null;  // memoised dynamic import
+    let _gzPopEl = null;          // the interp popover element
+    let _gzCtlHelper = null;      // the gizmo's visible helper object
+    let _gzAltOrbiting = false;   // B1: an Alt+Left orbit gesture is live
+    let _gzAltPrevGz = null;      // _gzCtl.enabled saved across the gesture
+    let _gzAltPrevTan = null;     // _tanCtl.enabled saved across the gesture
+    let _gzAltPid = -1;           // pointerId that started the Alt-orbit
+    // B2 stacked-keyframe click-cycle state. _gzPkLastX/Y = the screen
+    // px of the previous pick; _gzPkCands = the sorted candidate kf
+    // indices of that pick; _gzPkIdx = how deep we are in that stack;
+    // _gzPkSig = the _trajBuiltSig at that pick (a frustum rebuild
+    // invalidates the cycle). Reset on selection-cleared, on rebuild,
+    // and when the click moves past _GZ_PK_SAME_PX.
+    let _gzPkLastX = null, _gzPkLastY = null;
+    let _gzPkCands = [];
+    let _gzPkIdx = 0;
+    let _gzPkSig = null;
+
+    function _gzActivePath() {
+      return (typeof _trajActivePath === 'function')
+        ? _trajActivePath() : null;
+    }
+    // The keyframe OBJECT for the current selection (selection is by
+    // the Task-16 frustum's kfIndex == the path's keyframes[] index;
+    // _trajRebuild builds one frustum per keyframe IN ORDER).
+    function _gzSelKfObj() {
+      const p = _gzActivePath();
+      if (!p || !p.keyframes || _gzSelKf < 0 ||
+          _gzSelKf >= p.keyframes.length) return null;
+      return p.keyframes[_gzSelKf];
+    }
+
+    // Push the selected keyframe's pose onto the proxy (so the gizmo
+    // sits exactly where the camera will be for that key).
+    const _GZ_TMPQ = new THREE.Quaternion();
+    function _gzSyncProxyFromKf() {
+      const kf = _gzSelKfObj();
+      if (!kf || !_gzProxy) return;
+      const pos = (kf.pos && kf.pos.length === 3) ? kf.pos : [0, 0, 0];
+      _gzProxy.position.set(pos[0], pos[1], pos[2]);
+      const q = (kf.quat && kf.quat.length === 4)
+        ? kf.quat : [0, 0, 0, 1];
+      _gzProxy.quaternion.set(q[0], q[1], q[2], q[3]);
+      _gzProxy.updateMatrixWorld(true);
+    }
+
+    // Trigger the Task-16 overlay + the Task-17 timeline to re-read
+    // the mutated keyframe NOW (deterministic for the harness; the
+    // OverlayScene sig check would also rebuild on the next tick --
+    // _trajKfSig includes pos/quat/interp). Also null _player if it
+    // is driving THIS path so a later Play re-derives the geometry.
+    function _gzAfterEdit() {
+      const p = _gzActivePath();
+      if (!p) return;
+      // R4 (#165) Rec-latency fix: rebuild the trajectory ONCE per edit.
+      // The prior body called _trajRebuild(p) + buildPlayer(p) HERE and
+      // THEN window.__editor.rebuild() (which calls _trajRebuild + a 3rd
+      // buildPlayer + _trajRefreshActive AGAIN) -- so every Record / gizmo
+      // edit ran the full geometry rebuild (nSeg*96 polyline samples + 240
+      // speed-dot samples) TWICE and built the spline 3-4 times. _trajRebuild
+      // is the reliable direct call (15 concatenates before 17); we reuse
+      // the player it builds and add the active-key refresh inline, dropping
+      // the redundant window.__editor.rebuild() round-trip. Same visible
+      // result (one rebuild + one refresh), about half the synchronous work
+      // -- the rebuild cost scales with keyframe count, so this keeps Rec
+      // snappy as a real authored path grows. The OverlayScene update()
+      // sig-check still rebuilds on the next tick if a later edit races
+      // (idempotent), so no rebuild is ever missed.
+      try {
+        _trajRebuild(p);
+        _trajPhPlayer = buildPlayer(p);
+        if (typeof _trajRefreshActive === 'function') _trajRefreshActive();
+      } catch (e) {}
+      if (_player && _activePathId === (p.id || _activePathId)) {
+        // A pose edit while the player drives this path: rebuild it in
+        // place (reuse the player just built above -- the one spline impl,
+        // NOT a fresh buildPlayer) so the edit is not lost; if it cannot
+        // build, stop cleanly.
+        const np = _trajPhPlayer;
+        if (np) _player = np;
+        else { try { stopPath(); } catch (e) {} }
+      }
+      // Re-place the bezier tangent handles after the rebuild: the
+      // keyframe pos may have moved (main gizmo) and _trajApplyScale
+      // may have re-derived _trajFrLen, so the handle distance/box
+      // size + line endpoints must track. No-op when no handles are
+      // shown (function declarations are hoisted in this IIFE so
+      // calling _tanRefresh defined further below is valid).
+      try { _tanRefresh(); } catch (e) {}
+    }
+
+    // Write the proxy's CURRENT pose back to the selected keyframe
+    // (translate -> kf.pos; rotate -> kf.quat). Called on the
+    // TransformControls 'objectChange' so the trajectory tracks the
+    // drag live (the spec's "drag -> kf.pos changes + trajectory
+    // rebuilds").
+    function _gzWriteProxyToKf() {
+      const kf = _gzSelKfObj();
+      if (!kf || !_gzProxy) return;
+      kf.pos = [_gzProxy.position.x, _gzProxy.position.y,
+        _gzProxy.position.z];
+      _gzProxy.getWorldQuaternion(_GZ_TMPQ);
+      kf.quat = [_GZ_TMPQ.x, _GZ_TMPQ.y, _GZ_TMPQ.z, _GZ_TMPQ.w];
+      _gzAfterEdit();
+    }
+
+    // Apply the World/Screen + translate/rotate mode to the live
+    // control. Screen == camera-aligned axes: TransformControls'
+    // 'local' space on a proxy whose rotation we keep equal to the
+    // camera's, so the gizmo's axes follow the screen. World ==
+    // 'world' space (the proxy keeps the keyframe's own rotation,
+    // restored from the keyframe so a space round-trip is lossless).
+    function _gzApplySpace() {
+      if (!_gzCtl) return;
+      _gzCtl.setMode(_gzMode);
+      if (_gzScreen) {
+        // Camera-aligned: drive the gizmo in the proxy's LOCAL
+        // frame and make that frame == the camera orientation.
+        _gzProxy.quaternion.copy(camera.quaternion);
+        _gzProxy.updateMatrixWorld(true);
+        _gzCtl.setSpace('local');
+      } else {
+        // World axes: restore the keyframe's own orientation onto
+        // the proxy (so a rotate drag edits the real kf.quat) and
+        // use world space.
+        _gzSyncProxyFromKf();
+        _gzCtl.setSpace('world');
+      }
+    }
+
+    // Lazily import + construct TransformControls (dynamic import
+    // via the EXISTING ``three/addons/`` importmap mapping -- no new
+    // importmap entry; region-interior). Resolves to the control or
+    // null (import failure must never throw into the author UI).
+    function _gzEnsureControl() {
+      if (_gzCtl) return Promise.resolve(_gzCtl);
+      if (!_gzImportPromise) {
+        _gzImportPromise = import(
+          'three/addons/controls/TransformControls.js'
+        ).then((mod) => {
+          const TC = mod && (mod.TransformControls ||
+            (mod.default && mod.default.TransformControls) ||
+            mod.default);
+          if (!TC) return null;
+          const ctl = new TC(camera, renderer.domElement);
+          ctl.setSize(0.9);
+          // The gizmo's visible part. r150+ exposes getHelper();
+          // older builds ARE the Object3D. Add ONLY the helper (or
+          // the control) to the scene -- never both -- so there is
+          // exactly one gizmo in the graph.
+          const helper = (typeof ctl.getHelper === 'function')
+            ? ctl.getHelper() : ctl;
+          _gzCtlHelper = helper;
+          // While the gizmo is grabbed, OrbitControls must NOT also
+          // move the camera. Broker through the ONE InteractionManager
+          // (the Task-0 contract): take a NON-exclusive 'tool' owner
+          // on drag-start, release on drag-end, and gate OrbitControls
+          // off for the drag (mirrors how playback flips
+          // controls.enabled). 'dragging-changed' is TransformControls'
+          // canonical drag signal.
+          ctl.addEventListener('dragging-changed', (ev) => {
+            _gzDragging = !!ev.value;
+            if (_gzDragging) {
+              // R5: a keyframe-GIZMO grab (translate OR rotate) is a kf
+              // mutation and MUST be undoable. Push ONE pre-gesture
+              // EditHistory snapshot on grab (gesture-start), exactly
+              // like the tangent-drag snapshot (~L1035) + the R2-Batch-B
+              // kf-timeline-drag/record/scale/interp snapshots. The
+              // drag's objectChange -> _gzWriteProxyToKf then mutates in
+              // place, so this captures the pre-drag pose. (The 3D gizmo
+              // drag previously pushed NO snapshot -- moving a keyframe
+              // via the gizmo was un-undoable, unlike the timeline drag.)
+              try {
+                if (typeof EditorModuleRegistry !== 'undefined' &&
+                    typeof EditorModuleRegistry.pushUndo === 'function') {
+                  EditorModuleRegistry.pushUndo('kf-gizmo-drag');
+                }
+              } catch (e) {}
+              // A real handle grab is an authoring gesture: stop any
+              // auto-tour FIRST so the render loop's `if (_player)`
+              // block does not re-sample the OLD spline every frame
+              // and stomp the live edit invisibly. _gzStopTour() is
+              // idempotent (no-op when _player is null -- the normal
+              // author-mode case now that the tour is suppressed);
+              // this is the safety net for any race / future reorder.
+              _gzStopTour();
+              InteractionManager.requestPointer('tool');
+              controls.enabled = false;
+            } else {
+              InteractionManager.releasePointer('tool');
+              // Restore OrbitControls only if nothing exclusive
+              // (a path/bench) is driving the camera.
+              if (!InteractionManager.isCameraOwned()) {
+                controls.enabled = true;
+              }
+            }
+          });
+          // Live write-back: every gizmo move edits the selected
+          // keyframe + rebuilds the trajectory (the spec's
+          // "drag -> kf.pos changes + trajectory rebuilds").
+          ctl.addEventListener('objectChange', () => {
+            _gzWriteProxyToKf();
+          });
+          _gzCtl = ctl;
+          if (helper && helper.parent !== scene) scene.add(helper);
+          return ctl;
+        }).catch(() => null);
+      }
+      return _gzImportPromise;
+    }
+
+    // Attach the gizmo to a keyframe (idx = the path keyframes[]
+    // index, == the Task-16 frustum kfIndex). Creates the proxy if
+    // needed, parks it at the keyframe, attaches TransformControls.
+    function _gzAttach(idx) {
+      const p = _gzActivePath();
+      if (!p || !p.keyframes || idx < 0 ||
+          idx >= p.keyframes.length) return;
+      // First authoring gesture: stop the auto-tour (explicit
+      // interaction stop -- the SAME stopPath() Task-17 reuses).
+      _gzStopTour();
+      _gzSelKf = idx;
+      if (!_gzProxy) {
+        _gzProxy = new THREE.Object3D();
+        _gzProxy.name = 'editor-gizmo-proxy';
+      }
+      if (_gzProxy.parent !== scene) scene.add(_gzProxy);
+      _gzSyncProxyFromKf();
+      // R5 item 7: tangent handles are ALWAYS visible on selection (the
+      // "tangents (B)" toggle is removed). A non-bezier key shows the
+      // `automatic`-derived handles (which sit ON the spline -- zero
+      // visual jump; see _tanVecs); dragging one pins interp='bezier'.
+      _tanShow();
+      _gzEnsureControl().then((ctl) => {
+        if (!ctl || _gzSelKf !== idx) return;
+        ctl.attach(_gzProxy);
+        _gzApplySpace();
+        _trajRefreshActive();
+      });
+    }
+
+    // Detach + hide the gizmo (deselect). Removes the proxy + the
+    // helper from the scene so there is no orphan/leak; the
+    // TransformControls instance itself is kept (memoised) for
+    // re-attach -- attach/detach is its designed lifecycle.
+    function _gzDetach() {
+      _gzSelKf = -1;
+      // B2: selection cleared -> forget the stacked-click cycle so the
+      // NEXT pick starts at the front-most again (declarations are
+      // hoisted in this IIFE -- _gzPkResetCycle is defined below).
+      _gzPkResetCycle();
+      if (_gzCtl) {
+        try { _gzCtl.detach(); } catch (e) {}
+      }
+      if (_gzProxy && _gzProxy.parent) {
+        _gzProxy.parent.remove(_gzProxy);
+      }
+      _tanHide();
+      controls.enabled = !InteractionManager.isCameraOwned();
+    }
