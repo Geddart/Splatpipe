@@ -1,0 +1,436 @@
+    function _tlResize() {
+      _tlSyncHeight();
+      const r = _tlLane.getBoundingClientRect();
+      _tlDpr = Math.max(1, window.devicePixelRatio || 1);
+      _tlW = Math.max(1, Math.floor(r.width));
+      _tlHpx = Math.max(1, Math.floor(r.height));
+      _tlCanvas.width = Math.floor(_tlW * _tlDpr);
+      _tlCanvas.height = Math.floor(_tlHpx * _tlDpr);
+      _tlDraw();
+    }
+
+    // ---- Diamond geometry (canvas-space hit test). Each keyframe
+    //      is a diamond centred at (_tlT2X(kf.t), diamond-row-y).
+    const _TL_DIAM = 7;            // half-size (px)
+    // UX-Phase11-R2 M4 (2026-05-28): touch-friendly hit slack. On a coarse
+    // pointer (touch) the ~11px Manhattan mouse target (DIAM 7 + slack 4) is
+    // far below the ~44px WCAG/Apple minimum, so a finger can't reliably grab
+    // a diamond. Widen the HIT radius (NOT the visual diamond) on touch
+    // devices; mouse precision is unchanged (slack 4).
+    const _TL_HIT_SLACK =
+      (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
+        ? 14 : 4;
+    function _tlDiamRowY() { return _TL_RULER_H + 14; }
+    function _tlHitKf(x, y) {
+      // Topmost keyframe whose diamond contains (x,y); -1 = none.
+      const p = _tlActivePath();
+      if (!p || !p.keyframes) return -1;
+      const cy = _tlDiamRowY();
+      let best = -1, bestd = 1e9;
+      for (let i = 0; i < p.keyframes.length; i++) {
+        const k = p.keyframes[i];
+        const cx = _tlT2X(k.t || 0);
+        const d = Math.abs(x - cx) + Math.abs(y - cy);
+        if (d <= _TL_DIAM + _TL_HIT_SLACK && d < bestd) { best = i; bestd = d; }
+      }
+      return best;
+    }
+
+    // ---- Ruler. SECONDS by default. The fps grid is a pure
+    //      RELABEL: when _tlFps>0 the tick step + label switch to
+    //      frame units (label = round(t*fps)) but the stored kf.t
+    //      stays SECONDS -- toggling fps NEVER mutates any t.
+    function _tlNiceStep(minPxPer) {
+      // Smallest "nice" seconds step whose on-screen spacing >=
+      // minPxPer px (1,2,5 x 10^n).
+      const raw = minPxPer / _tlZoom;
+      const pow = Math.pow(10, Math.floor(Math.log10(raw <= 0 ? 1 : raw)));
+      const cand = [1, 2, 5, 10];
+      for (const c of cand) {
+        if (pow * c >= raw) return pow * c;
+      }
+      return pow * 10;
+    }
+    // ---- #164 clip editor: master (sequence) time mapping. The whole
+    //      0..Σduration clip sequence is fit to the lane width (a simple,
+    //      stable mapping for the MVP -- NO wheel zoom at sequence level;
+    //      per-clip durations are edited in the Scene Settings cuts card).
+    //      Returns the master sequence duration (sum of clip durations).
+    function _tlSeqTotalDur() {
+      let total = 0;
+      for (const k of _tlClipsLive()) {
+        total += (typeof k.duration === 'number' && k.duration > 0)
+          ? k.duration : 0;
+      }
+      return total;
+    }
+    function _tlSeqUsableW() { return Math.max(1, _tlW - 2 * _TL_PAD); }
+    function _tlSeqT2X(t, total) {
+      const td = (total && total > 0) ? total : _tlSeqTotalDur();
+      if (td <= 0) return _TL_PAD;
+      return _TL_PAD + (t / td) * _tlSeqUsableW();
+    }
+    function _tlSeqX2T(x, total) {
+      const td = (total && total > 0) ? total : _tlSeqTotalDur();
+      if (td <= 0) return 0;
+      return ((x - _TL_PAD) / _tlSeqUsableW()) * td;
+    }
+    // The MASTER playhead time (seconds along the whole sequence). When a
+    // cut tour is live (window.__clip / _clipState.active) it is
+    // clip.clip_start + the within-clip elapsed; otherwise it is the
+    // sequence-scrub position (_tlSeqScrubT, set by a sequence-level scrub).
+    let _tlSeqScrubT = 0;
+    function _tlSeqPlayheadT() {
+      try {
+        if (typeof _clipState !== 'undefined' && _clipState &&
+            _clipState.active && _clipState.clip && _player) {
+          const cs = (typeof _clipState.clip.clip_start === 'number')
+            ? _clipState.clip.clip_start : 0;
+          const sp = _player.playSpeed || 1.0;
+          let tn = ((performance.now() - _t0) / 1000) * sp;
+          const cd = (typeof _clipState.clip.duration === 'number')
+            ? _clipState.clip.duration : 0;
+          if (cd > 0) tn = Math.max(0, Math.min(tn, cd));
+          return cs + tn;
+        }
+      } catch (e) {}
+      const total = _tlSeqTotalDur();
+      return Math.max(0, Math.min(_tlSeqScrubT, total));
+    }
+    // Find the clip active at master time `t` (clip_start <= t < end). The
+    // LAST clip owns t == total (so the end of the sequence previews the
+    // final clip's last pose). Returns {clip, idx} or null.
+    function _tlClipAtMasterT(t) {
+      const ordered = _tlClipsLive();
+      if (!ordered.length) return null;
+      let acc = 0;
+      for (let i = 0; i < ordered.length; i++) {
+        const k = ordered[i];
+        const d = (typeof k.duration === 'number' && k.duration > 0)
+          ? k.duration : 0;
+        if (t < acc + d || i === ordered.length - 1) {
+          return { clip: k, idx: i, clipStart: acc,
+            within: Math.max(0, Math.min(t - acc, d)) };
+        }
+        acc += d;
+      }
+      return null;
+    }
+    // The registered Cuts lane object (CutsModule.timelineLane), pulled
+    // from the SAME multi-lane registry the module-lane stack uses -- so
+    // the sequence-level primary band reuses the EXISTING per-clip block
+    // render (colours, labels, 0..Σdur mapping) verbatim, never a copy.
+    function _tlCutsLane() {
+      try {
+        const lanes = _tlLaneList();
+        for (const e of lanes) {
+          if (e && e.name === 'cuts' && e.lane) return e.lane;
+        }
+      } catch (e) {}
+      return null;
+    }
+    // ---- #164 clip editor: SEQUENCE-LEVEL draw. The cuts track is the
+    //      PRIMARY band (the EXISTING CutsModule.timelineLane.render across
+    //      the full diamond-band rect), with a master-time ruler on top,
+    //      the active-clip highlight, the master playhead, and a DIMMED
+    //      context strip of the active clip's keyframe diamonds mapped onto
+    //      their master-time positions (dim = colour, never a resize). An
+    //      empty (no-clip) scene never reaches here (_tlLevel defaults to
+    //      'clip' then). Returns nothing; the caller `return`s after.
+    function _tlDrawSequence(ctx) {
+      const total = _tlSeqTotalDur();
+      const bandTop = _TL_RULER_H;
+      const bandBot = _tlLaneBandTop();   // bottom of the ruler+diamond band
+      const bandH = Math.max(2, bandBot - bandTop);
+      const usableW = _tlSeqUsableW();
+
+      // (1) Master-time ruler (seconds across 0..total, fit to width).
+      ctx.fillStyle = 'rgba(53,224,255,0.06)';
+      ctx.fillRect(0, 0, _tlW, _TL_RULER_H);
+      if (total > 0) {
+        // A "nice" seconds step for the fit width.
+        const pxPerS = usableW / total;
+        let stepS = 1;
+        const cand = [0.5, 1, 2, 5, 10, 20, 30, 60, 120, 300];
+        for (const c of cand) { if (c * pxPerS >= 48) { stepS = c; break; }
+          stepS = c; }
+        ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+        ctx.fillStyle = '#9ad8e6';
+        ctx.lineWidth = 1;
+        ctx.font = '10px monospace';
+        ctx.textBaseline = 'top';
+        for (let t = 0; t <= total + 1e-6; t += stepS) {
+          const x = _tlSeqT2X(t, total);
+          ctx.beginPath();
+          ctx.moveTo(x + 0.5, 0);
+          ctx.lineTo(x + 0.5, _TL_RULER_H);
+          ctx.stroke();
+          ctx.fillText((Math.round(t * 100) / 100) + 's', x + 3, 2);
+        }
+      }
+
+      // (2) Primary cuts band -- reuse the EXISTING CutsModule lane render
+      //     across the full diamond-band rect (it maps 0..Σdur -> x..x+w
+      //     with the SAME math + per-camera colours + labels).
+      const lane = _tlCutsLane();
+      if (lane && typeof lane.render === 'function') {
+        try {
+          lane.render(ctx, _TL_PAD, bandTop, usableW, bandH,
+            _tlSeqPlayheadT());
+        } catch (e) {}
+      } else if (total <= 0) {
+        // No clips with a positive duration -> empty-state hint line.
+        ctx.fillStyle = '#9aa';
+        ctx.font = '11px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('No clips yet — + Add clip (Scene Settings) to build '
+          + 'your cut sequence', _TL_PAD + 4, bandTop + bandH / 2);
+      }
+
+      // (3) Active-clip highlight: a bright border around the selected
+      //     clip's block (so the click target reads as selected).
+      if (total > 0 && _tlActiveClipId) {
+        const ordered = _tlClipsLive();
+        let acc = 0;
+        for (const k of ordered) {
+          const d = (typeof k.duration === 'number' && k.duration > 0)
+            ? k.duration : 0;
+          if (k && k.id === _tlActiveClipId && d > 0) {
+            const bx = _tlSeqT2X(acc, total);
+            const bw = (d / total) * usableW;
+            ctx.strokeStyle = '#35e0ff';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(bx + 1, bandTop + 2, Math.max(1, bw - 2),
+              bandH - 4);
+            break;
+          }
+          acc += d;
+        }
+      }
+
+      // (4) DIMMED context diamonds: the active clip's camera keyframes,
+      //     mapped onto their master-time positions inside the clip's
+      //     block (kf.t - clip.in, offset by clip_start, scaled to the
+      //     clip's [in, in+duration] window). Context only -> low-opacity,
+      //     non-interactive at sequence level (dim by COLOUR, not resize).
+      if (total > 0 && _tlActiveClipId) {
+        const clip = _tlActiveClip();
+        const path = clip ? _tlClipPath(clip) : null;
+        const at = _tlClipAtMasterT(_tlSeqPlayheadT());
+        const clipStart = (clip && typeof clip.clip_start === 'number')
+          ? clip.clip_start : (at ? at.clipStart : 0);
+        if (path && Array.isArray(path.keyframes) && clip) {
+          const inT = (typeof clip.in === 'number' && clip.in > 0)
+            ? clip.in : 0;
+          const dur = (typeof clip.duration === 'number' && clip.duration > 0)
+            ? clip.duration : 0;
+          const cy = bandTop + 8;
+          ctx.globalAlpha = 0.55;
+          for (const k of path.keyframes) {
+            const kt = (k && typeof k.t === 'number') ? k.t : 0;
+            const rel = kt - inT;
+            if (dur > 0 && (rel < -1e-6 || rel > dur + 1e-6)) continue;
+            const cx = _tlSeqT2X(clipStart + Math.max(0, rel), total);
+            ctx.beginPath();
+            ctx.moveTo(cx, cy - 4);
+            ctx.lineTo(cx + 4, cy);
+            ctx.lineTo(cx, cy + 4);
+            ctx.lineTo(cx - 4, cy);
+            ctx.closePath();
+            ctx.fillStyle = '#ffd9b0';
+            ctx.fill();
+          }
+          ctx.globalAlpha = 1.0;
+        }
+      }
+
+      // (5) Master playhead (cyan vertical line at the master time).
+      if (total > 0) {
+        const px = _tlSeqT2X(_tlSeqPlayheadT(), total);
+        ctx.strokeStyle = '#35e0ff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(px + 0.5, 0);
+        ctx.lineTo(px + 0.5, bandBot);
+        ctx.stroke();
+      }
+    }
+
+    function _tlDraw() {
+      if (!_tlCtx) return;
+      const ctx = _tlCtx;
+      ctx.setTransform(_tlDpr, 0, 0, _tlDpr, 0, 0);
+      ctx.clearRect(0, 0, _tlW, _tlHpx);
+      // #164 clip editor: SEQUENCE level draws the cuts track as the
+      // primary band (+ master ruler + master playhead + dimmed context
+      // diamonds) and returns; CLIP level is the EXISTING per-path
+      // diamond editor below (byte-unchanged for the 6 live no-clip
+      // scenes, which always stay at 'clip' level).
+      if (_tlLevel === 'sequence' && _tlHasClips()) {
+        _tlDrawSequence(ctx);
+        return;
+      }
+      const p = _tlActivePath();
+      const dur = _tlDuration(p);
+
+      // Ruler band background.
+      ctx.fillStyle = 'rgba(255,255,255,0.04)';
+      ctx.fillRect(0, 0, _tlW, _TL_RULER_H);
+
+      // Tick + label step. fps grid only changes the LABEL/step
+      // unit; positions are still computed from SECONDS via _tlT2X.
+      const stepS = _tlNiceStep(56);
+      const t0 = Math.max(0, Math.floor(_tlScroll / stepS) * stepS);
+      const tEnd = _tlScroll + _tlW / _tlZoom;
+      ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+      ctx.fillStyle = '#9aa';
+      ctx.lineWidth = 1;
+      ctx.font = '10px monospace';
+      ctx.textBaseline = 'top';
+      for (let t = t0; t <= tEnd + stepS; t += stepS) {
+        const x = _tlT2X(t);
+        if (x < -40 || x > _tlW + 40) continue;
+        ctx.beginPath();
+        ctx.moveTo(x + 0.5, 0);
+        ctx.lineTo(x + 0.5, _TL_RULER_H);
+        ctx.stroke();
+        let lbl;
+        if (_tlFps > 0) {
+          // RELABEL ONLY: frame index = round(seconds * fps). The
+          // stored t is unchanged; this is a display transform.
+          lbl = 'f' + Math.round(t * _tlFps);
+        } else {
+          lbl = (Math.round(t * 1000) / 1000) + 's';
+        }
+        ctx.fillText(lbl, x + 3, 2);
+      }
+
+      // Selection marquee (box-select in progress). Bounded to the
+      // diamond band (above the module lane bands) so a marquee never
+      // paints over the cuts/other lanes below.
+      if (_tlDragMode === 'box') {
+        const bx = Math.min(_tlBoxX0, _tlBoxX1);
+        const bw = Math.abs(_tlBoxX1 - _tlBoxX0);
+        const diamBandBot = _tlLaneBandTop();
+        ctx.fillStyle = 'rgba(53,224,255,0.14)';
+        ctx.strokeStyle = 'rgba(53,224,255,0.6)';
+        ctx.fillRect(bx, _TL_RULER_H, bw, diamBandBot - _TL_RULER_H);
+        ctx.strokeRect(bx + 0.5, _TL_RULER_H + 0.5,
+          bw, diamBandBot - _TL_RULER_H - 1);
+      }
+
+      // UX-Phase11-R2 #11: render the registered module lanes (Cuts +
+      // any future lane) in their own horizontal bands BELOW the
+      // diamond row. Drawn BEFORE the no-path early-return so a scene
+      // with clips but no active camera-path still shows its cuts lane.
+      _tlDrawLanes(ctx, _tlPlayheadT());
+
+      if (!p || !p.keyframes || !p.keyframes.length) return;
+      const cy = _tlDiamRowY();
+
+      // Selection-span EDGE handles (only when 2+ selected): two
+      // vertical grips at the min/max selected kf.t. Dragging one
+      // scales the selected span about the OTHER (the opposite
+      // anchor) -- proportional rescale.
+      if (_tlSel.size >= 2) {
+        let lo = Infinity, hi = -Infinity;
+        _tlSel.forEach((i) => {
+          const k = p.keyframes[i]; if (!k) return;
+          const t = k.t || 0;
+          if (t < lo) lo = t; if (t > hi) hi = t;
+        });
+        if (isFinite(lo) && isFinite(hi)) {
+          const xL = _tlT2X(lo), xR = _tlT2X(hi);
+          ctx.strokeStyle = 'rgba(53,224,255,0.5)';
+          ctx.setLineDash([3, 3]);
+          ctx.beginPath();
+          ctx.moveTo(xL + 0.5, _TL_RULER_H);
+          ctx.lineTo(xL + 0.5, _tlHpx);
+          ctx.moveTo(xR + 0.5, _TL_RULER_H);
+          ctx.lineTo(xR + 0.5, _tlHpx);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = '#35e0ff';
+          ctx.fillRect(xL - 3, cy + _TL_DIAM + 3, 6, 8);
+          ctx.fillRect(xR - 3, cy + _TL_DIAM + 3, 6, 8);
+        }
+      }
+
+      // Diamonds (one per keyframe at its kf.t). Selected = cyan;
+      // resting = orange (matches the Task-16 trajectory accent).
+      for (let i = 0; i < p.keyframes.length; i++) {
+        const k = p.keyframes[i];
+        const cx = _tlT2X(k.t || 0);
+        if (cx < -20 || cx > _tlW + 20) continue;
+        const on = _tlSel.has(i);
+        ctx.beginPath();
+        ctx.moveTo(cx, cy - _TL_DIAM);
+        ctx.lineTo(cx + _TL_DIAM, cy);
+        ctx.lineTo(cx, cy + _TL_DIAM);
+        ctx.lineTo(cx - _TL_DIAM, cy);
+        ctx.closePath();
+        ctx.fillStyle = on ? '#35e0ff' : '#ff8a3d';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+      void dur;
+    }
+
+    // ---- UX-Phase11-R2 #11: module-lane band rendering. The diamond
+    //      band occupies the BASE lane-canvas height (_TL_H_BASE -
+    //      _TL_BAR_H = ruler + diamond row); module lanes stack below
+    //      it, each in a band of (lane.rows * _TL_LANE_ROW_H) px with a
+    //      left gutter (_LABEL_W) carrying the lane's label and the
+    //      lane's own render() filling the rest of the width. The lane
+    //      render signature is the spec §4.10 contract the modules
+    //      implement: render(ctx, x, y, w, h, playhead).
+    function _tlLaneBandTop() {
+      // Canvas-y where the first module lane band starts (the bottom of
+      // the fixed ruler+diamond band).
+      return _TL_H_BASE - _TL_BAR_H;
+    }
+    function _tlDrawLanes(ctx, playheadT) {
+      if (!ctx) return;
+      let lanes;
+      try { lanes = _tlLaneList(); } catch (e) { return; }
+      if (!lanes || !lanes.length) return;
+      const laneW = Math.max(1, _tlW - _LABEL_W);
+      let y = _tlLaneBandTop();
+      for (const e of lanes) {
+        const lane = e && e.lane;
+        if (!lane) continue;
+        const rows = (lane.rows && lane.rows > 0) ? (lane.rows | 0) : 1;
+        const bandH = rows * _TL_LANE_ROW_H;
+        // Separator line above the band.
+        ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(0, y + 0.5);
+        ctx.lineTo(_tlW, y + 0.5);
+        ctx.stroke();
+        // Left-gutter label cell (its own faint background + the lane
+        // name, vertically centred, clipped to the gutter width).
+        ctx.fillStyle = 'rgba(255,255,255,0.05)';
+        ctx.fillRect(0, y, _LABEL_W, bandH);
+        ctx.fillStyle = '#9aa';
+        ctx.font = '9px monospace';
+        ctx.textBaseline = 'middle';
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(0, y, _LABEL_W - 2, bandH);
+        ctx.clip();
+        ctx.fillText(lane.label || e.name || '', 3, y + bandH / 2);
+        ctx.restore();
+        // The lane's own render fills the area to the right of the
+        // gutter. Fault-tolerant: a throwing/absent render must not
+        // break the diamond row or the playhead overlay.
+        if (typeof lane.render === 'function') {
+          try {
+            lane.render(ctx, _LABEL_W, y, laneW, bandH, playheadT);
+          } catch (err) {}
+        }
+        y += bandH;
+      }
+    }
