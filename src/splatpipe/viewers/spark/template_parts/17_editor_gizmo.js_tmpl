@@ -556,6 +556,21 @@
           ctl.addEventListener('dragging-changed', (ev) => {
             _gzDragging = !!ev.value;
             if (_gzDragging) {
+              // R5: a keyframe-GIZMO grab (translate OR rotate) is a kf
+              // mutation and MUST be undoable. Push ONE pre-gesture
+              // EditHistory snapshot on grab (gesture-start), exactly
+              // like the tangent-drag snapshot (~L1035) + the R2-Batch-B
+              // kf-timeline-drag/record/scale/interp snapshots. The
+              // drag's objectChange -> _gzWriteProxyToKf then mutates in
+              // place, so this captures the pre-drag pose. (The 3D gizmo
+              // drag previously pushed NO snapshot -- moving a keyframe
+              // via the gizmo was un-undoable, unlike the timeline drag.)
+              try {
+                if (typeof EditorModuleRegistry !== 'undefined' &&
+                    typeof EditorModuleRegistry.pushUndo === 'function') {
+                  EditorModuleRegistry.pushUndo('kf-gizmo-drag');
+                }
+              } catch (e) {}
               // A real handle grab is an authoring gesture: stop any
               // auto-tour FIRST so the render loop's `if (_player)`
               // block does not re-sample the OLD spline every frame
