@@ -83,7 +83,7 @@ FRAGMENT_PINS: dict[str, tuple[int, str]] = {
     "15h_intro_module.js_tmpl": (10071, "4129b70a1933aacb842eadf5e05b60e00874c5f2427b64e7e329c94665dbee0d"),
     "15i_startview_module.js_tmpl": (9543, "43c4793643223e1b63d85ec5919025349e457eb3039d0ad624101e1276973bbc"),
     "16_editor_timeline.js_tmpl": (132388, "6fe10e9e81b8b7459379950cffb011e583ce3273f170196f7e584127d029675b"),
-    "17_editor_gizmo.js_tmpl": (138244, "45fbb9b295a1b2d5aed9d425a74cb4ea47226d6137022f25560555957a56367d"),
+    "17_editor_gizmo.js_tmpl": (141596, "604c3855694ca84bee8124b8b591d41a815c1a4802425650f90693bc57843db1"),
     "17a_edit_history.js_tmpl": (17737, "b7ee3feae79a210adb93a30d47375610cf08e4fc926945715d7c22b30537bdc5"),
     "17b_scene_settings_drawer.js_tmpl": (18654, "32b8933992f6c65452b1b6e9adbf450d05ac18dadde81a7efb5e88c358d95006"),
     "18_frame_loop.js_tmpl": (53020, "8cd220a4f1958a2b94e2f9da87eeee26fa941594ae236989e63c6423f12e04ab"),

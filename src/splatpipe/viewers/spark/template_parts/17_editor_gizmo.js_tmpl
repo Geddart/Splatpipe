@@ -606,11 +606,11 @@
       }
       if (_gzProxy.parent !== scene) scene.add(_gzProxy);
       _gzSyncProxyFromKf();
-      // If this keyframe already carries explicit bezier tangents,
-      // show its grab-able in/out handles immediately; otherwise
-      // hide any handles from a previous selection (a non-bezier key
-      // has none until the author presses B / the tangents button).
-      if (_tanIsBezierSel()) _tanShow(); else _tanHide();
+      // R5 item 7: tangent handles are ALWAYS visible on selection (the
+      // "tangents (B)" toggle is removed). A non-bezier key shows the
+      // `automatic`-derived handles (which sit ON the spline -- zero
+      // visual jump; see _tanVecs); dragging one pins interp='bezier'.
+      _tanShow();
       _gzEnsureControl().then((ctl) => {
         if (!ctl || _gzSelKf !== idx) return;
         ctl.attach(_gzProxy);
@@ -690,7 +690,16 @@
     // _trajApplyScale) so handles read at the PATH's scale -- never
     // scene-spanning, never sub-pixel. The little square is a small
     // fraction of THAT, like the frustum image-plane.
-    const _TAN_FRAC_OF_FR = 1.6;     // handle distance ~ 1.6x frustum len
+    // R5 item 1 (tangents "way too long"): the drawn handle offset is
+    // tangentMagnitude * (_trajFrLen * _TAN_FRAC_OF_FR) -- the tangent
+    // magnitude (a per-segment world value-delta) already scales with
+    // the path, so the extra 1.6x frustum multiplier made the handles
+    // read scene-spanning. Cut to 0.6 so handles sit close to the
+    // keyframe + visually track the trajectory. (Magnitude semantics
+    // for the drag/speed are preserved -- only the DRAW scale shrinks,
+    // and _tanWriteFromProxy uses the SAME _tanFrac() so the inverse
+    // stays exact.)
+    const _TAN_FRAC_OF_FR = 0.6;     // handle distance ~ 0.6x frustum len
     const _TAN_BOX_OF_FR = 0.34;     // handle square ~ 0.34x frustum len
     const _TAN_COL_OUT = 0x57ff8a;   // OUT handle: green (3ds-Max-ish)
     const _TAN_COL_IN = 0xff5d6b;    // IN handle: red
@@ -934,7 +943,17 @@
       const s = side === 'out' ? 1 : -1;
       const tan = [_TAN_R(s * dx / fr), _TAN_R(s * dy / fr),
         _TAN_R(s * dz / fr)];
-      if (side === 'out') {
+      if (!kf.tan_broken) {
+        // R5 items 3+4 LOCK (default): mirror -> in_tan == out_tan (the
+        // SAME vector). _tanRefresh draws OUT at pos+tan*fr and IN at
+        // pos-tan*fr, so the two handles are collinear + mirrored through
+        // the knot (a straight line). In the spline (09) mIn==mOut, which
+        // is C1 -> the camera passes smoothly through the knot with no
+        // speed kink / path divergence. Dragging either side moves both.
+        kf.in_tan = tan.slice();
+        kf.out_tan = tan.slice();
+      } else if (side === 'out') {
+        // BROKEN: independent in/out (the author opted out of C1 via B).
         kf.out_tan = tan;
         if (!(Array.isArray(kf.in_tan) && kf.in_tan.length === 3) &&
             before) kf.in_tan = before.inv.map(_TAN_R);
@@ -944,6 +963,37 @@
             before) kf.out_tan = before.outv.map(_TAN_R);
       }
       kf.interp = 'bezier';   // explicit tangents only bite as bezier
+      _gzAfterEdit();
+      _tanRefresh();
+    }
+
+    // R5 item 3: toggle the selected keyframe's tangent LOCK <-> BREAK
+    // (hotkey B). Locked (default, kf.tan_broken falsy) = in/out mirror
+    // (collinear + equal -> C1 smooth pass-through). Broken = the two
+    // handles move independently (an intentional kink/speed change).
+    // Seeds explicit tangents from the current effective values + pins
+    // bezier so the flag has a visible effect; re-locking snaps in_tan
+    // to out_tan so the pair is collinear again.
+    function _tanToggleBreak() {
+      const kf = _gzSelKfObj();
+      if (!kf) return;
+      try {
+        if (typeof EditorModuleRegistry !== 'undefined' &&
+            typeof EditorModuleRegistry.pushUndo === 'function') {
+          EditorModuleRegistry.pushUndo('tangent-break-toggle');
+        }
+      } catch (e) {}
+      const v = _tanVecs();
+      if (!(Array.isArray(kf.in_tan) && kf.in_tan.length === 3) && v)
+        kf.in_tan = v.inv.map(_TAN_R);
+      if (!(Array.isArray(kf.out_tan) && kf.out_tan.length === 3) && v)
+        kf.out_tan = v.outv.map(_TAN_R);
+      kf.interp = 'bezier';
+      kf.tan_broken = !kf.tan_broken;
+      if (!kf.tan_broken && Array.isArray(kf.out_tan) &&
+          kf.out_tan.length === 3) {
+        kf.in_tan = kf.out_tan.slice();   // re-lock: collinear again
+      }
       _gzAfterEdit();
       _tanRefresh();
     }
@@ -973,6 +1023,18 @@
           ctl.addEventListener('dragging-changed', (ev) => {
             _tanDragging = !!ev.value;
             if (_tanDragging) {
+              // R5 item 2: a tangent-handle drag is a keyframe mutation
+              // and MUST be undoable. Push ONE pre-gesture EditHistory
+              // snapshot on grab (gesture-start), exactly like the
+              // R2-Batch-B kf-drag/kf-record/kf-interp snapshots. The
+              // drag's objectChange -> _tanWriteFromProxy then mutates
+              // in place, so this snapshot captures the pre-drag state.
+              try {
+                if (typeof EditorModuleRegistry !== 'undefined' &&
+                    typeof EditorModuleRegistry.pushUndo === 'function') {
+                  EditorModuleRegistry.pushUndo('tangent-drag');
+                }
+              } catch (e) {}
               // A real handle grab is an authoring gesture: stop any
               // auto-tour FIRST (idempotent) so the render loop does
               // not re-sample the OLD spline and stomp the edit.
@@ -1012,7 +1074,10 @@
     // proven keyframe-gizmo "no-starvation" pattern, applied to the
     // handles -- NOT a two-gesture attach-then-drag).
     function _tanShow() {
-      if (_gzSelKf < 0 || !_tanIsBezierSel()) { _tanHide(); return; }
+      // R5 item 7: show for ANY selected keyframe (not only bezier).
+      // _tanVecs falls back to the automatic-derived tangents for a
+      // non-bezier key, so the handles sit on the existing curve.
+      if (_gzSelKf < 0) { _tanHide(); return; }
       _tanBuild();
       if (_tanGroup.parent !== scene) scene.add(_tanGroup);
       _tanGroup.visible = true;
@@ -1024,7 +1089,7 @@
         scene.add(_tanInProxy);
       }
       _tanEnsureCtl().then((ctl) => {
-        if (!ctl || !_tanIsBezierSel() || _gzSelKf < 0) return;
+        if (!ctl || _gzSelKf < 0) return;   // R5 item 7: any selected kf
         // Keep the TC live on a handle so the FIRST real grab drags
         // immediately (one gesture). Default to OUT; the pointerdown
         // retarget switches to whichever handle the mouse is over.
@@ -1046,7 +1111,7 @@
     // target and the yield check simply returns false there).
     function _tanRetargetForPointer(clientX, clientY) {
       if (!_tanCtl || !_tanGroup || !_tanGroup.visible ||
-          !_tanIsBezierSel()) return;
+          _gzSelKf < 0) return;   // R5 item 7: any selected kf
       const side = _tanPickBox(clientX, clientY);
       if (!side) return;
       const proxy = side === 'out' ? _tanOutProxy : _tanInProxy;
@@ -2315,10 +2380,9 @@
           'editor-rec-btn');
         const interpBtn = _mkBtn('interp (V)',
           'Set the selected keyframe interpolation', 'editor-interp-btn');
-        const tanBtn = _mkBtn('tangents (B)',
-          'Show grab-able bezier in/out tangent handles on the ' +
-          'selected keyframe (drag them to shape the curve)',
-          'editor-tan-btn');
+        // R5 item 7: the "tangents (B)" toggle is REMOVED -- handles are
+        // always visible on selection. B now toggles tangent LOCK/BREAK
+        // (R5 item 3).
         const saveBtn = _mkBtn('Save',
           'Save scene',
           'editor-save-btn');
@@ -2332,7 +2396,6 @@
         };
         recBtn.addEventListener('click', () => { _gzRecordKeyframe(); _hideEmptyHint(); });
         interpBtn.addEventListener('click', () => { _gzOpenPopover(); });
-        tanBtn.addEventListener('click', () => { _tanEnableBezier(); });
         // #146: show the empty-scene guidance hint at author-bar build when
         // there are no cameras/paths yet (author bar only builds in author
         // mode). A live hide on +Add camera would need 10_camera_select; the
@@ -2422,7 +2485,6 @@
         });
         bar.appendChild(recBtn);
         bar.appendChild(interpBtn);
-        bar.appendChild(tanBtn);
         bar.appendChild(saveBtn);
         root.appendChild(bar);
       }
@@ -2455,10 +2517,11 @@
       } else if (k === 'v' || k === 'V') {
         if (_gzPopEl) _gzClosePopover(); else _gzOpenPopover();
       } else if (k === 'b' || k === 'B') {
-        // Reveal (or, if already shown for a non-bezier key,
-        // convert + reveal) the grab-able bezier tangent handles
-        // on the selected keyframe. No-op without a selection.
-        _tanEnableBezier();
+        // R5 item 3: B toggles the selected keyframe's tangent
+        // LOCK <-> BREAK. (Handles are always visible now -- R5 item 7
+        // -- so B no longer reveals them; it controls C1 lock instead.)
+        // No-op without a selection.
+        _tanToggleBreak();
       } else if (k === 'k' || k === 'K') {
         _gzRecordKeyframe();
       } else if (k === 'Escape') {
