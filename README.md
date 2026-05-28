@@ -189,7 +189,7 @@ MyProject/
 
 ```bash
 pip install -e ".[dev]"     # Install with dev dependencies
-pytest tests/ -v            # 1029 collected; 967 passed, 62 skipped (~32s)
+pytest tests/ -v            # 1072 collected; 1049 passed, 23 skipped (~33s)
 ```
 
 Key design principle: **debug data over fallbacks**. No try/except — every step writes a `_debug.json` with full command, stdout/stderr, file stats, metrics, timing, and environment. When something fails, the debug JSON tells you exactly why.

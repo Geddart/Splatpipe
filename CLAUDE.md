@@ -9,7 +9,7 @@ CLI-first Gaussian splatting pipeline. Takes COLMAP data through: auto-clean →
 ```bash
 cd H:\001_ProjectCache\1000_Coding\Splatpipe
 pip install -e ".[dev]"
-pytest tests/ -v                    # Run tests (1029 collected; 967 passed, 62 skipped, ~32s)
+pytest tests/ -v                    # Run tests (1072 collected; 1049 passed, 23 skipped, ~33s)
 splatpipe --help                    # CLI commands
 splatpipe web                       # Launch dashboard
 ```
@@ -184,7 +184,8 @@ splatpipe/                    # repo root
     test_save_backends.py     # SaveBackend abstraction + cli/php/cloudflare backends (v0.8+)
     test_init_php_auth_cli.py # splatpipe init-php-auth CLI (token gen + sha256 + SFTP-push; 29 tests, SFTP mocked; #122 Phase 1)
     test_html_for_save_mode.py     # Generated viewer save_mode/save_endpoint plumbing + NEGATIVE-CONTROL author-mode UX/gizmo/overlay tests (v0.8+)
-    test_html_for_output_pin.py    # Output-pin byte-lock: html_for() len+SHA-256 for 6 corpus fixtures + UTF-8 LF fragment sanity (modularization-safe replacement for the retired excised-region source-level lock; T6 of #118)
+    test_fragment_pins.py          # PER-FRAGMENT output pins: one (code-point-len, SHA-256) per template_parts/* file — disjoint, so editing fragment X re-baselines ONLY X's line (unblocks parallel fragment edits; replaced the whole-HTML pin 2026-05-28) + manifest-complete + BOM/CRLF sanity
+    test_assembly_integrity.py     # The JOIN guarantee: decomposition invariant (substitute(concat)==concat(substitute(each)) so per-fragment pins are lossless) + all-@@..@@-resolve + fragment ORDER + substitution-value constants + structural sentinels
     test_intro_startview_modules.py # IntroModule (15h) + StartViewModule (15i) Scene Settings sections: contract markers + fragment ordering + openStartViewCard helper (Phase 11A Issue 9)
     test_clip_editor.py       # Multi-camera CLIP EDITOR (#164): two-level stacked timeline (Cuts master track <-> per-clip camera keyframes) -- STATIC surface markers (level state, click->load via _camSelApply, back/breadcrumb, sequence draw, scrub-via-existing-path) + DYNAMIC Node master-time clip-boundary resolution (_tlClipAtMasterT)
     test_context_menu.py      # openContextMenu primitive (04b) contract markers + 5 author-gated surfaces wired (timeline/3D/camera/annotation+title+clip rows) + 08:223 non-author suppressor preserved + fragment ordering (R2 #2 / #156)
@@ -428,7 +429,7 @@ Key config sections: `[tools]`, `[colmap_clean]`, `[postshot]` (profile, gpu, ma
 ## Tests
 
 ```bash
-pytest tests/ -v              # 1029 collected (967 passed, 62 skipped)
+pytest tests/ -v              # 1072 collected (1049 passed, 23 skipped)
 pytest tests/ -k colmap       # Just COLMAP tests
 pytest tests/ -k integration  # End-to-end with tiny data
 pytest tests/ -k trainers     # Trainer abstraction tests

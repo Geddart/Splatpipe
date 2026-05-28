@@ -107,6 +107,75 @@ def _substitute(body: str, fields: dict[str, str]) -> str:
     return out
 
 
+def _fields_for(
+    project_name: str,
+    *,
+    primary_asset: str = "scene.rad",
+    paged: bool = True,
+    share_url: str | None = None,
+    share_image: str | None = None,
+    description: str | None = None,
+    save_mode: str = "cli",
+    save_endpoint: str | None = None,
+) -> dict[str, str]:
+    """Build the ``@@NAME@@`` substitution field dict for :func:`html_for`.
+
+    Split out of ``html_for`` (2026-05-28) so the assembly-integrity test
+    can reconstruct the EXACT per-fixture fields dict and prove the
+    decomposition invariant
+    ``_substitute(concat(fragments), fields) == "".join(_substitute(frag_i, fields))``
+    — which is what lets the output-pin be PER-FRAGMENT instead of one
+    whole-HTML hash (so disjoint fragment edits stop colliding on a single
+    re-baseline). ``html_for``'s output is byte-identical to before the split.
+    """
+    import html as _h
+
+    _title = f"{project_name} — interactive 3D scene"
+    _desc = description or (
+        "Explore this photogrammetry capture in 3D, right in your browser — "
+        "a Gaussian-splat scene streamed with Splatpipe / Spark 2."
+    )
+    _img = share_image or "preview.jpg"
+
+    def _e(s: object) -> str:
+        return _h.escape(str(s), quote=True)
+
+    _meta = [
+        f'<meta name="description" content="{_e(_desc)}">',
+        '<meta property="og:type" content="website">',
+        '<meta property="og:site_name" content="Splatpipe">',
+        f'<meta property="og:title" content="{_e(_title)}">',
+        f'<meta property="og:description" content="{_e(_desc)}">',
+        f'<meta property="og:image" content="{_e(_img)}">',
+        '<meta property="og:image:width" content="1200">',
+        '<meta property="og:image:height" content="630">',
+        f'<meta property="og:image:alt" content="{_e(_title)}">',
+        '<meta name="twitter:card" content="summary_large_image">',
+        f'<meta name="twitter:title" content="{_e(_title)}">',
+        f'<meta name="twitter:description" content="{_e(_desc)}">',
+        f'<meta name="twitter:image" content="{_e(_img)}">',
+    ]
+    if share_url:
+        _meta.insert(5, f'<meta property="og:url" content="{_e(share_url)}">')
+    # Joined value is substituted as a single @@SHARE_META@@ slot; the
+    # orchestrator's _substitute() does NOT re-scan substituted text, so
+    # no escaping is needed here.
+    share_meta = "\n  ".join(_meta)
+
+    return {
+        "PROJECT_NAME": project_name,
+        "SPARK_VERSION": SPARK_VERSION,
+        "THREE_VERSION": THREE_VERSION,
+        "SPARK_FORK_URL": SPARK_FORK_URL,
+        "FONT_URL": FONT_URL,
+        "PRIMARY_ASSET": primary_asset,
+        "PAGED_JSON": json.dumps(bool(paged)),
+        "SAVE_MODE_JSON": json.dumps(save_mode),
+        "SAVE_ENDPOINT_JSON": json.dumps(save_endpoint or ""),
+        "SHARE_META": share_meta,
+    }
+
+
 def html_for(
     project_name: str,
     *,
@@ -152,52 +221,16 @@ def html_for(
     baked into the template nor written to viewer-config.json — in http mode
     it lives only in the author URL fragment (a later task).
     """
-    import html as _h
-
-    _title = f"{project_name} — interactive 3D scene"
-    _desc = description or (
-        "Explore this photogrammetry capture in 3D, right in your browser — "
-        "a Gaussian-splat scene streamed with Splatpipe / Spark 2."
-    )
-    _img = share_image or "preview.jpg"
-
-    def _e(s: object) -> str:
-        return _h.escape(str(s), quote=True)
-
-    _meta = [
-        f'<meta name="description" content="{_e(_desc)}">',
-        '<meta property="og:type" content="website">',
-        '<meta property="og:site_name" content="Splatpipe">',
-        f'<meta property="og:title" content="{_e(_title)}">',
-        f'<meta property="og:description" content="{_e(_desc)}">',
-        f'<meta property="og:image" content="{_e(_img)}">',
-        '<meta property="og:image:width" content="1200">',
-        '<meta property="og:image:height" content="630">',
-        f'<meta property="og:image:alt" content="{_e(_title)}">',
-        '<meta name="twitter:card" content="summary_large_image">',
-        f'<meta name="twitter:title" content="{_e(_title)}">',
-        f'<meta name="twitter:description" content="{_e(_desc)}">',
-        f'<meta name="twitter:image" content="{_e(_img)}">',
-    ]
-    if share_url:
-        _meta.insert(5, f'<meta property="og:url" content="{_e(share_url)}">')
-    # Joined value is substituted as a single @@SHARE_META@@ slot; the
-    # orchestrator's _substitute() does NOT re-scan substituted text, so
-    # no escaping is needed here.
-    share_meta = "\n  ".join(_meta)
-
     return _substitute(
         _load_template_body(),
-        {
-            "PROJECT_NAME": project_name,
-            "SPARK_VERSION": SPARK_VERSION,
-            "THREE_VERSION": THREE_VERSION,
-            "SPARK_FORK_URL": SPARK_FORK_URL,
-            "FONT_URL": FONT_URL,
-            "PRIMARY_ASSET": primary_asset,
-            "PAGED_JSON": json.dumps(bool(paged)),
-            "SAVE_MODE_JSON": json.dumps(save_mode),
-            "SAVE_ENDPOINT_JSON": json.dumps(save_endpoint or ""),
-            "SHARE_META": share_meta,
-        },
+        _fields_for(
+            project_name,
+            primary_asset=primary_asset,
+            paged=paged,
+            share_url=share_url,
+            share_image=share_image,
+            description=description,
+            save_mode=save_mode,
+            save_endpoint=save_endpoint,
+        ),
     )
