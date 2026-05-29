@@ -72,7 +72,7 @@ FRAGMENT_PINS: dict[str, tuple[int, str]] = {
     "12_user_transport.js_tmpl": (19126, "0ccdef865f857520109c65c7a36f0dcf8daa451e405733f810938741bfa63f36"),
     "13_bench.js_tmpl": (27625, "4beea02b6c7851b473ff260bae84eab13ffc8616a21a8346e4262e471a6dcc1c"),
     "14_splat_budget.js_tmpl": (4417, "aa9fa72e755fb1874e6438f7de954e1b75643fbcf3c34f62f48fa59c0b615782"),
-    "15_editor_trajectory.js_tmpl": (51076, "f1840d7d1709d770350a4d0a1946bfc64fb45e67d4fe4b60375718b0e983f489"),
+    "15_editor_trajectory.js_tmpl": (53256, "14520425ee9e3e87b100c904e3715ee00356b95de51870f007a5d66ea3378cc5"),
     "15a_camera_path_module.js_tmpl": (7358, "37dba5d9bde2d4186845ddb30481f7f35829426444d7de2b9c35de086367f628"),
     "15b_panorama_module.js_tmpl": (33409, "0eed9320cfda9e9e7c63354d6aa0a1152b214bc2e13c316be997d0858f2e4749"),
     "15c_annotation_module.js_tmpl": (63774, "2e618796ef096c9d8d9630e9c47c4671d93d205d88d69bca6e6ae9fd0ab71b71"),

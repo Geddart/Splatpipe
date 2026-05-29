@@ -133,11 +133,11 @@
 
   // The colours: the resting trajectory is a calm orange (matches
   // the #path-hud accent -- still used for the per-keyframe camera
-  // frustum wireframes); the active/scrub keyframe's frustum is a
-  // bright cyan AND scaled up so it is unmistakably distinct.
+  // frustum wireframes); the active/scrub keyframe's frustum is
+  // bright cyan and gets a separate billboarded ring marker so it is
+  // unmistakably distinct without scaling dense frustum clusters.
   const _TRAJ_COL = 0xff8a3d;
   const _TRAJ_COL_ACTIVE = 0x35e0ff;
-  const _TRAJ_ACTIVE_SCALE = 1.7;
   // Sample TICKS (the per-position dots): a 3ds-Max-style motion
   // path reads them as DELICATE WHITE ticks, one per sample, never
   // a solid mass. They are FIXED screen-space points (size in
@@ -876,10 +876,17 @@
     window.__editor = {
       get author() { return ModeManager.is('author'); },
       get show() { return _trajShow; },
-      // Polyline vertex count (3 floats per point).
+      // Polyline vertex count (3 floats per point). Supports both the
+      // legacy THREE.Line BufferGeometry path and the current fat-line
+      // LineGeometry path, whose public geometry stores line segments as
+      // instanceStart/instanceEnd pairs.
       get linePointCount() {
         if (!_trajLine || !_trajLine.geometry) return 0;
-        const a = _trajLine.geometry.getAttribute('position');
+        const g = _trajLine.geometry;
+        const st = g.getAttribute ? g.getAttribute('instanceStart') :
+          (g.attributes && g.attributes.instanceStart);
+        if (st) return st.count + 1;
+        const a = g.getAttribute ? g.getAttribute('position') : null;
         return a ? a.count : 0;
       },
       get samplesPerSeg() { return _TRAJ_SAMPLES_PER_SEG; },
@@ -890,8 +897,9 @@
       // pathScale = the active path's diagonal; frustumLen / Half =
       // the clamped per-path frustum size actually built with;
       // frustumFrac / Min / Max = the fraction + absolute clamps;
-      // frustumIsWireframe = the geometry is LineSegments with a
-      // Line material (a thin outline, never a filled Mesh -- the
+      // frustumIsWireframe = the geometry is LineSegments/LineSegments2
+      // with a line material (a thin outline; LineSegments2 is
+      // mesh-backed internally but still renders line segments -- the
       // solid-orange-mass guard).
       get pathScale() { return _trajPathScale(
         (_trajFrusta.length ? _trajFrusta.map(
@@ -905,12 +913,25 @@
         const f = _trajFrusta[0];
         if (!f || !f.mesh) return false;
         const isLineSeg = !!(f.mesh.isLineSegments ||
-          (f.mesh.type === 'LineSegments'));
+          f.mesh.isLineSegments2 ||
+          (f.mesh.type === 'LineSegments') ||
+          (f.mesh.type === 'LineSegments2'));
         const m = f.mesh.material;
         const isLineMat = !!(m && (m.isLineBasicMaterial ||
-          m.type === 'LineBasicMaterial'));
-        const notMesh = !f.mesh.isMesh;
-        return isLineSeg && isLineMat && notMesh;
+          m.isLineMaterial ||
+          m.type === 'LineBasicMaterial' ||
+          m.type === 'LineMaterial'));
+        return isLineSeg && isLineMat;
+      },
+      get activeMarkerVisible() {
+        return !!(_trajActiveMark && _trajActiveMark.visible);
+      },
+      get activeMarkerPos() {
+        return (_trajActiveMark && _trajActiveMark.visible)
+          ? [_trajActiveMark.position.x,
+             _trajActiveMark.position.y,
+             _trajActiveMark.position.z]
+          : null;
       },
       // One entry per keyframe frustum, with its world pose so the
       // harness can assert each is oriented by ITS keyframe quat.
@@ -976,9 +997,11 @@
       // gradient" fix). lineHasGradient = the line material renders
       // per-vertex colours (vertexColors ON) AND the geometry
       // actually carries a populated colour attribute -> a ramp,
-      // not a flat orange ribbon. lineColorCount = that attribute's
-      // vertex count (parallel to linePointCount). lineColorEndsDiffer
-      // = the first vs last vertex colour differ (a real ramp along
+      // not a flat orange ribbon. Supports legacy BufferGeometry
+      // (`color`) and fat LineGeometry (`instanceColorStart` /
+      // `instanceColorEnd`). lineColorCount = the reported vertex
+      // count (parallel to linePointCount). lineColorEndsDiffer =
+      // the first vs last vertex colour differ (a real ramp along
       // the length, not a single constant baked per-vertex). A
       // regression to the flat ``LineBasicMaterial({ color: _TRAJ_COL })``
       // would make all three FALSE/0.
@@ -986,22 +1009,42 @@
         if (!_trajLine || !_trajLine.material ||
             !_trajLine.geometry) return false;
         const vc = _trajLine.material.vertexColors === true;
-        const ca = _trajLine.geometry.getAttribute('color');
-        return !!(vc && ca && ca.count > 1);
+        const g = _trajLine.geometry;
+        const ca = g.getAttribute ? g.getAttribute('color') : null;
+        const cs = g.getAttribute ? g.getAttribute('instanceColorStart') :
+          (g.attributes && g.attributes.instanceColorStart);
+        const ce = g.getAttribute ? g.getAttribute('instanceColorEnd') :
+          (g.attributes && g.attributes.instanceColorEnd);
+        return !!(vc && ((ca && ca.count > 1) ||
+          (cs && ce && cs.count > 0 && ce.count > 0)));
       },
       get lineColorCount() {
         if (!_trajLine || !_trajLine.geometry) return 0;
-        const ca = _trajLine.geometry.getAttribute('color');
-        return ca ? ca.count : 0;
+        const g = _trajLine.geometry;
+        const ca = g.getAttribute ? g.getAttribute('color') : null;
+        if (ca) return ca.count;
+        const cs = g.getAttribute ? g.getAttribute('instanceColorStart') :
+          (g.attributes && g.attributes.instanceColorStart);
+        return cs ? (cs.count + 1) : 0;
       },
       get lineColorEndsDiffer() {
         if (!_trajLine || !_trajLine.geometry) return false;
-        const ca = _trajLine.geometry.getAttribute('color');
-        if (!ca || ca.count < 2) return false;
-        const n = ca.count - 1;
-        const dr = Math.abs(ca.getX(0) - ca.getX(n));
-        const dg = Math.abs(ca.getY(0) - ca.getY(n));
-        const db = Math.abs(ca.getZ(0) - ca.getZ(n));
+        const g = _trajLine.geometry;
+        const ca = g.getAttribute ? g.getAttribute('color') : null;
+        let a0 = null, a1 = null, n = 0;
+        if (ca && ca.count >= 2) {
+          n = ca.count - 1; a0 = ca; a1 = ca;
+        } else {
+          const cs = g.getAttribute ? g.getAttribute('instanceColorStart') :
+            (g.attributes && g.attributes.instanceColorStart);
+          const ce = g.getAttribute ? g.getAttribute('instanceColorEnd') :
+            (g.attributes && g.attributes.instanceColorEnd);
+          if (!cs || !ce || ce.count < 1) return false;
+          a0 = cs; a1 = ce; n = ce.count - 1;
+        }
+        const dr = Math.abs(a0.getX(0) - a1.getX(n));
+        const dg = Math.abs(a0.getY(0) - a1.getY(n));
+        const db = Math.abs(a0.getZ(0) - a1.getZ(n));
         return (dr + dg + db) > 0.05;
       },
       get activePathId() { return _trajBuiltPathId; },
@@ -1058,4 +1101,3 @@
       },
     };
   } catch (e) {}
-

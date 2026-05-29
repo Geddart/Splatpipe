@@ -208,7 +208,7 @@
       * _viewer_author (?author=1; a 3-keyframe single path: a SLOW
         seg 0 [t 0..100, short hop] + a FAST seg 1 [t 100..110, long
         hop]; each keyframe a DISTINCT quat -- identity / +Y yaw 90 /
-        +X pitch 90): window.__editor.author=true; a THREE.Line
+        +X pitch 90): window.__editor.author=true; a trajectory
         polyline samples the active path (selEl's default_path_id) at
         ~96 samples/segment (asserted against the REPORTED
         samplesPerSeg over the 2 segments, not a magic number);
@@ -219,9 +219,10 @@
         INVERSELY with segment speed -- the slow (long-duration)
         seg 0 gets strictly MORE dots than the fast (short-duration)
         seg 1 for the SAME fixed time step (asserted as a RATIO
-        DIRECTION); scrubbing onto a key makes ITS frustum visually
-        distinct (colour AND scale differ from the resting frusta,
-        tracking the playhead); the "Show trajectory" toggle (default
+        DIRECTION); scrubbing onto a key makes it visually distinct
+        (frustum colour differs from the resting frusta and the active
+        ring marker is shown, tracking the playhead); the
+        "Show trajectory" toggle (default
         ON) adds/removes the whole overlay group, which is parented
         under the ONE Task-0 OverlayScene owner. (f) SCENE-RELATIVE
         sizing (the my16-M1 fix): the frustum size is a SMALL FRACTION
@@ -1852,7 +1853,7 @@
       //     geometry off sampleAt + the keyframes -- NO real .rad
       //     needed, so it is fully scene-less-verifiable (no honest
       //     deferral is required: scene-INDEPENDENT geometry).
-      //   (a) a THREE.Line polyline samples the active path at
+      //   (a) a trajectory polyline samples the active path at
       //       ~96 samples/segment (assert the vertex count matches
       //       samplesPerSeg over the 2 segments, not a magic number);
       //       exactly one wireframe frustum per keyframe, EACH oriented
@@ -1862,9 +1863,9 @@
       //       with segment speed: the SLOW (long-duration) seg 0 gets
       //       strictly MORE dots than the FAST (short-duration) seg 1
       //       for the SAME fixed time step (assert the ratio DIRECTION).
-      //   (c) the active/scrub keyframe's frustum is visually distinct
-      //       (scrub onto the middle key -> ITS frustum's colour AND
-      //       scale differ from the resting frusta).
+      //   (c) the active/scrub keyframe is visually distinct
+      //       (scrub onto the middle key -> ITS frustum's colour differs
+      //       from the resting frusta AND the active ring marker is shown).
       //   (d) the "Show trajectory" toggle adds/removes the whole
       //       group (setShow(false) hides it; setShow(true) restores).
       //   (e) ?author=1 vs user-mode invariance: the SAME scene WITHOUT
@@ -1974,11 +1975,11 @@
           }
         }
 
-        // (c) active/scrub frustum visually distinct. Scrub to the
+        // (c) active/scrub key visually distinct. Scrub to the
         //     MIDDLE key (t fraction ~0.95 lands inside seg 1 whose
         //     source key is kf 1) and to the START (kf 0); each time
-        //     the highlighted frustum's colour AND scale must differ
-        //     from the resting ones.
+        //     the highlighted frustum's colour must differ from the
+        //     resting ones and the clean active-key ring must be visible.
         // scrubTo() refreshes the active-key highlight synchronously,
         // but the ONE OverlayScene tick ALSO calls _trajRefreshActive()
         // every rAF; pump one frame after the scrub so the read is
@@ -1995,15 +1996,18 @@
           const rest = fl.filter(f => !f.active);
           const restCols = rest.map(f => f.color);
           const restScales = rest.map(f => f.scale);
+          const markerVisible = win.__editor.activeMarkerVisible === true;
+          const markerPos = win.__editor.activeMarkerPos;
           const distinct = act.length === 1 && rest.length >= 1 &&
-            restCols.indexOf(act[0].color) === -1 &&
-            act[0].scale > Math.max.apply(null, restScales.concat([0]));
+            restCols.indexOf(act[0].color) === -1 && markerVisible;
           return { ai: ai, actIdx: act.map(f => f.kfIndex),
             distinct: distinct,
             actColor: act.length ? act[0].color : null,
             restCols: restCols,
             actScale: act.length ? act[0].scale : null,
-            restScales: restScales };
+            restScales: restScales,
+            markerVisible: markerVisible,
+            markerPos: markerPos };
         }
         const pStart = await activeProbe(0.0);
         const pMid = await activeProbe(0.97);
@@ -2146,7 +2150,7 @@
         };
       }
       const k16 = await task16Check();
-      T('Task 16(a): author-mode THREE.Line polyline samples the active ' +
+      T('Task 16(a): author-mode trajectory polyline samples the active ' +
         'path at ~96 samples/segment AND exactly one wireframe frustum ' +
         'per keyframe, EACH oriented by ITS OWN keyframe quat + at its ' +
         'keyframe position (scene-less: pure sampleAt geometry)',
@@ -2166,8 +2170,9 @@
         JSON.stringify({ segC: k16.segC, dotCount: k16.dotCount,
           dotsOk: k16.dotsOk, dotPosOk: k16.dotPosOk }));
       T('Task 16(c): the active/scrub keyframe frustum is visually ' +
-        'distinct (scrub onto a key -> ITS frustum colour AND scale ' +
-        'differ from the resting frusta; tracks the playhead)',
+        'distinct (scrub onto a key -> ITS frustum colour differs from ' +
+        'the resting frusta and the active ring marker is visible; ' +
+        'tracks the playhead)',
         !!k16.activeDistinctOk,
         JSON.stringify({ pStart: k16.pStart, pMid: k16.pMid,
           activeDistinctOk: k16.activeDistinctOk }));
@@ -2330,16 +2335,16 @@
         void _expectedPoseAt;
         let scrubOk = false, scrubDetail = null;
         try {
-          // Confirm the auto-tour is actually live (robustness
-          // premise): a default-path tour auto-started in author mode
-          // -> the player is driving the camera. If it is NOT playing
-          // the robustness claim would be vacuous, so assert it.
+          // Author mode deliberately suppresses the default-path
+          // auto-tour so the camera rests at the authoring vantage.
+          // Scrub must still drive the camera through the real
+          // #path-scrub mechanism from this idle author state.
           let tourLive = false;
           try {
             tourLive = !!(win._spDebug && win._spDebug.controls &&
               win._spDebug.controls.enabled === false);
           } catch (e) {}
-          // Scrub to 0.15 and 0.85 (mid-auto-tour). Pump a frame so
+          // Scrub to 0.15 and 0.85. Pump a frame so
           // the player tick writes the camera from the rebased _t0
           // (the real #path-scrub handler rebases _t0; the camera is
           // moved by the player's own tick at that clock -- same as
@@ -2363,7 +2368,7 @@
           const phMatch = dur > 0 &&
             _approx(phA, 0.15 * dur, Math.max(0.05, dur * 0.03)) &&
             _approx(phB, 0.85 * dur, Math.max(0.05, dur * 0.03));
-          scrubOk = !!(tourLive && moved && deterministic && phMatch);
+          scrubOk = !!(moved && deterministic && phMatch);
           scrubDetail = { tourLive: tourLive, cA: cA, cB: cB,
             cA2: cA2, phA: phA, phB: phB, dur: dur, moved: moved,
             deterministic: deterministic, phMatch: phMatch };
@@ -2636,12 +2641,10 @@
           diamN: k17.diamN, diamondsOk: k17.diamondsOk,
           diaDetail: k17.diaDetail }));
       T('Task 17(b): LIVE-SCRUB playhead drives the CAMERA via the ' +
-        'REAL #path-scrub mechanism EVEN WHILE the author-mode ' +
-        'default-path AUTO-TOUR is playing (two distinct scrub ' +
+        'REAL #path-scrub mechanism from idle author mode (two distinct scrub ' +
         'fractions move the camera to distinct poses; re-scrubbing ' +
         'the same fraction is repeatable -- DETERMINISTIC takeover, ' +
-        'not tour drift; playhead time == frac*duration) -- the ' +
-        'auto-tour-robustness requirement, proven not flaky',
+        'not clock drift; playhead time == frac*duration)',
         !!k17.scrubOk,
         JSON.stringify(k17.scrubDetail));
       T('Task 17(c): diamond drag = IN-MEMORY temporal edit -- ' +
@@ -3125,8 +3128,8 @@
 
         // (h) http SAVE (opt-in) -> POST the camera-scope patch to
         //     SAVE_ENDPOINT with Bearer <#author=secret>; the body
-        //     is { slug, patch } with the allow-listed keys ONLY
-        //     and NEVER primary_asset. Driven on the SEPARATE
+        //     is flat { slug, ...patch } with the allow-listed keys
+        //     ONLY and NEVER primary_asset. Driven on the SEPARATE
         //     http-mode iframe (SAVE_MODE/SAVE_ENDPOINT baked via
         //     the Task-8 kwargs) with fetch WRAPPED -- no real
         //     server. Scene-independent.
@@ -3197,23 +3200,25 @@
               catch (e) { bodyErr = String(e); }
               const ALLOW = ['start_view', 'camera_paths',
                 'clips', 'cameras', 'default_path_id', 'intro',
-                'titles3d', 'spark_render', 'annotations'];
-              const patchOk = body && body.patch &&
-                typeof body.patch === 'object' &&
+                'titles3d', 'spark_render', 'annotations',
+                'panorama_backdrop', 'postprocessing', 'audio'];
+              const patch = body && typeof body === 'object'
+                ? Object.assign({}, body) : null;
+              if (patch) delete patch.slug;
+              const patchOk = body && patch &&
                 body.slug &&
-                !('primary_asset' in body.patch) &&
-                Object.keys(body.patch).every(
+                !('primary_asset' in patch) &&
+                Object.keys(patch).every(
                   (k) => ALLOW.indexOf(k) !== -1) &&
-                Array.isArray(body.patch.camera_paths);
+                Array.isArray(patch.camera_paths);
               httpOk = !!(sm === 'http' && urlOk && methodOk &&
                 authOk && patchOk);
               httpDetail = { saveMode: sm, urlOk: urlOk,
                 methodOk: methodOk, authOk: authOk,
                 patchOk: patchOk, bodyErr: bodyErr,
-                patchKeys: body && body.patch
-                  ? Object.keys(body.patch) : null,
-                hasPrimaryAsset: body && body.patch
-                  ? ('primary_asset' in body.patch) : null };
+                patchKeys: patch ? Object.keys(patch) : null,
+                hasPrimaryAsset: patch
+                  ? ('primary_asset' in patch) : null };
             } catch (e) { httpDetail = { err: String(e) }; }
           } else {
             httpDetail = { err: 'http viewer never ready' };
@@ -3325,7 +3330,7 @@
         'byte-for-byte in test_spcp_js_port.py)',
         !!k18.saveOk, JSON.stringify(k18.saveDetail));
       T('Task 18(h): http Save (opt-in; SAVE_MODE/SAVE_ENDPOINT ' +
-        'baked via the Task-8 kwargs) POSTs {slug,patch} to ' +
+        'baked via the Task-8 kwargs) POSTs flat {slug,...patch} to ' +
         'SAVE_ENDPOINT with Authorization: Bearer <#author= ' +
         'fragment secret>; the patch carries the allow-listed ' +
         'camera-scope keys ONLY and NEVER primary_asset (the ' +
