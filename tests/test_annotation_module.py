@@ -347,7 +347,7 @@ def _extract_helpers_js() -> str:
     ss_b = html.index("\n    }\n", ss_a) + len("\n    }\n")
     ss_block = html[ss_a:ss_b]
     # _timelineOpacity
-    to_a = html.index("function _timelineOpacity(ann, tNow) {")
+    to_a = html.index("function _timelineOpacity(ann, tNow, cinematic) {")
     to_b = html.index("\n    }\n", to_a) + len("\n    }\n")
     to_block = html[to_a:to_b]
     return ad_block + "\n" + nai_block + "\n" + ua_block + "\n" + \

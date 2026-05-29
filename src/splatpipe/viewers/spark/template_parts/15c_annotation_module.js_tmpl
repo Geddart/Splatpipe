@@ -175,9 +175,23 @@
       const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
       return t * t * (3 - 2 * t);
     }
-    function _timelineOpacity(ann, tNow) {
+    function _timelineOpacity(ann, tNow, cinematic) {
+      // #170: `cinematic` = is a real cinematic tour driving the playhead
+      // right now? When it is NOT (the scene is idle, or our OWN
+      // annotation-fly / idle-orbit drives the camera), an annotation with
+      // the DEFAULT always-on window ([t_in~0, t_out>=998]) is a navigable
+      // point-of-interest and is shown at FULL opacity -- instead of being
+      // faded out by the t=0 fade-in (with no advancing playhead,
+      // _playheadTime() is pinned at 0, which the fade would otherwise
+      // render permanently invisible). Timed annotations keep their window
+      // behaviour; during a real tour EVERYONE evaluates the window so the
+      // cinematic appear/disappear is preserved. Back-compat: an ABSENT
+      // `cinematic` arg (the legacy test-surface callers) is treated as
+      // `true`, so the window logic runs byte-for-byte as before.
+      if (cinematic === undefined) cinematic = true;
       const tIn = (typeof ann.t_in === 'number') ? ann.t_in : 0.0;
       const tOut = (typeof ann.t_out === 'number') ? ann.t_out : 999.0;
+      if (!cinematic && tIn <= 1e-3 && tOut >= 998) return 1;
       const fadeS = Math.max(0, ann.fade_ms || 0) / 1000;
       if (tNow < tIn - 1e-6 || tNow > tOut + 1e-6) return 0;
       const fadeInEnd = Math.min(tIn + fadeS, (tIn + tOut) * 0.5);
@@ -187,6 +201,78 @@
       const fall = (fadeS > 0)
         ? _smoothstep(fadeOutStart, tOut, tNow) : (tNow >= tOut ? 1 : 0);
       return Math.max(0, Math.min(1, rise - fall));
+    }
+
+    // ============================================================
+    //  #170 annotation navigation (points-of-interest)
+    // ------------------------------------------------------------
+    //  Study of the SuperSplat viewer control schema (MIT;
+    //  camera-manager.ts `annotation.activate`): activating an
+    //  annotation runs an EASE-OUT reposition between two full camera
+    //  poses (their fixed ~1 s `transitionTimer` + `easeOut`). We adopt
+    //  the schema but improve two things the user asked for:
+    //    * SPEED-DEPENDENT duration (a tiny hop is quick, a long jump
+    //      unhurried) instead of a fixed 1 s, and
+    //    * reuse OUR ONE camera driver -- a 2-keyframe Hermite path fed
+    //      to the EXISTING buildPlayer/_player so the render loop (18)
+    //      drives + self-terminates it, never a 2nd rAF or bespoke lerp.
+    //  SuperSplat annotations store a full {position,target,fov}; OURS
+    //  store only a world `pos`, so we COMPUTE a framing pose: dolly
+    //  along the current camera->pos ray to a distance inside the
+    //  unfold radius (panel opens on arrival) and look at the point.
+    // ------------------------------------------------------------
+    const ANN_FLY_SPEED_MPS = 6.0;   // metres/sec the dolly aims for
+    const ANN_FLY_MIN_S = 0.5;       // floor (a pure reorient stays smooth)
+    const ANN_FLY_MAX_S = 2.4;       // ceiling (never a tedious crawl)
+    const ANN_FRAME_FRAC = 0.6;      // end distance = frac * unfold_radius
+    const ANN_FRAME_MIN_M = 0.5;     // never end exactly ON the point
+    // Pure: travel distance (m) -> fly duration (s). Clamped so the move
+    // is speed-dependent but bounded. Node-tested (test_annotation_nav).
+    function _annFlyDuration(distM) {
+      const d = (typeof distM === 'number' && isFinite(distM) && distM > 0) ? distM : 0;
+      const dur = d / ANN_FLY_SPEED_MPS;
+      return Math.max(ANN_FLY_MIN_S, Math.min(ANN_FLY_MAX_S, dur));
+    }
+    // Pure: current cam->annotation distance + the annotation's unfold
+    // radius -> the END distance the dolly stops at. Never dollies OUTWARD
+    // past the framing distance (min with current), never ends on the
+    // point (ANN_FRAME_MIN_M floor), and is always <= frac*radius so
+    // arrival is INSIDE the unfold radius (the panel opens). Node-tested.
+    function _annEndDist(curDist, radius) {
+      const r = (typeof radius === 'number' && isFinite(radius) && radius > 0) ? radius : 5.0;
+      const frame = r * ANN_FRAME_FRAC;
+      const cur = (typeof curDist === 'number' && isFinite(curDist) && curDist > 0) ? curDist : frame;
+      return Math.max(ANN_FRAME_MIN_M, Math.min(frame, cur));
+    }
+    // ---- Is a real CINEMATIC tour driving the playhead right now? Our
+    //      own annotation-fly + the idle-orbit + a bench are NOT cinematic
+    //      content playheads, and a null _player is no playhead at all.
+    //      Drives the _timelineOpacity POI override above so navigable
+    //      points-of-interest stay visible when nothing is touring.
+    function _hasCinematicPlayhead() {
+      try {
+        if (typeof _player === 'undefined' || !_player) return false;
+        if (typeof _benchActive !== 'undefined' && _benchActive) return false;
+        if (typeof _activePathId !== 'undefined' &&
+            (_activePathId === 'ann-fly' || _activePathId === 'idle-orbit' ||
+             _activePathId === 'orbit')) return false;
+        return true;
+      } catch (e) { return false; }
+    }
+    // ---- True when the camera is OUTSIDE an annotation's unfold radius
+    //      (so its panel cannot meaningfully be read in place). Used to
+    //      decide click-a-dot-flies-to-it vs toggle-in-place.
+    function _annCamOutsideRadius(state) {
+      try {
+        const ann = state && state.ann;
+        if (!ann || !Array.isArray(ann.pos) || ann.pos.length < 3) return false;
+        if (typeof camera === 'undefined' || !camera || !camera.position) return false;
+        const dx = camera.position.x - ann.pos[0];
+        const dy = camera.position.y - ann.pos[1];
+        const dz = camera.position.z - ann.pos[2];
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        return dist >= (ann.unfold_radius_m || 5.0);
+      } catch (e) { return false; }
     }
 
     // ---- Per-annotation render-state record. One per upgraded entry.
@@ -365,6 +451,17 @@
               return;
             }
             ev.stopPropagation();
+            // #170 SuperSplat-parity: clicking a dot you are FAR from (the
+            // camera is outside its unfold radius, so the panel cannot be
+            // read in place) flies the camera there and unfolds on arrival.
+            // A close-up click just toggles the panel in place. Author mode
+            // always toggles -- the author is positioning, not touring.
+            const authoring = (typeof ModeManager !== 'undefined' &&
+              ModeManager.is && ModeManager.is('author'));
+            if (!authoring && _annCamOutsideRadius(state)) {
+              _annNavToId(ann.id);
+              return;
+            }
             // Toggle manual override -- if currently unfolded, fold;
             // else unfold (regardless of distance). The wasInRadius
             // bookkeeping clears manual once the camera moves away.
@@ -385,6 +482,7 @@
       const c = _liveCfg();
       const camOK = (typeof camera !== 'undefined') && camera && camera.position;
       const tNow = _playheadTime();
+      const cinematic = _hasCinematicPlayhead();   // #170 POI-visibility gate
       // Read the legacy `_lastTriggeredAnnotation` (from 09) so the
       // path-active glow class still toggles even after the module
       // takes over rendering. Falls back to null when 09 hasn't run.
@@ -396,7 +494,13 @@
       } catch (e) {}
       for (const s of _annStates) {
         const ann = s.ann;
-        const opacity = _timelineOpacity(ann, tNow);
+        let opacity = _timelineOpacity(ann, tNow, cinematic);
+        // #170 review: a manually-forced annotation (clicked open, or flown-to
+        // via the nav -- _annFlyTo sets state.manual=true) stays visible at
+        // idle even if its timeline window is closed; otherwise navigating to
+        // a TIMED point-of-interest would frame an INVISIBLE dot. During a
+        // real cinematic tour the window still wins (the !cinematic guard).
+        if (opacity <= 0 && s.manual === true && !cinematic) opacity = 1;
         s.lastOpacity = opacity;
         // Apply opacity to the wrap. opacity=0 -> visibility:hidden +
         // pointer-events:none so the click hit-target also goes away
@@ -792,6 +896,7 @@
     function _rebuild() {
       _disposeAll();
       _buildFromCfg();
+      _annNavRefresh();   // #170: keep the nav bar's count/label/visibility live
     }
 
     // ---- "+ Add annotation" -- places a new annotation at the
@@ -840,6 +945,167 @@
       return newAnn;
     }
 
+    // ============================================================
+    //  #170 fly-to + prev/next navigation + the minimal bottom bar
+    // ============================================================
+    let _annNavIdx = -1;
+    let _annNavEl = null, _annNavPrevEl = null,
+        _annNavNextEl = null, _annNavLabelEl = null;
+
+    // Fly the camera to FRAME annotation `state.ann` with a smooth,
+    // speed-dependent ease. Builds a 2-keyframe path [current pose ->
+    // framing pose] and plays it through the EXISTING buildPlayer/_player
+    // so the render loop (18) drives it AND self-terminates it
+    // (`tNow>duration && !loop -> stopPath()`). stopPath's
+    // _syncControlsToCamera then lands the orbit pivot exactly on the
+    // annotation (we pre-point controls.target at it, and the camera ends
+    // looking at it from `endDist`, so fwd*endDist == pos). The arrival
+    // distance is inside the unfold radius -> the panel opens.
+    function _annFlyTo(state) {
+      try {
+        if (!state || !state.ann) return false;
+        const ann = state.ann;
+        if (!Array.isArray(ann.pos) || ann.pos.length < 3) return false;
+        if (typeof camera === 'undefined' || !camera || !camera.position) return false;
+        if (typeof buildPlayer !== 'function') return false;
+        const posV = new THREE.Vector3(ann.pos[0], ann.pos[1], ann.pos[2]);
+        const camV = camera.position.clone();
+        let dir = camV.clone().sub(posV);            // annotation -> camera
+        let curDist = dir.length();
+        if (!(curDist > 1e-4)) {
+          // Camera sits on the point: back off along its current backward.
+          dir = new THREE.Vector3(0, 0, 1).applyQuaternion(camera.quaternion);
+          curDist = 0;
+        }
+        dir.normalize();
+        // #170 review: avoid an ill-conditioned lookAt basis when the dolly
+        // line is near-vertical (annotation directly above/below). THREE's
+        // Matrix4.lookAt only special-cases an EXACTLY parallel up/forward;
+        // a near-parallel case yields arbitrary camera roll. Nudge a hair
+        // off the pole so the basis is well-conditioned + the end pose level.
+        if (Math.abs(dir.y) > 0.9998) { dir.x += 0.02; dir.normalize(); }
+        const radius = (typeof ann.unfold_radius_m === 'number') ? ann.unfold_radius_m : 5.0;
+        const endDist = _annEndDist(curDist, radius);
+        const endPos = posV.clone().addScaledVector(dir, endDist);
+        // End orientation: look from endPos toward the annotation point.
+        const m = new THREE.Matrix4().lookAt(endPos, posV, new THREE.Vector3(0, 1, 0));
+        const eq = new THREE.Quaternion().setFromRotationMatrix(m);
+        const cq = camera.quaternion;
+        const fov = (typeof camera.fov === 'number') ? camera.fov : 60;
+        const dur = _annFlyDuration(camV.distanceTo(endPos));
+        const path = {
+          id: 'ann-fly', name: 'Annotation', loop: false,
+          smoothness: 1.0, play_speed: 1.0,
+          keyframes: [
+            { t: 0, pos: [camV.x, camV.y, camV.z], quat: [cq.x, cq.y, cq.z, cq.w], fov: fov },
+            { t: dur, pos: [endPos.x, endPos.y, endPos.z], quat: [eq.x, eq.y, eq.z, eq.w], fov: fov },
+          ],
+        };
+        const pl = buildPlayer(path);
+        if (!pl) return false;
+        // Stop any current playback cleanly first so players never stack.
+        // #170 review (HIGH): in a CLIP-mode (multi-camera cut) scene a bare
+        // stopPath() leaves _clipState.active=true + _clipUserStopped=false,
+        // so when this ann-fly self-terminates (frame loop stopPath) the clip
+        // layer reads it as a natural clip-end and HARD-CUTS to the next cut
+        // -- yanking the camera off the annotation. Route a live clip tour
+        // through the EXISTING clip-aware _stopTour() (12) instead, which sets
+        // _clipUserStopped + _clipFinish (stands the clip layer down) AND
+        // reveals the Resume-tour affordance. Any other live player (a single
+        // path tour, or an in-flight ann-fly) is a plain stopPath.
+        try {
+          if (typeof _clipMode !== 'undefined' && _clipMode &&
+              typeof _clipState !== 'undefined' && _clipState && _clipState.active &&
+              typeof _stopTour === 'function') {
+            _stopTour({ byUser: true });
+          } else if (typeof _player !== 'undefined' && _player &&
+                     typeof stopPath === 'function') {
+            stopPath();
+          }
+        } catch (e) {}
+        _player = pl;
+        _t0 = performance.now();
+        _activePathId = 'ann-fly';
+        try { if (typeof controls !== 'undefined' && controls && controls.target) controls.target.copy(posV); } catch (e) {}
+        try { if (typeof controls !== 'undefined' && controls) controls.enabled = false; } catch (e) {}
+        try { if (typeof InteractionManager !== 'undefined') InteractionManager.requestPointer('player'); } catch (e) {}
+        try { if (typeof _pathIconSync === 'function') _pathIconSync(); } catch (e) {}
+        // Force the panel open on arrival (and through the fly) regardless
+        // of distance jitter. Cleared when the camera later leaves radius.
+        state.manual = true;
+        return true;
+      } catch (e) { return false; }
+    }
+
+    // prev/next stepping through annotations in authored order (the same
+    // order the drawer numbers them). Wraps (a carousel of POIs). The
+    // first press from "no selection" picks the first (next) / last (prev).
+    function _annNavGo(dir) {
+      const list = _annStates;
+      const n = list.length;
+      if (n === 0) return;
+      let i = _annNavIdx;
+      if (i < 0) i = (dir < 0) ? n - 1 : 0;
+      else i = (((i + dir) % n) + n) % n;
+      _annNavIdx = i;
+      _annFlyTo(list[i]);
+      _annNavRefresh();
+    }
+    function _annNavToId(id) {
+      const list = _annStates;
+      const i = list.findIndex(s => s.ann && s.ann.id === id);
+      if (i < 0) return;
+      _annNavIdx = i;
+      _annFlyTo(list[i]);
+      _annNavRefresh();
+    }
+    function _annNavLabel() {
+      const list = _annStates;
+      const n = list.length;
+      if (n === 0) return '';
+      const i = (_annNavIdx >= 0 && _annNavIdx < n) ? _annNavIdx : 0;
+      const ann = list[i].ann;
+      const title = (ann && ann.title) ? String(ann.title) : '';
+      const base = (i + 1) + ' / ' + n;
+      return title ? (base + '  ·  ' + title) : base;
+    }
+    // Keep the bar's visibility + label live. Shown only in user mode when
+    // >=1 annotation exists (author uses the drawer; embed strips chrome).
+    // Bumped above #path-mini when the camera-path transport is also shown.
+    function _annNavRefresh() {
+      if (!_annNavEl) return;
+      const n = _annStates.length;
+      if (_annNavIdx >= n) _annNavIdx = n - 1;
+      const userMode = (typeof ModeManager === 'undefined') ||
+        (ModeManager.is && ModeManager.is('user'));
+      const show = n > 0 && !!userMode;
+      _annNavEl.classList.toggle('shown', show);
+      try {
+        const mini = document.getElementById('path-mini');
+        _annNavEl.classList.toggle('with-path',
+          !!(mini && mini.classList.contains('shown')));
+      } catch (e) {}
+      if (_annNavLabelEl) _annNavLabelEl.textContent = _annNavLabel();
+    }
+    function _annNavWire() {
+      _annNavEl = document.getElementById('ann-nav');
+      if (!_annNavEl) return;
+      _annNavPrevEl = document.getElementById('ann-nav-prev');
+      _annNavNextEl = document.getElementById('ann-nav-next');
+      _annNavLabelEl = document.getElementById('ann-nav-label');
+      if (_annNavPrevEl) {
+        _annNavPrevEl.addEventListener('click', (e) => {
+          e.preventDefault(); e.stopPropagation(); _annNavGo(-1);
+        });
+      }
+      if (_annNavNextEl) {
+        _annNavNextEl.addEventListener('click', (e) => {
+          e.preventDefault(); e.stopPropagation(); _annNavGo(1);
+        });
+      }
+      _annNavRefresh();
+    }
+
     // ---- The EditorModule instance.
     const annotationModule = {
       name: 'annotations',
@@ -852,6 +1118,10 @@
         // 05_framework, which runs after 08 has constructed the DOM).
         _teardownLegacy();
         _buildFromCfg();
+        // #170: wire + show the minimal annotation navigator bottom bar
+        // (user mode + >=1 annotation). Safe in author/embed -- it just
+        // stays hidden (author uses the drawer; embed strips chrome).
+        _annNavWire();
         // Capture the current cfg.annotations slice as the clean
         // baseline; subsequent edits flip getDirtyState() true.
         _cleanSig = _sig(_slice());
@@ -1030,6 +1300,21 @@
               return s.isUnfolded;
             },
             forceTick: (t) => { _annTick(t || 0); },
+            // #170 navigation test/extension surface.
+            get navIndex() { return _annNavIdx; },
+            navNext: () => { _annNavGo(1); return _annNavIdx; },
+            navPrev: () => { _annNavGo(-1); return _annNavIdx; },
+            navTo: (i) => {
+              if (typeof i === 'number' && i >= 0 && i < _annStates.length) {
+                _annNavIdx = i; _annFlyTo(_annStates[i]); _annNavRefresh();
+              }
+              return _annNavIdx;
+            },
+            flyToId: (id) => { _annNavToId(id); return _annNavIdx; },
+            navLabel: () => _annNavLabel(),
+            navEl: () => _annNavEl,
+            navShown: () => !!(_annNavEl &&
+              _annNavEl.classList.contains('shown')),
             timelineLane: annotationModule.timelineLane,
             get settingsEl() { return _ssSection; },
             addAt: (pos) => {
@@ -1060,6 +1345,9 @@
             // Internal helpers exposed for harness assertions.
             _upgradeAnnotation: _upgradeAnnotation,
             _timelineOpacity: _timelineOpacity,
+            _annFlyDuration: _annFlyDuration,
+            _annEndDist: _annEndDist,
+            _hasCinematicPlayhead: _hasCinematicPlayhead,
             _ANNOTATION_DEFAULTS: ANNOTATION_DEFAULTS,
           };
         },

@@ -168,6 +168,27 @@
     </button>
   </div>
 
+  <!-- #170: minimal END-USER annotation navigator (points-of-interest).
+       prev | "i / N - title" | next. Each step flies the camera with a
+       smooth, speed-dependent ease (SuperSplat control-schema study: an
+       ease-out reposition between two poses) to FRAME that annotation so
+       its panel unfolds on arrival, leaving the orbit pivot on it. Built
+       through the EXISTING buildPlayer/_player camera driver (no 2nd rAF).
+       Shown by 15c (AnnotationModule) ONLY in user mode when >=1
+       annotation exists; the embed strip hides it like all chrome. SVG
+       chevrons are ASCII-only; the centre label is filled by JS. -->
+  <div id="ann-nav">
+    <button id="ann-nav-prev" type="button" title="Previous point of interest"
+      aria-label="Previous point of interest">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M15 5l-9 7 9 7z"/></svg>
+    </button>
+    <span id="ann-nav-label" aria-live="polite"></span>
+    <button id="ann-nav-next" type="button" title="Next point of interest"
+      aria-label="Next point of interest">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M9 5l9 7-9 7z"/></svg>
+    </button>
+  </div>
+
   <!-- Task 12 dual-UI roots. ALWAYS present, CSS-gated by the body mode
        class ModeManager sets (body.usermode / body.authormode / the embed
        strip) -- intentionally NOT JS add/removed so there is no layout

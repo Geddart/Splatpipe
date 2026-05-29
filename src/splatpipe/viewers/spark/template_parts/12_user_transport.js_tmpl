@@ -323,6 +323,15 @@
   canvas.addEventListener('pointerdown', (e) => {
     if (!ModeManager.is('user')) return;
     if (_idleOrbiting) { _cancelIdleOrbit(); return; }
+    // #170 review: an in-flight annotation-fly (_activePathId 'ann-fly') is
+    // not a "tour" (so _tourPlaying() is false), but the user should still be
+    // able to grab the canvas to abort it -- controls.enabled is false during
+    // the fly. stopPath() frees the camera + re-enables controls immediately.
+    if (typeof _activePathId !== 'undefined' && _activePathId === 'ann-fly' &&
+        typeof _player !== 'undefined' && _player) {
+      try { stopPath(); } catch (e2) {}
+      return;
+    }
     if (_tourPlaying()) {
       _stopTour({ byUser: true });
       return;

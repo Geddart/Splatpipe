@@ -9,7 +9,7 @@ CLI-first Gaussian splatting pipeline. Takes COLMAP data through: auto-clean →
 ```bash
 cd H:\001_ProjectCache\1000_Coding\Splatpipe
 pip install -e ".[dev]"
-pytest tests/ -v                    # Run tests (1086 collected; 1063 passed, 23 skipped, ~35s)
+pytest tests/ -v                    # Run tests (1096 collected; 1073 passed, 23 skipped, ~35s)
 splatpipe --help                    # CLI commands
 splatpipe web                       # Launch dashboard
 ```
@@ -91,7 +91,7 @@ splatpipe/                    # repo root
           15_editor_trajectory.js_tmpl # Author editor -- trajectory overlay (Perspective fallback prefers >=2-kf paths, Phase 11A Issue 2)
           15a_camera_path_module.js_tmpl  # CameraPathModule wrapper (Phase 2B #122)
           15b_panorama_module.js_tmpl     # PanoramaModule (Phase 3)
-          15c_annotation_module.js_tmpl   # AnnotationModule (Phase 5)
+          15c_annotation_module.js_tmpl   # AnnotationModule (Phase 5) + #170 annotation navigator (prev/next fly-to-frame via buildPlayer, minimal #ann-nav bar, click-far-dot-flies, idle-POI visibility)
           15d_cuts_module.js_tmpl         # CutsModule (Phase 6)
           15e_postfx_module.js_tmpl       # PostFXModule (Phase 4)
           15f_audio_module.js_tmpl        # AudioModule (Phase 7)
@@ -202,6 +202,7 @@ splatpipe/                    # repo root
     test_intro_startview_modules.py # IntroModule (15h) + StartViewModule (15i) Scene Settings sections: contract markers + fragment ordering + openStartViewCard helper (Phase 11A Issue 9)
     test_clip_editor.py       # Multi-camera CLIP EDITOR (#164): two-level stacked timeline (Cuts master track <-> per-clip camera keyframes) -- STATIC surface markers (level state, click->load via _camSelApply, back/breadcrumb, sequence draw, scrub-via-existing-path) + DYNAMIC Node master-time clip-boundary resolution (_tlClipAtMasterT)
     test_context_menu.py      # openContextMenu primitive (04b) contract markers + 5 author-gated surfaces wired (timeline/3D/camera/annotation+title+clip rows) + 08:223 non-author suppressor preserved + fragment ordering (R2 #2 / #156)
+    test_annotation_nav.py    # #170 annotation navigator: STATIC surface markers (#ann-nav bar 03/CSS 02a/nav+fly wiring 15c + clip-aware pre-empt + idle-POI visibility) + DYNAMIC Node proof of the two pure laws (_annFlyDuration speed-dependent-clamped + _annEndDist lands-inside-unfold-radius)
     test_undo_redo_ui.py           # WF-H3 (#144): visible Undo/Redo transport buttons + narrow _editorUndoHotkeyBlocked() guard (Ctrl+Z works in the drawer; text-entry-only block matrix; Phase 11G)
     test_edit_history.py           # EditHistory snapshot ring-buffer (pre-gesture convention; WF-H2 #143 first-edit-undoable + per-gesture undo/redo; 200-cap; Phase 2A/11G)
     test_php_save_oracle.py        # PHP save adapter cross-language merge oracle (v0.8+)
@@ -442,7 +443,7 @@ Key config sections: `[tools]`, `[colmap_clean]`, `[postshot]` (profile, gpu, ma
 ## Tests
 
 ```bash
-pytest tests/ -v              # 1086 collected (1063 passed, 23 skipped)
+pytest tests/ -v              # 1096 collected (1073 passed, 23 skipped)
 pytest tests/ -k colmap       # Just COLMAP tests
 pytest tests/ -k integration  # End-to-end with tiny data
 pytest tests/ -k trainers     # Trainer abstraction tests
