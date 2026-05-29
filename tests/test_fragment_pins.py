@@ -56,7 +56,7 @@ def _fragment_files() -> list:
 # ``python tests/test_fragment_pins.py``.
 FRAGMENT_PINS: dict[str, tuple[int, str]] = {
     "01_head.html_tmpl": (763, "91b52c9ba0c20e585c703c6fbabffda29e47fce8027064f4018f0e57e2122afc"),
-    "02a_styles_main.css_tmpl": (15235, "10c1b2776ae80965492e9351c8906eece85bd4a52b0f98219fb800c3c514e2f7"),
+    "02a_styles_main.css_tmpl": (15961, "e22e4c0c6e753972a39d210a183be6799ae1b70c0798fb777ad41dbbf2dfbe35"),
     "02b_styles_editor.css_tmpl": (4225, "6504d4c94352eb3ec4222b1d5ca24dd0572af529128eb76578e7ddb84038a1ed"),
     "03_body_chrome.html_tmpl": (12856, "e2c92f5b78352836d6a446cf8fee13ed1852f22c9eea7e233ec8a4405452bdb6"),
     "04_js_prologue.js_tmpl": (6366, "a74c60af5865558923f3e375d62dc5f3f393761feb18eaf63141a6a7fe66344b"),

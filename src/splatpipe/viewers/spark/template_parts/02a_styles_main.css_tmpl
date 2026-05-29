@@ -226,7 +226,12 @@
        a phone). Shown by JS (.shown) in user mode when >=1 annotation
        exists; the embed strip hides it like all chrome. */
     #ann-nav {
-      position: absolute; top: max(14px, env(safe-area-inset-top));
+      /* top-centre, but BELOW the header row: our #header carries the
+         title (left) + the quality dropdowns (right, ~670px wide) which a
+         centred top:14px pill overlapped (SuperSplat's top is empty, ours
+         isn't). 60px clears the single-row header band on desktop + a
+         nowrap mobile header; touch uses edge buttons (below) regardless. */
+      position: absolute; top: 60px;
       left: 50%; transform: translateX(-50%);
       z-index: 14; display: none; align-items: center; gap: 0;
       background: rgba(0,0,0,0.6); border-radius: 8px; overflow: hidden;
@@ -249,9 +254,14 @@
       padding: 0 12px; white-space: nowrap; overflow: hidden;
       text-overflow: ellipsis; max-width: 240px;
     }
-    /* Touch (coarse pointer): prev/next as edge buttons, label hidden --
-       SuperSplat's &.touch layout. */
-    @media (pointer: coarse) {
+    /* Touch (coarse pointer) OR a NARROW viewport: prev/next as edge
+       buttons, label hidden -- SuperSplat's &.touch layout. The width arm
+       matters because below ~900px our header (title + ~670px of quality
+       dropdowns) overflows to a taller band, so a top-centre pill would
+       collide with the controls; edge buttons (vertically centred) never
+       do. Above 900px (wide desktop) the header is a single short row and
+       the top:60px pill clears it. */
+    @media (pointer: coarse), (max-width: 900px) {
       #ann-nav {
         top: 0; left: 0; transform: none; width: 100%; height: 100%;
         background: transparent; overflow: visible; max-width: none;

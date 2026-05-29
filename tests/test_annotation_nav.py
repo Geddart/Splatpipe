@@ -64,10 +64,12 @@ def test_ann_nav_css_top_placement_and_embed_strip():
     assert "#ann-nav {" in html
     assert "#ann-nav.shown { display: flex; }" in html
     assert "#ann-nav-label {" in html
-    # TOP-centre (matches SuperSplat #annotationNav &.desktop top: 16px)
-    assert "top: max(14px, env(safe-area-inset-top));" in html
-    # Touch = edge buttons (matches SuperSplat &.touch)
-    assert "@media (pointer: coarse)" in html
+    # TOP-centre but BELOW our header row (clears the quality dropdowns,
+    # which SuperSplat's empty top doesn't have)
+    assert "position: absolute; top: 60px;" in html
+    # Touch OR narrow = edge buttons (matches SuperSplat &.touch); the
+    # width arm keeps the top pill off our header controls below ~900px.
+    assert "@media (pointer: coarse), (max-width: 900px) {" in html
     assert "#ann-nav-prev { left: max(0px" in html
     assert "#ann-nav-next { right: max(0px" in html
     assert "body.embed #ann-nav," in html      # embed strips it like all chrome
