@@ -1080,11 +1080,8 @@
         (ModeManager.is && ModeManager.is('user'));
       const show = n > 0 && !!userMode;
       _annNavEl.classList.toggle('shown', show);
-      try {
-        const mini = document.getElementById('path-mini');
-        _annNavEl.classList.toggle('with-path',
-          !!(mini && mini.classList.contains('shown')));
-      } catch (e) {}
+      // #170: the bar lives at TOP-centre (SuperSplat parity), so it no
+      // longer collides with the bottom #path-mini -- no overlap bump.
       if (_annNavLabelEl) _annNavLabelEl.textContent = _annNavLabel();
     }
     function _annNavWire() {

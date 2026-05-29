@@ -218,38 +218,55 @@
     #path-mini .mini-pp { width: 36px; height: 36px; }
     #path-mini .mini-pp svg { width: 17px; height: 17px; }
 
-    /* #170: the minimal end-user annotation navigator -- prev chevron, a
-       compact "i / N - title" label, next chevron. Same subtle, low-
-       opacity language as #path-mini. Shown by JS (.shown) in user mode
-       when >=1 annotation exists; the embed strip hides it like all
-       chrome. Bottom-centre; bumped up (.with-path) when #path-mini (the
-       camera-path transport) is also present so the two never overlap. */
+    /* #170: the end-user annotation navigator, placed to MATCH SuperSplat
+       (studied from supersplat-viewer/src/index.scss #annotationNav):
+       DESKTOP = a unified horizontal pill at TOP-CENTRE [ ‹ | i / N · title
+       | › ]; TOUCH = prev/next as vertically-centred edge buttons with the
+       label hidden (also keeps the bar clear of our top-right dropdowns on
+       a phone). Shown by JS (.shown) in user mode when >=1 annotation
+       exists; the embed strip hides it like all chrome. */
     #ann-nav {
-      position: absolute; bottom: 56px; left: 50%;
-      transform: translateX(-50%);
-      z-index: 12; display: none; align-items: center; gap: 10px;
-      pointer-events: none; max-width: min(86vw, 460px);
+      position: absolute; top: max(14px, env(safe-area-inset-top));
+      left: 50%; transform: translateX(-50%);
+      z-index: 14; display: none; align-items: center; gap: 0;
+      background: rgba(0,0,0,0.6); border-radius: 8px; overflow: hidden;
+      -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
+      pointer-events: auto; max-width: min(72vw, 360px);
     }
     #ann-nav.shown { display: flex; }
-    #ann-nav.with-path { bottom: 104px; }
     #ann-nav button {
-      pointer-events: auto; background: rgba(0,0,0,0.32);
-      border: 0; border-radius: 50%; padding: 0; margin: 0;
-      width: 30px; height: 30px; cursor: pointer; flex: none;
-      color: rgba(255,255,255,0.62);
+      pointer-events: auto; background: transparent; border: 0;
+      width: 34px; height: 34px; padding: 0; margin: 0; cursor: pointer;
+      flex: none; color: rgba(255,255,255,0.78);
       display: flex; align-items: center; justify-content: center;
-      opacity: 0.5; transition: opacity 0.16s, color 0.16s;
-      -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
+      transition: background 0.15s, color 0.15s;
     }
-    #ann-nav button:hover { opacity: 0.95; color: rgba(255,255,255,0.95); }
-    #ann-nav button svg { width: 15px; height: 15px; display: block; }
+    #ann-nav button:hover { background: rgba(255,255,255,0.12); color: #fff; }
+    #ann-nav button svg { width: 16px; height: 16px; display: block; }
     #ann-nav-label {
-      pointer-events: none; color: rgba(255,255,255,0.82);
-      font: 600 12px/1.2 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-      background: rgba(0,0,0,0.32); padding: 6px 12px; border-radius: 999px;
-      -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-      max-width: 280px;
+      pointer-events: none; color: rgba(255,255,255,0.9); text-align: center;
+      font: 600 13px/1.2 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+      padding: 0 12px; white-space: nowrap; overflow: hidden;
+      text-overflow: ellipsis; max-width: 240px;
+    }
+    /* Touch (coarse pointer): prev/next as edge buttons, label hidden --
+       SuperSplat's &.touch layout. */
+    @media (pointer: coarse) {
+      #ann-nav {
+        top: 0; left: 0; transform: none; width: 100%; height: 100%;
+        background: transparent; overflow: visible; max-width: none;
+        pointer-events: none;
+        -webkit-backdrop-filter: none; backdrop-filter: none;
+      }
+      #ann-nav-label { display: none; }
+      #ann-nav button {
+        position: absolute; top: 50%; transform: translateY(-50%);
+        width: 44px; height: 80px; background: rgba(0,0,0,0.34);
+      }
+      #ann-nav-prev { left: max(0px, env(safe-area-inset-left));
+        border-radius: 0 8px 8px 0; }
+      #ann-nav-next { right: max(0px, env(safe-area-inset-right));
+        border-radius: 8px 0 0 8px; }
     }
 
     /* Safari-on-Mac streaming hint (#78). Only ever shown on a Mac running a

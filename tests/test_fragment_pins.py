@@ -56,7 +56,7 @@ def _fragment_files() -> list:
 # ``python tests/test_fragment_pins.py``.
 FRAGMENT_PINS: dict[str, tuple[int, str]] = {
     "01_head.html_tmpl": (763, "91b52c9ba0c20e585c703c6fbabffda29e47fce8027064f4018f0e57e2122afc"),
-    "02a_styles_main.css_tmpl": (14441, "04223a4163af2bf559239e2399fd09b70a028191b25f6215d8367163619e45eb"),
+    "02a_styles_main.css_tmpl": (15235, "10c1b2776ae80965492e9351c8906eece85bd4a52b0f98219fb800c3c514e2f7"),
     "02b_styles_editor.css_tmpl": (4225, "6504d4c94352eb3ec4222b1d5ca24dd0572af529128eb76578e7ddb84038a1ed"),
     "03_body_chrome.html_tmpl": (12856, "e2c92f5b78352836d6a446cf8fee13ed1852f22c9eea7e233ec8a4405452bdb6"),
     "04_js_prologue.js_tmpl": (6366, "a74c60af5865558923f3e375d62dc5f3f393761feb18eaf63141a6a7fe66344b"),
@@ -75,7 +75,7 @@ FRAGMENT_PINS: dict[str, tuple[int, str]] = {
     "15_editor_trajectory.js_tmpl": (51076, "f1840d7d1709d770350a4d0a1946bfc64fb45e67d4fe4b60375718b0e983f489"),
     "15a_camera_path_module.js_tmpl": (7358, "37dba5d9bde2d4186845ddb30481f7f35829426444d7de2b9c35de086367f628"),
     "15b_panorama_module.js_tmpl": (33409, "0eed9320cfda9e9e7c63354d6aa0a1152b214bc2e13c316be997d0858f2e4749"),
-    "15c_annotation_module.js_tmpl": (63826, "b74113b14b151d3e6b464531d6f96b24188bb8add87473df161e1354620651ec"),
+    "15c_annotation_module.js_tmpl": (63774, "2e618796ef096c9d8d9630e9c47c4671d93d205d88d69bca6e6ae9fd0ab71b71"),
     "15d_cuts_module.js_tmpl": (35782, "7b4254c6998b39e56b310abc25cf01fb221f9770c6dea3f17a8a663eb32dc6f4"),
     "15e_postfx_module.js_tmpl": (19748, "55796c168431be26434aafb2c7b035c25de692b2cd085f0907ac37010b42154f"),
     "15f_audio_module.js_tmpl": (34017, "541504f4e5850dcd3f6bdfa9f435d14e596f136c6035808eb3a67d1eb5cf2ba2"),

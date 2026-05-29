@@ -56,14 +56,20 @@ def test_ann_nav_bar_dom_present():
     assert "Next point of interest" in html
 
 
-def test_ann_nav_css_and_embed_strip():
-    """The bar is styled in the same subtle language as #path-mini, has the
-    .shown / .with-path state classes, and is stripped in embed mode."""
+def test_ann_nav_css_top_placement_and_embed_strip():
+    """SuperSplat-parity placement: a TOP-centre pill on desktop, prev/next
+    as vertically-centred EDGE buttons on touch, label hidden on touch; and
+    stripped in embed mode."""
     html = html_for("AnnNavScene")
     assert "#ann-nav {" in html
     assert "#ann-nav.shown { display: flex; }" in html
-    assert "#ann-nav.with-path" in html        # bumps above #path-mini
     assert "#ann-nav-label {" in html
+    # TOP-centre (matches SuperSplat #annotationNav &.desktop top: 16px)
+    assert "top: max(14px, env(safe-area-inset-top));" in html
+    # Touch = edge buttons (matches SuperSplat &.touch)
+    assert "@media (pointer: coarse)" in html
+    assert "#ann-nav-prev { left: max(0px" in html
+    assert "#ann-nav-next { right: max(0px" in html
     assert "body.embed #ann-nav," in html      # embed strips it like all chrome
 
 
