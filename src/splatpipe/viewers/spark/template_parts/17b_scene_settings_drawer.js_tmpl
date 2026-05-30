@@ -1,0 +1,391 @@
+  // ============================================================
+  //  Scene Settings drawer scaffold (Phase 2D -- editor-arc-design #122 §12)
+  // ------------------------------------------------------------
+  //  A SINGLE right-side author drawer that consolidates every
+  //  module's non-timeline scene-level controls. v1 ships the
+  //  empty scaffold: a cog toggle button + the drawer DOM + the
+  //  six placeholder sections (panorama / postfx / annotations /
+  //  audio / intro / startview). Phases 3-7 populate each section
+  //  via the EditorModule contract's optional
+  //  `renderSceneSettings(parentEl)` hook.
+  //
+  //  DESIGN (per spec §12.1):
+  //    * ONE HudLayer panel, registered with HudLayer (Phase 0
+  //      framework) so modes=['author'] hides it outside author.
+  //    * Right-side floating drawer, ~320 px wide, full viewport
+  //      height MINUS the editor header (#author-top-rail ~52 px
+  //      where present) and footer (#editor-timeline strip).
+  //    * Toggle via a small cog button in the editor header
+  //      (#author-root). Default = CLOSED.
+  //    * sessionStorage 'spcp:scene-settings:open' persists the
+  //      open/closed state across reloads (UI preference; NOT
+  //      part of edit state -- never pushes an EditHistory snap).
+  //    * Section order = REGISTRATION order (the spec §12.2 table
+  //      lays out the canonical order; in v1 only the placeholder
+  //      sections render -- they show "(Phase N) <name> goes here"
+  //      copy until the module ships its hook).
+  //
+  //  TEST SURFACE: window.__editor.sceneSettings exposes
+  //    { drawerEl, toggleBtn, isOpen, toggle(), open(), close(),
+  //      sections() }
+  //  -- the harness can drive open/close + assert the placeholder
+  //  sections exist in the documented order.
+  // ============================================================
+  (function _ssInit() {
+    if (!_EDITOR_AUTHOR) return;
+    const root = document.getElementById('author-root');
+    if (!root) return;
+    if (typeof EditorModuleRegistry === 'undefined') return;
+    if (typeof HudLayer === 'undefined') return;
+
+    // ---- DOM: a header cog button + a right-side drawer + an
+    //      anchored ESC-closes / outside-closes handler.
+    const _SS_DRAWER_W = 320;       // px
+    const _SS_KEY = 'spcp:scene-settings:open';
+
+    // R2 Batch G (2026-05-21): the cog is now a PROPER CHILD of the
+    // top-bar header row (#quality-buttons), not a corner-floated button.
+    // User: "it should become part of the top bar". It is appended at the
+    // RIGHT END of the row (after the Bench button, mirroring the
+    // +Add-camera / kebab author-only chips) and reuses the SAME
+    // `.quality-btn` class as its siblings so it matches their look without
+    // a new CSS region. The absolute top:8/right:8 positioning is GONE.
+    // Author-only gating no longer rides on the #author-root parent (the
+    // cog left that container) -- a CSS rule in 02b_styles_editor
+    // (body:not(.authormode) #scene-settings-cog{display:none}, alongside
+    // #add-camera-btn / #cam-menu-btn) is the no-flash gate, and the
+    // HudLayer registration below stays as the framework-level mode hook.
+    const _ssCog = document.createElement('button');
+    _ssCog.id = 'scene-settings-cog';
+    _ssCog.type = 'button';
+    _ssCog.className = 'quality-btn';
+    _ssCog.title = 'Scene settings';
+    _ssCog.setAttribute('aria-haspopup', 'true');
+    _ssCog.setAttribute('aria-expanded', 'false');
+    _ssCog.setAttribute('aria-label', 'Open scene settings drawer');
+    // ASCII-safe cog glyph (U+2699 GEAR via numeric HTML entity is
+    // resolved at parse time; here as a UTF-8 string).
+    _ssCog.textContent = '⚙';
+    // Append into the top-bar row. Fall back to #author-root only if the
+    // header container is somehow absent (defensive -- it always exists in
+    // the rendered chrome), so the cog is never orphaned.
+    const _ssTopBar = document.getElementById('quality-buttons');
+    (_ssTopBar || root).appendChild(_ssCog);
+
+    // Drawer -- right-side floating panel; full viewport height
+    // minus the timeline strip (the strip lives at bottom:0). We
+    // give a small top-margin for the cog/camera-select cluster
+    // and a generous bottom-margin to clear the timeline.
+    const _ssDrawer = document.createElement('aside');
+    _ssDrawer.id = 'scene-settings-drawer';
+    _ssDrawer.setAttribute('role', 'dialog');
+    _ssDrawer.setAttribute('aria-label', 'Scene settings');
+    _ssDrawer.setAttribute('aria-hidden', 'true');
+    _ssDrawer.style.cssText =
+      'position:absolute;top:48px;right:0;bottom:74px;width:' + _SS_DRAWER_W +
+      'px;background:rgba(16,16,16,0.92);' +
+      '-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);' +
+      'border-left:1px solid rgba(255,255,255,0.18);' +
+      'color:#ddd;overflow-y:auto;display:none;z-index:50;' +
+      'font:12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;' +
+      'padding:12px 14px;box-sizing:border-box;';
+    root.appendChild(_ssDrawer);
+
+    // Drawer header (title + close button).
+    const _ssHeader = document.createElement('div');
+    _ssHeader.style.cssText =
+      'display:flex;justify-content:space-between;align-items:center;' +
+      'margin-bottom:12px;padding-bottom:8px;' +
+      'border-bottom:1px solid rgba(255,255,255,0.12);';
+    const _ssTitle = document.createElement('span');
+    _ssTitle.textContent = 'Scene Settings';
+    _ssTitle.style.cssText =
+      'font:600 13px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;' +
+      'color:#fff;letter-spacing:0.02em;';
+    const _ssClose = document.createElement('button');
+    _ssClose.type = 'button';
+    _ssClose.title = 'Close';
+    _ssClose.setAttribute('aria-label', 'Close scene settings');
+    _ssClose.textContent = '×';   // U+00D7 MULTIPLICATION SIGN
+    _ssClose.style.cssText =
+      'background:transparent;color:#ccc;border:0;font-size:18px;' +
+      'cursor:pointer;line-height:1;padding:2px 6px;';
+    _ssHeader.appendChild(_ssTitle);
+    _ssHeader.appendChild(_ssClose);
+    _ssDrawer.appendChild(_ssHeader);
+
+    // Sections container -- modules populate via
+    // renderSceneSettings(parentEl). For v1 we render placeholder
+    // sections per the spec §12.2 table so the drawer's shape is
+    // visible end-to-end (and the harness can assert their order +
+    // count).
+    const _ssBody = document.createElement('div');
+    _ssBody.id = 'scene-settings-body';
+    _ssBody.style.cssText = 'display:flex;flex-direction:column;gap:8px;';
+    _ssDrawer.appendChild(_ssBody);
+
+    // Spec §12.2 section order (registration order):
+    //   1. Backdrop / Panorama  (PanoramaModule  -- Phase 3)
+    //   2. Post-FX              (PostFXModule    -- Phase 4)
+    //   3. Annotations          (AnnotationModule-- Phase 5)
+    //   4. Audio                (AudioModule     -- Phase 7)
+    //   5. Intro                (IntroModule     -- Phase 2 cosmetic)
+    //   6. Start View           (CameraPathModule-- Phase 2)
+    //
+    // Placeholder sections render until each module ships its
+    // renderSceneSettings hook (the registry hook below will
+    // replace the matching placeholder when a module registers
+    // its content -- a stub for now since v1 only has
+    // CameraPathModule and Phase 2 doesn't populate its Start View
+    // controls yet).
+    const _SS_PLACEHOLDER_ORDER = [
+      ['panorama', 'Backdrop', 'PanoramaModule (Phase 3)'],
+      ['postfx', 'Post-FX', 'PostFXModule (Phase 4)'],
+      ['annotations', 'Annotations', 'AnnotationModule (Phase 5)'],
+      ['audio', 'Audio', 'AudioModule (Phase 7)'],
+      ['intro', 'Intro', 'IntroModule (Phase 2 cosmetic)'],
+      ['startview', 'Start View', 'CameraPathModule (Phase 2)'],
+    ];
+    function _ssMakeSection(id, label, copy) {
+      const det = document.createElement('details');
+      det.className = 'spcp-scene-settings-section';
+      det.dataset.section = id;
+      det.style.cssText =
+        'background:rgba(255,255,255,0.04);border-radius:6px;' +
+        'padding:6px 10px;border:1px solid rgba(255,255,255,0.06);';
+      const sm = document.createElement('summary');
+      sm.textContent = label;
+      sm.style.cssText =
+        'cursor:pointer;color:#fff;font-weight:600;font-size:12px;' +
+        'padding:4px 0;list-style:none;';
+      det.appendChild(sm);
+      const body = document.createElement('div');
+      body.className = 'spcp-scene-settings-section-body';
+      body.style.cssText = 'padding:6px 0 4px 0;color:#9aa;font-size:11px;';
+      body.textContent = copy;
+      det.appendChild(body);
+      return det;
+    }
+    for (const [id, label, copy] of _SS_PLACEHOLDER_ORDER) {
+      _ssBody.appendChild(_ssMakeSection(id, label, copy));
+    }
+
+    // R2 Batch F (Layout 1, 2026-05-21): a static "Navigation" section
+    // holding the viewport-control hints. In AUTHOR mode the on-canvas
+    // #controls-hint strip is CSS-hidden (it crowded the merged
+    // transport row + the bottom timeline) -- the SAME hint text lives
+    // here instead. End-users (no drawer) keep the on-screen strip. This
+    // is STATIC help copy, not a module, so it is appended directly to
+    // _ssBody (after the placeholder sections, before any module's
+    // renderSceneSettings-attached section). The HTML mirrors
+    // 03_body_chrome's #controls-hint verbatim (bold key chords) so the
+    // wording stays in one mental model. data-section='navigation' lets
+    // the harness assert it exists.
+    (function _ssNavSection() {
+      const det = document.createElement('details');
+      det.className = 'spcp-scene-settings-section';
+      det.dataset.section = 'navigation';
+      det.open = true;   // controls help is useful open by default
+      det.style.cssText =
+        'background:rgba(255,255,255,0.04);border-radius:6px;' +
+        'padding:6px 10px;border:1px solid rgba(255,255,255,0.06);';
+      const sm = document.createElement('summary');
+      sm.textContent = 'Navigation';
+      sm.style.cssText =
+        'cursor:pointer;color:#fff;font-weight:600;font-size:12px;' +
+        'padding:4px 0;list-style:none;';
+      det.appendChild(sm);
+      const body = document.createElement('div');
+      body.id = 'scene-settings-navigation-body';
+      body.className = 'spcp-scene-settings-section-body';
+      body.style.cssText =
+        'padding:6px 0 4px 0;color:#bcc;font-size:11px;line-height:1.7;';
+      // Same chords as #controls-hint (03_body_chrome lines 109-112).
+      body.innerHTML =
+        '<b>Left-drag</b> orbit &middot; <b>Right-drag</b> look &middot; ' +
+        '<b>Middle-drag</b> pan &middot; <b>Scroll</b> zoom &middot; ' +
+        '<b>WASD / Arrows</b> fly &middot; <b>Q/E</b> up/down &middot; ' +
+        '<b>Shift</b> sprint &middot; <b>Double-click / double-tap</b> ' +
+        'set pivot &middot; <b>Double-tap+drag</b> zoom (touch)';
+      det.appendChild(body);
+      _ssBody.appendChild(det);
+    })();
+
+    // ---- Open/close state, persisted in sessionStorage.
+    let _ssIsOpen = false;
+    function _ssReadPersisted() {
+      try {
+        const raw = window.sessionStorage.getItem(_SS_KEY);
+        return raw === '1';
+      } catch (e) { return false; }
+    }
+    function _ssPersist(open) {
+      try {
+        window.sessionStorage.setItem(_SS_KEY, open ? '1' : '0');
+      } catch (e) {}
+    }
+    function _ssApply(open) {
+      _ssIsOpen = !!open;
+      _ssDrawer.style.display = _ssIsOpen ? '' : 'none';
+      _ssDrawer.setAttribute('aria-hidden', _ssIsOpen ? 'false' : 'true');
+      _ssCog.setAttribute('aria-expanded', _ssIsOpen ? 'true' : 'false');
+      // R2 Batch G: the cog now wears the `.quality-btn` class, so the
+      // CLOSED state clears the inline background and lets the class style
+      // (the same rgba(0,0,0,0.5) pill as its top-bar siblings) show
+      // through; the OPEN state keeps the cyan active tint as a clear
+      // "drawer is open" affordance.
+      _ssCog.style.background = _ssIsOpen ? 'rgba(53,224,255,0.28)' : '';
+    }
+    function _ssDoOpen() {
+      if (_ssIsOpen) return;
+      _ssApply(true);
+      _ssPersist(true);
+      // Notify modules: the drawer just opened. Modules can refresh
+      // their section content (e.g. re-render an annotation list)
+      // via the 'scene-settings:open' event. Phases 3-7 listen for
+      // this; Phase 2D's empty placeholders ignore it.
+      try { EditorModuleRegistry.emit('scene-settings:open'); }
+      catch (e) {}
+    }
+    function _ssDoClose() {
+      if (!_ssIsOpen) return;
+      _ssApply(false);
+      _ssPersist(false);
+      try { EditorModuleRegistry.emit('scene-settings:close'); }
+      catch (e) {}
+    }
+    function _ssToggle() { _ssIsOpen ? _ssDoClose() : _ssDoOpen(); }
+
+    _ssCog.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      _ssToggle();
+    });
+    // The close BUTTON (_ssClose DOM ref) -> the close FUNCTION (_ssDoClose).
+    // We separate the const + function names so they don't collide in the
+    // IIFE scope (a single `_ssClose` for both would clash on lookup).
+    _ssClose.addEventListener('click', _ssDoClose);
+
+    // Esc closes (per spec §12.4 -- "PageDown / Esc semantics stay
+    // simple"). Author-mode gated; skips text-input focus.
+    window.addEventListener('keydown', (ev) => {
+      if (!_ssIsOpen) return;
+      if (ev.key !== 'Escape') return;
+      const ae = document.activeElement;
+      if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' ||
+                 ae.tagName === 'SELECT' ||
+                 (ae.isContentEditable === true))) {
+        return;
+      }
+      ev.preventDefault();
+      _ssDoClose();
+    });
+
+    // Initial state from sessionStorage (default = closed).
+    _ssApply(_ssReadPersisted());
+
+    // Register as HudLayer panels so the Phase 0 framework tracks the
+    // cog + drawer in its panel lifecycle (future mode switches go
+    // through ONE coordinator). The body-class CSS gate already covers
+    // the visual mode hide for BOTH (#scene-settings-cog via the
+    // body:not(.authormode) rule in 02b_styles_editor; the drawer via
+    // body.usermode #author-root{display:none} since it lives inside
+    // #author-root) -- so the HudLayer registration here is the
+    // framework-level PEER of that CSS gate, not the sole hide.
+    //
+    // R3 Bug C (#163, 2026-05-22): the DRAWER is registered with NO
+    // `modes`. HudLayer._apply writes `el.style.display = '' | 'none'`
+    // for any panel that DECLARES modes -- but the drawer ALSO uses
+    // `style.display` for its OWN open/closed state (_ssApply). With
+    // modes:['author'] the two collided: in author mode _apply forced
+    // `display:''` (VISIBLE) at register time WITHOUT touching
+    // _ssIsOpen, so the drawer rendered open while the state machine
+    // still read CLOSED. The X / Esc / cog then early-returned at
+    // `if (!_ssIsOpen) return` and appeared dead (user: "I can't close
+    // Scene Settings by clicking the X"). Registering with no `modes`
+    // makes matches() true in every mode, so HudLayer NEVER writes the
+    // drawer's display (per the framework's documented no-modes
+    // contract) -- _ssApply stays the SINGLE writer of the drawer's
+    // display, and the mode hide is the CSS body-class gate above. The
+    // cog keeps modes:['author'] safely: _ssApply only ever writes the
+    // cog's `background`, never its `display`, so there is no collision
+    // there.
+    try {
+      HudLayer.register({
+        id: 'scene-settings-drawer',
+        el: _ssDrawer,
+      });
+      HudLayer.register({
+        id: 'scene-settings-cog',
+        el: _ssCog,
+        modes: ['author'],
+      });
+    } catch (e) {}
+
+    // ---- Hook into the EditorModuleRegistry: when a module
+    //      registers AND it has a renderSceneSettings(parentEl)
+    //      hook, append its section into the drawer body. The
+    //      hook is OPTIONAL per the contract -- modules without
+    //      scene-level controls skip it.
+    function _ssRenderModuleSection(mod) {
+      if (!mod || typeof mod.renderSceneSettings !== 'function') return;
+      try { mod.renderSceneSettings(_ssBody); }
+      catch (e) {}
+    }
+    try {
+      EditorModuleRegistry.on('register', _ssRenderModuleSection);
+    } catch (e) {}
+    // UX-Phase11A Issue 9 (2026-05-21): the 'register' listener above
+    // only catches modules that register AFTER this 17b IIFE runs. But
+    // EVERY editor module fragment (15a-15g) is concatenated BEFORE 17b
+    // in the bundle (lexical order 15x < 17b), so they all ALREADY
+    // registered by the time this listener is wired -- their
+    // renderSceneSettings was NEVER called. The 15b/15e/15f modules
+    // happen to work around this with their own setTimeout(_attach, 0),
+    // but 15c (Annotations), 15d (Cuts), 15g (Titles) rely SOLELY on
+    // this 17b listener -> their sections stayed as the "(Phase N) goes
+    // here" PLACEHOLDER (user-reported: "the annotations ... that's all
+    // placeholders, right?"). Fix: after wiring the listener, walk the
+    // already-registered modules ONCE and render each one's section. A
+    // module whose section was ALSO attached via its own setTimeout is
+    // idempotent (renderSceneSettings replaces/re-finds its section), so
+    // a double-call is harmless. This makes 17b the SINGLE guaranteed
+    // point that every module's drawer section gets rendered, regardless
+    // of registration order.
+    try {
+      if (typeof EditorModuleRegistry.list === 'function') {
+        const _already = EditorModuleRegistry.list();
+        for (const mod of _already) {
+          _ssRenderModuleSection(mod);
+        }
+      }
+    } catch (e) {}
+
+    // ---- TEST SURFACE on window.__editor.sceneSettings. The
+    //      harness asserts the drawer opens/closes + the 6
+    //      placeholder sections render in the documented order.
+    try {
+      if (window.__editor) {
+        Object.defineProperty(window.__editor, 'sceneSettings', {
+          configurable: true, enumerable: true,
+          get: function () {
+            return {
+              drawerEl: _ssDrawer,
+              cogEl: _ssCog,
+              get isOpen() { return _ssIsOpen; },
+              open: _ssDoOpen,
+              close: _ssDoClose,
+              toggle: _ssToggle,
+              // The DOM sections in registration order (their
+              // `data-section` ids).
+              sections: function () {
+                return Array.prototype.map.call(
+                  _ssBody.querySelectorAll('details[data-section]'),
+                  (n) => n.dataset.section);
+              },
+            };
+          },
+        });
+      }
+    } catch (e) {}
+  })();
+

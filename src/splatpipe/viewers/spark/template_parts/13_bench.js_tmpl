@@ -1,0 +1,578 @@
+  // ---- Bench launchers (used by both the URL auto-trigger and the button) ----
+
+  // Build a programmatic 360° orbit around controls.target. Reads the camera
+  // pose at call time so re-runs from the button respect where the user is now.
+  function _buildOrbitPath() {
+    // Spin the AUTHORED start-view pose around the vertical axis through the
+    // orbit target — preserving its real radius, height AND look orientation
+    // — so the orbit frames exactly what the user framed, just circling it.
+    // The old max(8,horiz)/max(dy,5) floors + tmp.lookAt(center) synthesised
+    // a far/high vantage with an assumed +Y up that ignored this scene's
+    // rotated frame → camera ended up in the sky on close/level views like
+    // IBUG (start_view: 3.6 m out, level). Confirmed from the live config +
+    // a user screenshot. Anchored to _orig* (the authored start_view, since
+    // IBUG hasAuthoredView=true so it is never re-snapshotted) → identical
+    // world-space orbit every run.
+    //
+    // Task 15: the Y-spin math is now the shared _orbitPathAround()
+    // helper (declared above in the end-user transport block, hoisted)
+    // so the idle auto-orbit reuses the EXACT same orbit -- this is a
+    // pure delegation: the same center (_origTarget), same base pose
+    // (_origCamPos/_origCamQuat/_origCamFov), same N=36 / 30 s /
+    // smoothness 1.0 / loop:false the bench has always produced, so
+    // the generated orbit is byte-behaviourally identical for the 6
+    // live scenes' Bench: Orbit. NOT a behaviour change -- a refactor.
+    return _orbitPathAround(
+      _origTarget.clone(),
+      _origCamPos.clone(),
+      _origCamQuat.clone(),
+      _origCamFov,
+      { n: 36, secs: 30, loop: false });
+  }
+
+  async function _runOrbitBench() {
+    // Defensive cleanup — if a previous bench is still active or a previous
+    // path-player is still ticking the camera, stop them cleanly first.
+    // Without this, rapid re-clicks ran the new orbit's setup while the old
+    // orbit was still driving the camera, sometimes producing what looked
+    // like "no rotation" on subsequent presses.
+    if (_benchActive) _benchStop();
+    if (_player) stopPath();
+
+    // Reset the camera to its initial pose so the orbit's first-keyframe
+    // snap doesn't depend on where the user has flown off to.
+    camera.position.copy(_origCamPos);
+    camera.quaternion.copy(_origCamQuat);
+    camera.fov = _origCamFov;
+    camera.updateProjectionMatrix();
+    controls.target.copy(_origTarget);
+    controls.update();
+
+    // Immediate visual feedback: light the button up *now* so the user knows
+    // their click registered. We update to "Warming…" during the 2 s
+    // pre-load, then _benchStart will flip it to "Stop" when recording
+    // actually begins.
+    benchBtn.classList.add('recording');
+    benchBtn.textContent = 'Warming…';
+
+    console.info('[bench] orbit launch');
+    const orbitPath = _buildOrbitPath();
+    // Snap to the first keyframe + give pages 2 s to warm-load that view.
+    const player0 = buildPlayer(orbitPath);
+    if (player0) {
+      const s = sampleAt(player0, 0);
+      camera.position.set(s.pos[0], s.pos[1], s.pos[2]);
+      camera.quaternion.set(s.quat[0], s.quat[1], s.quat[2], s.quat[3]);
+      camera.fov = s.fov;
+      camera.updateProjectionMatrix();
+    }
+    await new Promise(r => setTimeout(r, 2000));
+    // Start recorder + player using the same orbit path object (so the
+    // recorder's snapshot captures the orbit params at the right time).
+    _benchStart({ mode: 'path', pathId: 'orbit', duration: Infinity });
+    _player = buildPlayer(orbitPath);
+    _t0 = performance.now();
+    _activePathId = 'orbit';
+    controls.enabled = false;
+  }
+
+  // Probe / teleport-load bench: snap to each authored probe_view, then WAIT
+  // until streaming actually settles for that pose (fetchers idle + active
+  // splat count + resident pages stable for SETTLE_WIN_MS), recording the
+  // per-pose load-in time, then snap to the next. A max-wait cap means a pose
+  // that never fully resolves (e.g. phone pool < working set) still records
+  // (settled:false) and the run continues. Each pose is pinned via a constant
+  // 2-keyframe hold player so it inherits every robust-bench guarantee
+  // (camera ownership via _player, the controls.update() clobber-gate, the
+  // monotonic recorder, the camera self-check). Poses from cfg.probe_views
+  // (authored via Set-start-view); falls back to a 6-pose orbit-ring around
+  // the start-view so it is never empty.
+  function _probeViews() {
+    let views = Array.isArray(cfg.probe_views)
+      ? cfg.probe_views.filter(v => v && Array.isArray(v.pos) && Array.isArray(v.quat) && v.quat.length === 4)
+      : [];
+    if (views.length < 1) {
+      const c = _origTarget.clone(), off = _origCamPos.clone().sub(c);
+      if (off.length() < 0.5) off.set(0, 1, -3);
+      const upY = new THREE.Vector3(0, 1, 0);
+      views = [];
+      for (let k = 0; k < 6; k++) {
+        const rot = new THREE.Quaternion().setFromAxisAngle(upY, (k / 6) * Math.PI * 2);
+        const p = off.clone().applyQuaternion(rot).add(c);
+        const q = rot.clone().multiply(_origCamQuat);
+        views.push({ pos: [p.x, p.y, p.z], quat: [q.x, q.y, q.z, q.w], fov: _origCamFov });
+      }
+      console.info('[bench] probe: no cfg.probe_views — using 6-pose orbit-ring fallback');
+    }
+    return views.map(v => ({
+      pos: [v.pos[0], v.pos[1], v.pos[2]],
+      quat: [v.quat[0], v.quat[1], v.quat[2], v.quat[3]],
+      fov: (typeof v.fov === 'number' ? v.fov : _origCamFov),
+    }));
+  }
+
+  // A constant 2-keyframe hold player: the spline of two identical endpoints
+  // is a fixed pose, so the render loop pins the camera at `v`. The huge,
+  // non-loop duration means it never auto-ends → no premature stopPath().
+  function _probeHoldPlayer(v) {
+    return buildPlayer({
+      id: 'probe', name: 'Probe hold', loop: false, smoothness: 0.0, play_speed: 1.0,
+      keyframes: [
+        { t: 0,   pos: v.pos, quat: v.quat, fov: v.fov },
+        { t: 1e6, pos: v.pos, quat: v.quat, fov: v.fov },
+      ],
+    });
+  }
+
+  // Resolve when the pager has been quiet (no active fetchers, active-splat
+  // count and resident-page count both unchanged) for SETTLE_WIN_MS, or when
+  // MAX_WAIT_MS elapses. MIN_LATENCY_MS ignores the first instants after a
+  // teleport so the pre-reaction "looks quiet" window can't false-positive.
+  // NOTE: fetchPriority.length is deliberately NOT a drain signal — it is the
+  // desired LoD working-set size and stays ~150-200 (desktop) / ~76 (phone)
+  // even when fully loaded (verified from real traces); the true done signal
+  // is fetchers idle + activeSplats plateaued + pagesResident stable.
+  // "Loaded" must mean VISUALLY converged, not "splat count hit budget":
+  // Spark refines coarse→fine after a teleport and that swap is roughly
+  // count-neutral, so activeSplats plateaus while the image is still
+  // sharpening (user-reported: "moves on although the image is all blurry").
+  // Gate on true quiescence: no active fetch, no decode backlog, and the LoD
+  // working-set size + resident pages + active-splat count ALL unchanged,
+  // held for SETTLE_WIN_MS. NOTE: spark.current.mappingVersion is deliberately
+  // NOT in the gate — the v14 contact sheet proved it keeps ticking (minor
+  // re-map / re-sort) even when the image is visually static, so gating on it
+  // never settles (every pose hit MAX_WAIT while fully sharp). It is reported
+  // (informational) only. The real done signal is fetch+decode idle while the
+  // LoD selection (fetchPriority) and resident set have stopped moving.
+  function _awaitPagerSettled() {
+    const SETTLE_WIN_MS = 1500, MAX_WAIT_MS = 16000, MIN_LATENCY_MS = 400;
+    const EPS_SPLATS = 1500;
+    const t0 = performance.now();
+    return new Promise(resolve => {
+      let lSp = -1, lPr = -1, lFp = -1, stableSince = null;
+      const iv = setInterval(() => {
+        const nowM = performance.now(), el = nowM - t0;
+        const pager = spark.pager;
+        const fa = pager ? (pager.fetchers?.length || 0) : 0;
+        const fd = pager ? (pager.fetched?.length || 0) : 0;
+        const fp = pager ? (pager.fetchPriority?.length || 0) : 0;
+        const pr = pager ? (pager.maxPages - (pager.pageFreelist?.length || 0)) : 0;
+        const spc = spark.activeSplats || 0;
+        const mv = (spark.current && typeof spark.current.mappingVersion === 'number')
+          ? spark.current.mappingVersion : -1;
+        const quiet = fa === 0 && fd === 0 && lSp >= 0 &&
+          Math.abs(spc - lSp) <= EPS_SPLATS && pr === lPr && fp === lFp;
+        lSp = spc; lPr = pr; lFp = fp;
+        const fin = (ms, settled) => {
+          clearInterval(iv);
+          resolve({ settled, loadInMs: Math.round(ms), splats: spc, pages: pr, mv: mv });
+        };
+        if (!_benchActive) return fin(el, false);            // user pressed Stop
+        if (el >= MAX_WAIT_MS) return fin(MAX_WAIT_MS, false);
+        if (el < MIN_LATENCY_MS) { stableSince = null; return; }
+        if (quiet) {
+          if (stableSince == null) stableSince = nowM;
+          if (nowM - stableSince >= SETTLE_WIN_MS) return fin(stableSince - t0, true);
+        } else {
+          stableSince = null;
+        }
+      }, 100);
+    });
+  }
+
+  // One-shot canvas grab, resolved INSIDE the render loop right after
+  // renderer.render() in the same synchronous turn — the only way to read
+  // valid pixels when the WebGLRenderer has preserveDrawingBuffer:false
+  // (an async toDataURL() after the frame yields returns a blank canvas).
+  let _capReq = null;
+  function _captureFrame() {
+    return new Promise(res => {
+      let done = false;
+      const to = setTimeout(() => { if (!done) { done = true; _capReq = null; res(null); } }, 1500);
+      _capReq = (dataUrl) => { if (done) return; done = true; clearTimeout(to); res(dataUrl); };
+    });
+  }
+
+  // Assemble the per-pose screenshots into ONE contact-sheet JPEG (a grid,
+  // each tile labelled pose# · load-in ms · splats, green=settled red=timed
+  // out) and download it. Lets the user SEE what "loaded" looked like at
+  // every pose — ground truth, independent of the settle heuristic.
+  function _probeSheet(shots, per, labelFn, kind) {
+    kind = kind || 'probe';
+    const valid = shots.map((s, i) => ({ s: s, p: per[i] })).filter(o => o.s);
+    if (!valid.length) { console.warn('[bench] ' + kind + ': no screenshots captured'); return; }
+    const cols = Math.ceil(Math.sqrt(valid.length));
+    const rows = Math.ceil(valid.length / cols);
+    const TW = 520, pad = 8, lab = 26;
+    const imgs = []; let loaded = 0;
+    valid.forEach((o, k) => {
+      const im = new Image();
+      im.onload = im.onerror = () => { loaded++; if (loaded === valid.length) _draw(); };
+      im.src = o.s; imgs[k] = im;
+    });
+    function _draw() {
+      const i0 = imgs[0];
+      const ar = (i0.naturalHeight && i0.naturalWidth) ? (i0.naturalHeight / i0.naturalWidth) : 0.5;
+      const TH = Math.round(TW * ar);
+      const cw = TW + pad * 2, ch = TH + lab + pad * 2;
+      const cv = document.createElement('canvas');
+      cv.width = cols * cw; cv.height = rows * ch;
+      const g = cv.getContext('2d');
+      g.fillStyle = '#111'; g.fillRect(0, 0, cv.width, cv.height);
+      g.font = '14px monospace'; g.textBaseline = 'middle';
+      valid.forEach((o, k) => {
+        const cx = (k % cols) * cw, cy = Math.floor(k / cols) * ch;
+        try { g.drawImage(imgs[k], cx + pad, cy + pad, TW, TH); } catch (e) {}
+        const p = o.p;
+        const L = labelFn ? labelFn(p) : {
+          text: 'P' + p.i + ' · ' + p.loadInMs + ' ms · ' + (p.splats / 1e6).toFixed(2) + 'M' +
+            (p.settled ? '' : ' · TIMEOUT'),
+          ok: !!p.settled,
+        };
+        g.fillStyle = L.ok ? '#0a8f3c' : '#cc2b2b';
+        g.fillRect(cx + pad, cy + pad + TH, TW, lab);
+        g.fillStyle = '#fff';
+        g.fillText(L.text, cx + pad + 6, cy + pad + TH + lab / 2);
+      });
+      const fn = kind + '-sheet-' + _benchTrace.config.tier + '-' + Date.now() + '.jpg';
+      cv.toBlob(b => {
+        if (!b) { console.warn('[bench] probe sheet toBlob failed'); return; }
+        const u = URL.createObjectURL(b);
+        const a = document.createElement('a');
+        a.href = u; a.download = fn; document.body.appendChild(a); a.click();
+        setTimeout(() => { a.remove(); URL.revokeObjectURL(u); }, 1000);
+        console.info('[bench] probe contact sheet downloaded:', fn, valid.length, 'shots');
+      }, 'image/jpeg', 0.8);
+    }
+  }
+
+  async function _runProbeBench() {
+    if (_benchActive) _benchStop();
+    if (_player) stopPath();
+    camera.position.copy(_origCamPos);
+    camera.quaternion.copy(_origCamQuat);
+    camera.fov = _origCamFov;
+    camera.updateProjectionMatrix();
+    controls.target.copy(_origTarget);
+    controls.update();
+    benchBtn.classList.add('recording');
+    benchBtn.textContent = 'Warming…';
+    const views = _probeViews();
+    console.info('[bench] probe launch —', views.length, 'poses (adaptive wait-until-loaded)');
+    // Pre-snap to pose 0 so the warmup loads the first pose, not the start view.
+    const v0 = views[0];
+    camera.position.set(v0.pos[0], v0.pos[1], v0.pos[2]);
+    camera.quaternion.set(v0.quat[0], v0.quat[1], v0.quat[2], v0.quat[3]);
+    camera.fov = v0.fov;
+    camera.updateProjectionMatrix();
+    await new Promise(r => setTimeout(r, 2000));
+    _benchStart({ mode: 'probe', pathId: 'probe', duration: Infinity });
+    _activePathId = 'probe';
+    controls.enabled = false;
+    const perPose = [], shots = [];
+    for (let i = 0; i < views.length; i++) {
+      if (!_benchActive) break;                  // user pressed Stop mid-run
+      _player = _probeHoldPlayer(views[i]);      // render loop pins camera here
+      _t0 = performance.now();
+      benchBtn.textContent = 'Probe ' + (i + 1) + '/' + views.length;
+      const r = await _awaitPagerSettled();
+      perPose.push({ i: i, pos: views[i].pos, settled: r.settled,
+        loadInMs: r.loadInMs, splats: r.splats, pages: r.pages });
+      // Grab the canvas at this pose (camera still pinned here) so the
+      // contact sheet shows exactly what "loaded" looked like.
+      let shot = null;
+      try { shot = await _captureFrame(); } catch (e) {}
+      shots.push(shot);
+      console.info('[bench] probe pose ' + (i + 1) + '/' + views.length +
+        ' — load-in ' + r.loadInMs + ' ms' +
+        (r.settled ? '' : ' (TIMED OUT — not fully resolved)') +
+        ' @ ' + r.splats + ' splats' + (shot ? '' : ' [no screenshot]'));
+    }
+    if (_benchActive) {
+      const got = perPose.filter(p => p.settled).map(p => p.loadInMs);
+      _benchTrace.probe = {
+        poses: perPose.length,
+        settled: perPose.filter(p => p.settled).length,
+        timedOut: perPose.filter(p => !p.settled).length,
+        loadInMs_mean: got.length ? Math.round(got.reduce((a, b) => a + b, 0) / got.length) : null,
+        loadInMs_max: got.length ? Math.max(...got) : null,
+        screenshots: shots.filter(Boolean).length,
+        perPose: perPose,
+      };
+      try {
+        window.__probeLoadIn = _benchTrace.probe;
+        if (console.table) console.table(perPose);
+      } catch (e) {}
+      _probeSheet(shots, perPose);   // builds + downloads the contact-sheet JPEG
+      _benchStop();                  // downloads the JSON trace
+    }
+  }
+
+  // Bench #2 — "rotate": teleport to each pose then OSCILLATE the look ±ROT_DEG
+  // around world-Y for ROT_S s WHILE the new detail streams in, recording the
+  // per-frame dt + longtasks + fetch state. Measures the *frame-time
+  // experience while loading during motion* (the M1 14fps/82-longtask
+  // scenario) — complements ?bench=probe (time-to-loaded). Looped path so it
+  // never auto-stopPath()s between poses (start==end ⇒ seamless).
+  function _buildRotatePath(v, ROT_S, ROT_DEG, N) {
+    const baseQ = new THREE.Quaternion(v.quat[0], v.quat[1], v.quat[2], v.quat[3]);
+    const upY = new THREE.Vector3(0, 1, 0);
+    const keyframes = [];
+    for (let k = 0; k <= N; k++) {
+      const f = k / N;
+      const deg = ROT_DEG * Math.sin(f * Math.PI * 2);   // 0 → +ROT → 0 → -ROT → 0
+      const rot = new THREE.Quaternion().setFromAxisAngle(upY, deg * Math.PI / 180);
+      const q = rot.clone().multiply(baseQ);
+      keyframes.push({ t: f * ROT_S, pos: [v.pos[0], v.pos[1], v.pos[2]],
+        quat: [q.x, q.y, q.z, q.w], fov: v.fov });
+    }
+    return { id: 'rotate', name: 'Probe rotate (yaw-while-loading)',
+      loop: true, smoothness: 1.0, play_speed: 1.0, keyframes };
+  }
+
+  async function _runRotateBench() {
+    if (_benchActive) _benchStop();
+    if (_player) stopPath();
+    camera.position.copy(_origCamPos);
+    camera.quaternion.copy(_origCamQuat);
+    camera.fov = _origCamFov;
+    camera.updateProjectionMatrix();
+    controls.target.copy(_origTarget);
+    controls.update();
+    benchBtn.classList.add('recording');
+    benchBtn.textContent = 'Warming…';
+    const views = _probeViews();
+    const ROT_S = 6, ROT_DEG = 55, N = 24;
+    console.info('[bench] rotate launch —', views.length, 'poses (yaw-while-loading, ' + ROT_S + ' s/pose)');
+    const v0 = views[0];
+    camera.position.set(v0.pos[0], v0.pos[1], v0.pos[2]);
+    camera.quaternion.set(v0.quat[0], v0.quat[1], v0.quat[2], v0.quat[3]);
+    camera.fov = v0.fov;
+    camera.updateProjectionMatrix();
+    await new Promise(r => setTimeout(r, 2000));
+    _benchStart({ mode: 'rotate', pathId: 'rotate', duration: Infinity });
+    _activePathId = 'rotate';
+    controls.enabled = false;
+    const perPose = [], shots = [];
+    for (let i = 0; i < views.length; i++) {
+      if (!_benchActive) break;
+      _player = buildPlayer(_buildRotatePath(views[i], ROT_S, ROT_DEG, N));
+      _t0 = performance.now();
+      const wStart = performance.now() - _benchT0;     // recorder-clock window
+      benchBtn.textContent = 'Rotate ' + (i + 1) + '/' + views.length;
+      await new Promise(r => setTimeout(r, ROT_S * 1000));
+      const wEnd = performance.now() - _benchT0;
+      let shot = null;
+      try { shot = await _captureFrame(); } catch (e) {}
+      shots.push(shot);
+      const fr = _benchTrace.frames.filter(f => f.t >= wStart && f.t <= wEnd && f.dt > 0 && f.dt < 5000);
+      const dts = fr.map(f => f.dt).sort((a, b) => a - b);
+      const nn = dts.length;
+      const pct = q => nn ? dts[Math.min(nn - 1, Math.floor(nn * q))] : null;
+      const lt = _benchTrace.longtasks.filter(t => t.t >= wStart && t.t <= wEnd).length;
+      const jankFetch = fr.filter(f => f.dt > 50 && f.fetchersActive > 0).length;
+      perPose.push({
+        i: i, pos: views[i].pos, frames: nn,
+        fps_mean: nn ? Math.round(1000 / (dts.reduce((a, b) => a + b, 0) / nn)) : null,
+        dt_p50: pct(0.50), dt_p95: pct(0.95), dt_p99: pct(0.99),
+        dt_max: nn ? dts[nn - 1] : null, longtasks: lt, jankWhileFetching: jankFetch,
+      });
+      const pp = perPose[i];
+      console.info('[bench] rotate pose ' + (i + 1) + '/' + views.length +
+        ' — ' + pp.fps_mean + ' fps · p99 ' + pp.dt_p99 + ' ms · ' + lt +
+        ' longtasks · ' + jankFetch + ' jank-while-fetching' + (shot ? '' : ' [no screenshot]'));
+    }
+    if (_benchActive) {
+      const fps = perPose.map(p => p.fps_mean).filter(x => x != null);
+      _benchTrace.rotate = {
+        poses: perPose.length, rotS: ROT_S, rotDeg: ROT_DEG,
+        fps_mean: fps.length ? Math.round(fps.reduce((a, b) => a + b, 0) / fps.length) : null,
+        dt_p99_max: Math.max(...perPose.map(p => p.dt_p99 || 0)),
+        longtasks_total: perPose.reduce((a, p) => a + (p.longtasks || 0), 0),
+        jankWhileFetching_total: perPose.reduce((a, p) => a + (p.jankWhileFetching || 0), 0),
+        screenshots: shots.filter(Boolean).length, perPose: perPose,
+      };
+      try {
+        window.__rotateStats = _benchTrace.rotate;
+        if (console.table) console.table(perPose);
+      } catch (e) {}
+      _probeSheet(shots, perPose, p => ({
+        text: 'P' + p.i + ' · ' + p.fps_mean + ' fps · p99 ' + Math.round(p.dt_p99) + 'ms · ' +
+          p.longtasks + 'LT · ' + p.jankWhileFetching + ' jank',
+        ok: (p.fps_mean != null && p.fps_mean >= 50 && (p.dt_p99 || 0) < 100),
+      }), 'rotate');
+      _benchStop();
+    }
+  }
+
+  // Cold-load benchmark: start the recorder + longtask observer at the
+  // EARLIEST point (no preload wait), capture the full cold fetch+decode+
+  // upload fill — the phase the user reported as the worst stutter ("gets
+  // better the longer it's open"), which the orbit/dolly benches miss
+  // because they only start after preload — then auto-orbit on top, so one
+  // trace = cold fill THEN motion with per-frame times + longtasks
+  // throughout. This is the instrument that proves the stutter delta.
+  async function _runColdBench() {
+    if (_benchActive) _benchStop();
+    if (_player) stopPath();
+    benchBtn.classList.add('recording');
+    benchBtn.textContent = 'COLD…';
+    console.info('[bench] cold launch — recording from load through the fill');
+    _benchStart({ mode: 'cold', duration: Infinity });
+    // Record the cold fetch+decode+upload fill, then exercise motion on top.
+    await new Promise(r => setTimeout(r, 9000));
+    if (!_benchActive) return;
+    const orbitPath = _buildOrbitPath();
+    _player = buildPlayer(orbitPath);
+    _t0 = performance.now();
+    _activePathId = 'orbit';
+    controls.enabled = false;
+  }
+
+  // Programmatic dolly-in: travel from the initial pose straight toward the
+  // orbit target, ending close to a surface, so the LoD must resolve
+  // progressively finer chunks. This is the "zoom in to fine detail" stress
+  // (the literal "new detail loads in too slow" scenario) that the orbit
+  // (fixed radius) does not exercise. Anchored to the initial pose so every
+  // run is the identical world-space dolly.
+  function _buildDollyPath() {
+    const center = _origTarget.clone();
+    const start = _origCamPos.clone();
+    const dir = start.clone().sub(center);
+    const startDist = Math.max(dir.length(), 1e-3);
+    dir.normalize();
+    const endDist = Math.max(startDist * 0.12, 1.5);
+    // Hold the AUTHORED look orientation. It already frames the subject for
+    // THIS scene's coordinate frame; moving along the camera→target axis
+    // keeps the subject centred as we close in. The old tmp.lookAt(center)
+    // assumed +Y up and could point at sky on rotated-frame scenes.
+    const q = _origCamQuat;
+    const N = 36, DOLLY_S = 24;
+    const keyframes = [];
+    for (let i = 0; i <= N; i++) {
+      const f = i / N;
+      const dist = startDist + (endDist - startDist) * f;
+      const x = center.x + dir.x * dist;
+      const y = center.y + dir.y * dist;
+      const z = center.z + dir.z * dist;
+      keyframes.push({
+        t: f * DOLLY_S,
+        pos: [x, y, z],
+        quat: [q.x, q.y, q.z, q.w],
+        fov: _origCamFov,
+      });
+    }
+    return { id: 'dolly', name: 'Programmatic Dolly-In',
+      loop: false, smoothness: 1.0, play_speed: 1.0, keyframes };
+  }
+
+  async function _runDollyBench() {
+    if (_benchActive) _benchStop();
+    if (_player) stopPath();
+    camera.position.copy(_origCamPos);
+    camera.quaternion.copy(_origCamQuat);
+    camera.fov = _origCamFov;
+    camera.updateProjectionMatrix();
+    controls.target.copy(_origTarget);
+    controls.update();
+    benchBtn.classList.add('recording');
+    benchBtn.textContent = 'Warming…';
+    console.info('[bench] dolly launch');
+    const dollyPath = _buildDollyPath();
+    const player0 = buildPlayer(dollyPath);
+    if (player0) {
+      const s = sampleAt(player0, 0);
+      camera.position.set(s.pos[0], s.pos[1], s.pos[2]);
+      camera.quaternion.set(s.quat[0], s.quat[1], s.quat[2], s.quat[3]);
+      camera.fov = s.fov;
+      camera.updateProjectionMatrix();
+    }
+    await new Promise(r => setTimeout(r, 2000));
+    _benchStart({ mode: 'path', pathId: 'dolly', duration: Infinity });
+    _player = buildPlayer(dollyPath);
+    _t0 = performance.now();
+    _activePathId = 'dolly';
+    controls.enabled = false;
+  }
+
+  async function _runNamedPathBench(pathId) {
+    if (_benchActive) _benchStop();
+    if (_player) stopPath();
+    const p = cameraPaths.find(x => x.id === pathId);
+    if (!p) {
+      console.warn('[bench] path "' + pathId + '" not found; running 30 s static instead');
+      _benchStart({ mode: 'static' });
+      return;
+    }
+    benchBtn.classList.add('recording');
+    benchBtn.textContent = 'Warming…';
+    console.info('[bench] path launch: "' + pathId + '"');
+    try {
+      const tmpPlayer = buildPlayer(p);
+      if (tmpPlayer) {
+        const s = sampleAt(tmpPlayer, 0);
+        camera.position.set(s.pos[0], s.pos[1], s.pos[2]);
+        camera.quaternion.set(s.quat[0], s.quat[1], s.quat[2], s.quat[3]);
+        camera.fov = s.fov;
+        camera.updateProjectionMatrix();
+      }
+    } catch (e) { console.warn('[bench] could not pre-snap camera', e); }
+    await new Promise(r => setTimeout(r, 2000));
+    _benchStart({ mode: 'path', pathId: pathId, duration: Infinity });
+    startPath(pathId);
+  }
+
+  // What the button does. Toggle: if recording → stop. Otherwise run the mode
+  // implied by the URL (so a page loaded with ?bench=orbit re-runs the orbit
+  // on every subsequent button press, not a static recorder).
+  async function _benchButtonClick() {
+    if (_benchActive) return _benchStop();
+    // Dispatch on the in-viewport dropdown (pre-synced to ?bench=); fall back
+    // to the URL param, then orbit. ?bench=1 keeps the static recorder for the
+    // "user drives the camera" case.
+    const _mode = (benchModeSel && benchModeSel.value) ? benchModeSel.value : (BENCH_AUTO || 'orbit');
+    if (_mode === 'orbit') return _runOrbitBench();
+    if (_mode === 'dolly') return _runDollyBench();
+    if (_mode === 'cold') return _runColdBench();
+    if (_mode === 'probe') return _runProbeBench();
+    if (_mode === 'rotate') return _runRotateBench();
+    if (_mode === '1' || _mode === 'static') return _benchStart({ mode: 'static' });
+    return _runNamedPathBench(_mode);   // a named camera-path id
+  }
+
+  // ---- ?bench=<value> auto-trigger (one-shot on page load) ----
+  if (BENCH_AUTO) {
+    (async () => {
+      if (splat.initialized && typeof splat.initialized.then === 'function') {
+        try { await splat.initialized; } catch (e) {}
+      }
+      // ?bench=cold: start recording NOW (spark/pager exist post-init),
+      // BEFORE the preload wait, so the trace captures the cold
+      // fetch+decode+upload fill — the worst-stutter phase the user flagged.
+      if (BENCH_AUTO === 'cold') { _runColdBench(); return; }
+      // Wait for the front-load phase to finish hiding the loading panel —
+      // otherwise the orbit fires while the canvas is still occluded and the
+      // user just sees a "stuck" loading screen instead of rotation.
+      // _preloadDonePromise is set up in the loading-hide IIFE below.
+      if (typeof _preloadDonePromise !== 'undefined') {
+        try { await _preloadDonePromise; } catch (e) {}
+      }
+      // Small extra stabilization beat after preload (helps decode queue drain).
+      await new Promise(r => setTimeout(r, 500));
+      if (BENCH_AUTO === '1') {
+        console.info('[bench] auto-trigger: static 30 s');
+        _benchStart({ mode: 'static' });
+      } else if (BENCH_AUTO === 'orbit') {
+        await _runOrbitBench();
+      } else if (BENCH_AUTO === 'dolly') {
+        await _runDollyBench();
+      } else if (BENCH_AUTO === 'probe') {
+        await _runProbeBench();
+      } else if (BENCH_AUTO === 'rotate') {
+        await _runRotateBench();
+      } else {
+        await _runNamedPathBench(BENCH_AUTO);
+      }
+    })();
+  }
+

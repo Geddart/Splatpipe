@@ -126,6 +126,16 @@ class Project:
         """
         changed = False
 
+        # Pipeline-level save-backend selector — old projects predate it.
+        # Mirrors the trainer/renderer state-root flag pattern: a defaulted
+        # root field. `setdefault` ensures the key exists (persisted on the
+        # next natural _save_state); like trainer/renderer it does NOT, on
+        # its own, force a migration write — the `.get("save_backend",
+        # "cli")` property already makes old projects backward-compatible,
+        # so `changed` is intentionally left untouched here (keeping the
+        # annotation-backfill no-op contract intact).
+        state.setdefault("save_backend", "cli")
+
         scene_config = state.get("scene_config") or {}
         annotations = scene_config.get("annotations")
         if isinstance(annotations, list):
@@ -162,6 +172,24 @@ class Project:
         if renderer not in ("playcanvas", "spark"):
             raise ValueError(f"renderer must be 'playcanvas' or 'spark', got {renderer!r}")
         self.state["renderer"] = renderer
+        self._save_state()
+
+    @property
+    def save_backend(self) -> str:
+        """Keyframe-editor save backend: 'cli' (default), 'php', 'cloudflare'.
+
+        Pipeline-level flag at the state root (NOT scene_config), mirroring
+        ``trainer`` / ``renderer``. Backward-compatible — old projects with
+        no ``save_backend`` field read back as ``"cli"``.
+        """
+        return self.state.get("save_backend", "cli")
+
+    def set_save_backend(self, name: str) -> None:
+        from ..save_backends.registry import SAVE_BACKENDS
+        if name not in SAVE_BACKENDS:
+            available = ", ".join(SAVE_BACKENDS)
+            raise ValueError(f"save_backend must be one of {available}, got {name!r}")
+        self.state["save_backend"] = name
         self._save_state()
 
     @property

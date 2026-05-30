@@ -1,0 +1,596 @@
+
+    // ---- The author HUD button cluster (Rec/interp/tangents/Save).
+    //      A4: MERGED onto the Task-17 bottom-timeline transport ROW
+    //      (the same play/pause/loop/fps row) via the shared
+    //      _tlBarRow ref instead of a separate floating bar -- one
+    //      coherent transport cluster, nothing mutually occluding.
+    //      The gizmo space/mode + interp + record are keyboard-driven
+    //      (the spec's R/T/V/K); the Save button is the explicit
+    //      persist action. Falls back to a floating bar in
+    //      #author-root only if the timeline row is somehow absent.
+    //      ``editor-gizmo-bar`` stays the id of this logical group
+    //      (now an inline sub-cluster of the transport row).
+    {
+      const _row = _tlBarRow;
+      const root = _row || document.getElementById('author-root');
+      if (root) {
+        const bar = document.createElement('div');
+        bar.id = 'editor-gizmo-bar';
+        if (_row) {
+          // Inline sub-cluster of the timeline transport row: a thin
+          // separator then the buttons, no absolute pos / backdrop
+          // (the row already supplies the panel chrome). marginLeft
+          // pushes it clear of the play/pause/loop/fps group.
+          bar.style.cssText =
+            'display:flex;gap:6px;align-items:center;' +
+            'margin-left:14px;padding-left:14px;' +
+            'border-left:1px solid rgba(255,255,255,0.16);';
+        } else {
+          bar.style.cssText =
+            'position:absolute;top:12px;left:160px;z-index:50;' +
+            'display:flex;gap:6px;align-items:center;' +
+            'padding:6px 9px;border-radius:7px;' +
+            'background:rgba(20,20,20,0.72);' +
+            '-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);' +
+            'font:12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;' +
+            'color:#eee;user-select:none;';
+        }
+        const _mkBtn = (txt, title, id) => {
+          const b = document.createElement('button');
+          b.type = 'button'; b.textContent = txt;
+          b.title = title || ''; if (id) b.id = id;
+          b.style.cssText =
+            'background:rgba(255,255,255,0.10);color:#eee;border:0;' +
+            'border-radius:5px;padding:4px 9px;cursor:pointer;' +
+            'font:12px monospace;line-height:1;';
+          return b;
+        };
+        const recBtn = _mkBtn('\u25CF Rec (K)',
+          'Record a keyframe at the playhead from the live camera',
+          'editor-rec-btn');
+        const interpBtn = _mkBtn('interp (V)',
+          'Set the selected keyframe interpolation', 'editor-interp-btn');
+        // R5 item 7: the "tangents (B)" toggle is REMOVED -- handles are
+        // always visible on selection. B now toggles tangent LOCK/BREAK
+        // (R5 item 3).
+        const saveBtn = _mkBtn('Save',
+          'Save scene',
+          'editor-save-btn');
+        // #146 empty-state hint: hide it once the author records (the
+        // add-camera -> record flow the hint guides).
+        const _hideEmptyHint = function () {
+          try {
+            const _eh = document.getElementById('editor-empty-hint');
+            if (_eh) _eh.style.display = 'none';
+          } catch (e) {}
+        };
+        recBtn.addEventListener('click', () => { _gzRecordKeyframe(); _hideEmptyHint(); });
+        interpBtn.addEventListener('click', () => { _gzOpenPopover(); });
+        // #146: show the empty-scene guidance hint at author-bar build when
+        // there are no cameras/paths yet (author bar only builds in author
+        // mode). A live hide on +Add camera would need 10_camera_select; the
+        // Rec-hide above covers the common add->record flow.
+        try {
+          const _eh0 = document.getElementById('editor-empty-hint');
+          if (_eh0) {
+            const _noCams =
+              (!Array.isArray(cfg.cameras) || cfg.cameras.length === 0) &&
+              (!Array.isArray(cfg.camera_paths) || cfg.camera_paths.length === 0);
+            _eh0.style.display = _noCams ? '' : 'none';
+          }
+        } catch (e) {}
+        // UX-Phase11A Issue 7 (2026-05-21): Save was silent in http mode
+        // (no toast, no visible state change) -- user has no idea if
+        // the POST succeeded. cli mode is fine because the token card
+        // overlay IS the feedback. Add an ephemeral button-state
+        // toast for both modes, keyed on the underlying _gzSave()
+        // return value (cli returns a string token synchronously;
+        // http returns a fetch Promise). The button text + background
+        // cycle through Save -> Saving... -> "OK Saved" / "Save failed"
+        // -> Save (after 2s). Inline-styled so this needs no new CSS
+        // region. The harness can inspect document.getElementById(
+        // 'editor-save-btn').textContent to assert the feedback state.
+        const _SAVE_LABEL_DEFAULT = 'Save';
+        const _SAVE_LABEL_BUSY = 'Saving...';
+        const _SAVE_LABEL_OK = 'OK Saved';
+        const _SAVE_LABEL_ERR = 'Save failed';
+        const _SAVE_BG_DEFAULT = 'rgba(255,255,255,0.10)';
+        const _SAVE_BG_BUSY = 'rgba(255,255,255,0.18)';
+        const _SAVE_BG_OK = 'rgba(53,255,143,0.34)';
+        const _SAVE_BG_ERR = 'rgba(255,90,90,0.40)';
+        function _gzSaveSetState(label, bg) {
+          try {
+            saveBtn.textContent = label;
+            saveBtn.style.background = bg;
+          } catch (e) {}
+        }
+        function _gzSaveResetSoon() {
+          setTimeout(() => {
+            _gzSaveSetState(_SAVE_LABEL_DEFAULT, _SAVE_BG_DEFAULT);
+          }, 2000);
+        }
+        saveBtn.addEventListener('click', () => {
+          _gzSaveSetState(_SAVE_LABEL_BUSY, _SAVE_BG_BUSY);
+          let result;
+          try {
+            result = _gzSave();
+          } catch (e) {
+            _gzSaveSetState(_SAVE_LABEL_ERR, _SAVE_BG_ERR);
+            console.warn('Save: synchronous failure', e);
+            _gzSaveResetSoon();
+            return;
+          }
+          // cli mode returns the token string synchronously. The token
+          // card is the user-facing confirmation; the button can flash
+          // OK as a secondary signal.
+          if (typeof result === 'string') {
+            _gzSaveSetState(_SAVE_LABEL_OK, _SAVE_BG_OK);
+            _gzSaveResetSoon();
+            return;
+          }
+          // http mode returns a fetch Promise. Drive the button state
+          // through the response.
+          if (result && typeof result.then === 'function') {
+            result.then((resp) => {
+              if (resp && resp.ok) {
+                _gzSaveSetState(_SAVE_LABEL_OK, _SAVE_BG_OK);
+              } else {
+                const code = (resp && resp.status) ? resp.status : '?';
+                _gzSaveSetState(_SAVE_LABEL_ERR, _SAVE_BG_ERR);
+                console.warn('Save: HTTP ' + code +
+                  (resp && resp.statusText ? ' ' + resp.statusText : ''));
+              }
+              _gzSaveResetSoon();
+            }).catch((err) => {
+              _gzSaveSetState(_SAVE_LABEL_ERR, _SAVE_BG_ERR);
+              console.warn('Save: network/fetch error', err);
+              _gzSaveResetSoon();
+            });
+            return;
+          }
+          // Unknown return shape -- defensive default to OK so the
+          // user is not left with a permanent "Saving..." indicator.
+          _gzSaveSetState(_SAVE_LABEL_OK, _SAVE_BG_OK);
+          _gzSaveResetSoon();
+        });
+        bar.appendChild(recBtn);
+        bar.appendChild(interpBtn);
+        bar.appendChild(saveBtn);
+        root.appendChild(bar);
+      }
+    }
+
+    // ---- Keyboard: R/T (translate/rotate), SPACE (World<->Screen),
+    //      V (interp popover), B (bezier tangent handles), K
+    //      (record). Author-mode only; ignored while typing in an
+    //      input/textarea (the Save card's textareas) so copying the
+    //      token does not trigger Record.
+    window.addEventListener('keydown', (ev) => {
+      if (!ModeManager.is('author')) return;
+      // UX-Phase11F H6: shared guard (04_js_prologue) -- supersets the
+      // prior INPUT/TEXTAREA/SELECT check (the Save card's textareas) AND
+      // adds contenteditable + [role=menu]/[role=dialog]. Without it,
+      // Tab-ing into the camera kebab menu (or a Save dialog) and pressing
+      // K recorded a keyframe / V opened the interp popover behind the
+      // menu. The overlay-internal Escape (closing the Save / Set-start
+      // card, H7) is handled by the overlay's own focused listener, so
+      // blocking Escape HERE while a [role=dialog] is focused is correct.
+      if (_editorHotkeyBlocked()) return;
+      const k = ev.key;
+      if (k === 'r' || k === 'R') {
+        _gzMode = 'rotate'; _gzApplySpace();
+      } else if (k === 't' || k === 'T') {
+        _gzMode = 'translate'; _gzApplySpace();
+      } else if (k === ' ' || k === 'Spacebar' || ev.code === 'Space') {
+        _gzScreen = !_gzScreen; _gzApplySpace();
+        ev.preventDefault();    // stop the page scrolling on Space
+      } else if (k === 'v' || k === 'V') {
+        if (_gzPopEl) _gzClosePopover(); else _gzOpenPopover();
+      } else if (k === 'b' || k === 'B') {
+        // R5 item 3: B toggles the selected keyframe's tangent
+        // LOCK <-> BREAK. (Handles are always visible now -- R5 item 7
+        // -- so B no longer reveals them; it controls C1 lock instead.)
+        // No-op without a selection.
+        _tanToggleBreak();
+      } else if (k === 'k' || k === 'K') {
+        _gzRecordKeyframe();
+      } else if (k === 'Escape') {
+        _gzClosePopover();
+        _tanHide();
+        _gzDetach();
+      }
+    });
+
+    // ---- TEST-ONLY surface extension (mirror window.__clip /
+    //      __transport / the Task-16/17 window.__editor: getters +
+    //      deterministic hooks; NO production reader; inert without
+    //      the harness). Extends the EXISTING window.__editor object
+    //      (created by the Task-16 block, extended by Task-17) so
+    //      the harness reads ONE surface. Every hook drives the
+    //      REAL code path a user action / keypress would (the same
+    //      convention as __editor.scrubTo / tlDragKf).
+    try {
+      if (window.__editor) {
+        const _gzApi = {
+          // ---- read state ----
+          get gzMode() { return _gzMode; },
+          get gzSpace() { return _gzScreen ? 'screen' : 'world'; },
+          get gzSelKf() { return _gzSelKf; },
+          get gzAttached() {
+            return !!(_gzCtl && _gzCtl.object === _gzProxy &&
+              _gzSelKf >= 0);
+          },
+          get gzProxyInScene() {
+            return !!(_gzProxy && _gzProxy.parent === scene);
+          },
+          get gzHelperInScene() {
+            return !!(_gzCtlHelper && _gzCtlHelper.parent === scene);
+          },
+          get gzControlSpace() {
+            return _gzCtl ? _gzCtl.space : null;
+          },
+          get gzControlMode() {
+            return _gzCtl ? _gzCtl.mode : null;
+          },
+          get gzPopoverOpen() { return !!_gzPopEl; },
+          get gzInterpOptions() { return _GZ_INTERPS.slice(); },
+          get gzSelInterp() {
+            const kf = _gzSelKfObj();
+            return (kf && kf.interp) ? kf.interp : null;
+          },
+          get gzSaveMode() {
+            try { return SAVE_MODE; } catch (e) { return '?'; }
+          },
+          get gzSlug() { return _gzSlug; },
+          get gzLastToken() { return _gzLastToken; },
+          get gzFrustumCount() { return _trajFrusta.length; },
+          // The selected keyframe's CURRENT stored pose (the SAME
+          // in-memory object the player + overlay read) so the
+          // harness can assert a gizmo drag changed kf.pos/kf.quat.
+          get gzSelKfPose() {
+            const kf = _gzSelKfObj();
+            if (!kf) return null;
+            return {
+              t: kf.t,
+              pos: (kf.pos || []).slice(),
+              quat: (kf.quat || []).slice(),
+              fov: kf.fov,
+              interp: kf.interp || null,
+            };
+          },
+          // The active path's keyframe times (array order) -- so the
+          // harness can assert Record APPENDED a keyframe at the
+          // real-elapsed playhead t.
+          get gzKfTimes() {
+            const p = _gzActivePath();
+            return (p && p.keyframes)
+              ? p.keyframes.map(k => (k.t || 0)) : [];
+          },
+          get gzKfCount() {
+            const p = _gzActivePath();
+            return (p && p.keyframes) ? p.keyframes.length : 0;
+          },
+          // The Task-16 overlay signature -- so the harness can
+          // assert a gizmo/record/interp edit triggered the overlay
+          // rebuild (the sig CHANGED) without a save/network.
+          get gzOverlaySig() {
+            try {
+              const p = _gzActivePath();
+              return (typeof _trajKfSig === 'function')
+                ? _trajKfSig(p) : '';
+            } catch (e) { return ''; }
+          },
+          // ---- deterministic hooks (drive the REAL handlers) ----
+          // Select a keyframe by index == clicking its frustum
+          // (drives the SAME _gzAttach the pointer pick calls).
+          // Returns a Promise resolving once the (lazily imported)
+          // TransformControls has attached, so the harness can await.
+          gzSelect(idx) {
+            _gzAttach(idx);
+            return _gzEnsureControl().then(() => ({
+              attached: !!(_gzCtl && _gzCtl.object === _gzProxy),
+              sel: _gzSelKf,
+            }));
+          },
+          // Raycast-pick a frustum at NDC (-1..1) -> returns the kf
+          // index a click there would select (drives the REAL
+          // _gzPickFrustum off the live trajectory geometry; the
+          // harness converts a frustum's world pos to NDC itself).
+          gzPickAtNdc(ndcx, ndcy) {
+            const rect = renderer.domElement.getBoundingClientRect();
+            const cx = rect.left + (ndcx + 1) * 0.5 * rect.width;
+            const cy = rect.top + (1 - ndcy) * 0.5 * rect.height;
+            return _gzPickFrustum(cx, cy);
+          },
+          // TEST-ONLY: would a real pointerdown at these CLIENT px
+          // yield the event to TransformControls (pointer over a
+          // gizmo handle => the capture handler must NOT pick a
+          // frustum / stopPropagation, so TC's own bubble-phase
+          // pointerDown drives the drag)? Drives the EXACT
+          // _gzPointerOnGizmo the real `_gzOnCanvasDown` calls -- so
+          // the harness can assert the starvation bug is fixed
+          // WITHOUT performing the drag through the API. Also
+          // returns the resolved TC axis for diagnostics.
+          gzPointerOnGizmoAt(clientX, clientY) {
+            const on = _gzPointerOnGizmo(clientX, clientY);
+            return { onGizmo: !!on,
+              axis: _gzCtl ? (_gzCtl.axis || null) : null,
+              dragging: _gzCtl ? !!_gzCtl.dragging : false };
+          },
+          // TEST-ONLY: the live TransformControls drag state (the
+          // canonical "is a real drag in progress" signal) so the
+          // harness can assert a REAL mouse-drag actually entered
+          // TC's drag (proves the event reached TC, not the API).
+          get gzCtlDragging() {
+            return _gzCtl ? !!_gzCtl.dragging : false;
+          },
+          get gzCtlAxis() {
+            return _gzCtl ? (_gzCtl.axis || null) : null;
+          },
+          gzDetach() { _gzDetach(); return _gzSelKf; },
+          // R4 (#165): delete the GIZMO-selected keyframe (the one the
+          // user selected by clicking its 3D frustum). The X / Delete
+          // hotkey + the timeline contextmenu Delete only ever consulted
+          // _tlSel (the bottom-timeline selection); a keyframe selected via
+          // the frustum left _tlSel empty, so X did NOTHING ("can't delete
+          // keyframes"). The 16 X handler now falls back to THIS when
+          // _tlSel is empty. Reuses _gzDeleteKeyframe (>=2-keyframe clamp +
+          // 'kf-delete' EditHistory snapshot + _gzDetach + _gzAfterEdit --
+          // the SAME mutation the frustum right-click Delete runs).
+          // Returns true when a keyframe was actually removed.
+          gzDeleteSel() {
+            if (_gzSelKf < 0) return false;
+            const p = _gzActivePath();
+            if (!p || !Array.isArray(p.keyframes) ||
+                _gzSelKf >= p.keyframes.length) return false;
+            const before = p.keyframes.length;
+            _gzDeleteKeyframe(_gzSelKf);
+            const after = (p.keyframes || []).length;
+            return after < before;
+          },
+          // Simulate a gizmo TRANSLATE drag: move the proxy by a
+          // world delta + run the SAME objectChange write-back the
+          // real drag fires (we cannot synthesise a pointer drag on
+          // the addon's internal plane deterministically; this
+          // drives the EXACT same _gzWriteProxyToKf the gizmo's
+          // 'objectChange' listener calls).
+          gzDragTranslate(dx, dy, dz) {
+            if (!_gzProxy || _gzSelKf < 0) return null;
+            _gzProxy.position.x += (+dx || 0);
+            _gzProxy.position.y += (+dy || 0);
+            _gzProxy.position.z += (+dz || 0);
+            _gzProxy.updateMatrixWorld(true);
+            _gzWriteProxyToKf();
+            const kf = _gzSelKfObj();
+            return kf ? (kf.pos || []).slice() : null;
+          },
+          // Simulate a gizmo ROTATE drag: rotate the proxy by a
+          // quaternion (xyzw) + run the SAME write-back.
+          gzDragRotate(qx, qy, qz, qw) {
+            if (!_gzProxy || _gzSelKf < 0) return null;
+            const q = new THREE.Quaternion(qx, qy, qz, qw).normalize();
+            _gzProxy.quaternion.premultiply(q);
+            _gzProxy.updateMatrixWorld(true);
+            _gzWriteProxyToKf();
+            const kf = _gzSelKfObj();
+            return kf ? (kf.quat || []).slice() : null;
+          },
+          // R/T mode toggle (drives the SAME _gzApplySpace the
+          // keydown handler runs).
+          gzSetMode(m) {
+            _gzMode = (m === 'rotate') ? 'rotate' : 'translate';
+            _gzApplySpace();
+            return _gzCtl ? _gzCtl.mode : _gzMode;
+          },
+          // SPACE World<->Screen toggle (drives the SAME path).
+          gzToggleSpace() {
+            _gzScreen = !_gzScreen;
+            _gzApplySpace();
+            return { screen: _gzScreen,
+              ctlSpace: _gzCtl ? _gzCtl.space : null };
+          },
+          gzSetSpace(s) {
+            _gzScreen = (s === 'screen');
+            _gzApplySpace();
+            return { screen: _gzScreen,
+              ctlSpace: _gzCtl ? _gzCtl.space : null };
+          },
+          // V interp popover open + pick (drives the REAL popover
+          // DOM + the REAL _gzSetInterp the buttons call).
+          gzOpenInterp() { _gzOpenPopover(); return !!_gzPopEl; },
+          gzCloseInterp() { _gzClosePopover(); return !_gzPopEl; },
+          gzPickInterp(val) {
+            // Click the matching popover button if open (the REAL
+            // DOM path); else fall back to the same _gzSetInterp.
+            if (_gzPopEl) {
+              const b = _gzPopEl.querySelector(
+                '[data-interp="' + val + '"]');
+              if (b) { b.click(); return _gzSelInterpVal(); }
+            }
+            _gzSetInterp(val);
+            _gzClosePopover();
+            return _gzSelInterpVal();
+          },
+          // K record (drives the REAL _gzRecordKeyframe -> live
+          // camera pose + real-elapsed playhead t).
+          gzRecord() {
+            const kf = _gzRecordKeyframe();
+            return kf ? { t: kf.t, pos: kf.pos.slice(),
+              quat: kf.quat.slice(), fov: kf.fov } : null;
+          },
+          get gzTourStopped() { return _gzTourStopped; },
+          // The real-elapsed playhead (the SAME _trajPlayhead the
+          // overlay/timeline use) -- so the harness can assert
+          // Record used it (not a +2.0 fallback).
+          get gzPlayheadT() {
+            try {
+              const p = _gzActivePath();
+              const ph = p ? buildPlayer(p) : null;
+              const v = ph ? _trajPlayhead(ph) : 0;
+              return (typeof v === 'number' && isFinite(v))
+                ? Math.max(0, v) : 0;
+            } catch (e) { return 0; }
+          },
+          // ---- Save / SPCP emit ----
+          // Build the Contract-C camera-scope patch (allow-list
+          // ONLY; the harness asserts NO primary_asset).
+          gzBuildPatch() { return _buildPatch(); },
+          gzBuildPayload() { return _buildSpcpPayload(); },
+          // The JS-ported encode_spcp over an ARBITRARY payload --
+          // so the harness/pytest can assert byte-identity vs the
+          // Python encode_spcp for the SAME payload (the spec's
+          // core correctness gate).
+          gzEncodeSpcp(slug, payload) {
+            return _encodeSpcp(slug, payload);
+          },
+          // Drive the REAL cli Save (emit token + show the relay
+          // card) and RETURN the emitted token so the harness can
+          // capture it for the Python round-trip / byte-identity
+          // pytest check (the spec mandates a real captured token,
+          // not a hand-constructed one).
+          gzSaveCliToken() {
+            return _gzSaveCli();
+          },
+          // Drive the REAL Save dispatch (cli -> token string;
+          // http -> the fetch Promise) -- so the harness can assert
+          // the http path POSTs the right patch to SAVE_ENDPOINT.
+          gzSave() { return _gzSave(); },
+          // Renamed from gzAuthorSecret per spec §11.5 / Q5 (the
+          // fragment param is now #token=<token>; the legacy
+          // gzAuthorSecret alias is kept for backwards-compat with
+          // any in-flight harness scripts that still call it).
+          gzReadAuthToken() { return _gzReadAuthToken(); },
+          gzAuthorSecret() { return _gzReadAuthToken(); },
+          // Close the Save card if open (harness cleanup so its
+          // textarea focus does not eat later key probes). H7: route
+          // through the real _gzCloseSaveCard so the Escape listener is
+          // removed + focus restored (matches the user-facing close).
+          gzCloseSaveCard() {
+            const o = document.getElementById('gz-save-overlay');
+            _gzCloseSaveCard();
+            return !!o;
+          },
+          // H7 TEST-ONLY: is the Save card currently open?
+          get gzSaveCardOpen() {
+            return !!document.getElementById('gz-save-overlay');
+          },
+          // ---- Bezier tangent-handle surface (TEST-ONLY) --------
+          // Are the in/out tangent handles currently shown?
+          get tanHandlesVisible() {
+            return !!(_tanGroup && _tanGroup.parent === scene &&
+              _tanGroup.visible);
+          },
+          get tanSelIsBezier() { return _tanIsBezierSel(); },
+          // The selected keyframe's STORED explicit tangents (the
+          // SAME in-memory arrays the spline reads + Save emits) --
+          // null until the key is bezier with handles. So the
+          // harness can assert a drag CHANGED kf.in_tan/out_tan.
+          get tanSelTans() {
+            const kf = _gzSelKfObj();
+            if (!kf) return null;
+            return {
+              interp: kf.interp || null,
+              in_tan: (Array.isArray(kf.in_tan)
+                && kf.in_tan.length === 3) ? kf.in_tan.slice() : null,
+              out_tan: (Array.isArray(kf.out_tan)
+                && kf.out_tan.length === 3)
+                ? kf.out_tan.slice() : null,
+            };
+          },
+          // The current handle SQUARE world positions (what the
+          // harness converts to NDC to aim a REAL mouse at).
+          get tanHandleWorld() {
+            if (!_tanGroup || !_tanOutBox || !_tanInBox) return null;
+            return {
+              out: [_tanOutBox.position.x, _tanOutBox.position.y,
+                _tanOutBox.position.z],
+              in: [_tanInBox.position.x, _tanInBox.position.y,
+                _tanInBox.position.z],
+            };
+          },
+          // Convert the selected key to bezier + reveal handles
+          // (drives the SAME _tanEnableBezier the B key / button
+          // call). Returns whether it is now bezier.
+          tanEnableBezier() { return _tanEnableBezier(); },
+          // Raycast-pick a handle square at NDC -> 'in'|'out'|null
+          // (drives the REAL _tanPickBox off the live geometry).
+          tanPickAtNdc(ndcx, ndcy) {
+            const rect = renderer.domElement.getBoundingClientRect();
+            const cx = rect.left + (ndcx + 1) * 0.5 * rect.width;
+            const cy = rect.top + (1 - ndcy) * 0.5 * rect.height;
+            return _tanPickBox(cx, cy);
+          },
+          // Would a real pointerdown at these CLIENT px yield to the
+          // handle TC (pointer over a handle axis => the capture
+          // handler must NOT consume it so TC's own bubble-phase
+          // pointerDown drives the drag)? Drives the EXACT
+          // _tanPointerOnGizmo the real _gzOnCanvasDown calls.
+          tanPointerOnGizmoAt(clientX, clientY) {
+            const on = _tanPointerOnGizmo(clientX, clientY);
+            return { onGizmo: !!on,
+              axis: _tanCtl ? (_tanCtl.axis || null) : null,
+              dragging: _tanCtl ? !!_tanCtl.dragging : false };
+          },
+          // The live handle-TC drag state (the canonical "a real
+          // drag is in progress" signal) so the harness can assert a
+          // REAL mouse-drag actually entered the handle TC.
+          get tanCtlDragging() {
+            return _tanCtl ? !!_tanCtl.dragging : false;
+          },
+          get tanCtlAxis() {
+            return _tanCtl ? (_tanCtl.axis || null) : null;
+          },
+          get tanActiveSide() { return _tanActiveSide; },
+          // Attach the handle-TC to a side (drives the SAME
+          // _tanAttachSide the pointer pick calls) -> resolves once
+          // the lazily-imported TC has attached.
+          tanAttach(side) {
+            _tanAttachSide(side);
+            return _tanEnsureCtl().then(() => ({
+              attached: !!(_tanCtl && _tanCtl.object ===
+                (side === 'out' ? _tanOutProxy : _tanInProxy)),
+              side: _tanActiveSide,
+            }));
+          },
+          // Simulate a handle drag by a WORLD delta + run the SAME
+          // _tanWriteFromProxy the gizmo's 'objectChange' fires (we
+          // cannot synthesise a pointer drag on the addon's internal
+          // plane deterministically; the REAL trusted-mouse drag is
+          // verified separately by Playwright -- this drives the
+          // EXACT same write-back path for a deterministic check).
+          tanDrag(side, dx, dy, dz) {
+            const proxy = side === 'out' ? _tanOutProxy : _tanInProxy;
+            if (!proxy || !_tanIsBezierSel()) return null;
+            _tanActiveSide = side;
+            if (proxy.parent !== scene) scene.add(proxy);
+            proxy.position.x += (+dx || 0);
+            proxy.position.y += (+dy || 0);
+            proxy.position.z += (+dz || 0);
+            proxy.updateMatrixWorld(true);
+            _tanWriteFromProxy(side);
+            const kf = _gzSelKfObj();
+            return kf ? {
+              in_tan: (kf.in_tan || []).slice(),
+              out_tan: (kf.out_tan || []).slice(),
+              interp: kf.interp || null,
+            } : null;
+          },
+          // The effective (explicit OR derived-default) tangent
+          // vectors for the selected key -- so the harness can
+          // assert the derived default == the `automatic` formula
+          // (handles appear ON the curve, no jump).
+          tanEffectiveVecs() { return _tanVecs(); },
+          tanHide() {
+            _tanHide();
+            return !(_tanGroup && _tanGroup.parent === scene &&
+              _tanGroup.visible);
+          },
+        };
+        // Preserve getters AS getters (Object.assign would freeze
+        // them -- same reasoning as the Task-17 extension).
+        Object.defineProperties(
+          window.__editor, Object.getOwnPropertyDescriptors(_gzApi));
+      }
+    } catch (e) {}
+  })();
+

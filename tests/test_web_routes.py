@@ -750,6 +750,61 @@ class TestPreviewRoute:
         r = web_env["client"].get(f"/projects/{path}/preview/nonexistent.html")
         assert r.status_code == 404
 
+    def test_preview_rejects_sibling_prefix_attack(self, web_env):
+        """Bug-audit #6: a sibling directory whose name shares the
+        textual prefix of ``05_output`` (e.g. ``05_output_evil``) must NOT
+        be reachable via the preview route.
+
+        The OLD ``str(target).startswith(str(output_dir.resolve()))``
+        check passed this attack (``05_output_evil`` literally starts
+        with ``05_output``); the new ``Path.resolve().relative_to``
+        primitive rejects it.
+        """
+        proj = web_env["project"]
+        # Create a sibling directory next to the project's 05_output.
+        # ``proj.root / "05_output_evil"`` shares the literal prefix with
+        # ``proj.root / "05_output"`` but is NOT inside it.
+        evil_dir = proj.root / "05_output_evil"
+        evil_dir.mkdir()
+        secret_file = evil_dir / "secrets.txt"
+        secret_file.write_text("VERY SECRET CONTENT")
+
+        path = str(proj.root)
+        # Try to escape via a parent-traversal that lands in the sibling.
+        r = web_env["client"].get(
+            f"/projects/{path}/preview/../05_output_evil/secrets.txt"
+        )
+        # Either 403 (route rejected) or 404 (URL normalised before
+        # routing). Crucially: the secret content MUST NOT be in the body.
+        assert r.status_code in (403, 404), r.text
+        assert "VERY SECRET CONTENT" not in r.text
+
+    def test_preview_route_uses_path_safety_helper(self):
+        """Lock the refactor: ``projects.py`` must import the shared
+        ``path_safety`` helper (regression guard for audit #6)."""
+        import re
+        from pathlib import Path
+
+        import splatpipe.web.routes.projects as projects_mod
+
+        source = Path(projects_mod.__file__).read_text(encoding="utf-8")
+        assert "path_safety" in source, (
+            "projects.py no longer imports path_safety -- audit #6 "
+            "refactor missing or regressed"
+        )
+        # And the OLD unsafe ``str(p).startswith(str(root))`` containment
+        # antipattern must be gone from EXECUTABLE code. Strip comment
+        # lines first so the literal description of the vulnerability in
+        # post-refactor docstrings does not trip this guard.
+        code_only = "\n".join(
+            line for line in source.splitlines()
+            if not re.match(r"\s*#", line)
+        )
+        assert ".startswith(str(" not in code_only, (
+            "Unsafe ``str(p).startswith(str(root))`` containment pattern "
+            "found in projects.py executable code -- audit #6 regression"
+        )
+
 
 class TestHistorySection:
     def test_detail_shows_history(self, web_env):
@@ -1167,3 +1222,138 @@ class TestAudio:
         assert data["ok"] is True
         assert data["path"] == "assets/audio/test.mp3"
         assert (web_env["project"].root / "assets" / "audio" / "test.mp3").exists()
+
+
+class TestAddKeyframeRecordElapsed:
+    """add-keyframe must preserve real flown pacing when record_elapsed_s is supplied."""
+
+    def _create_path(self, web_env) -> str:
+        """Create a camera path and return its id."""
+        proj_path = str(web_env["project"].root)
+        r = web_env["client"].post(
+            f"/projects/{proj_path}/add-path",
+            json={"name": "Tour"},
+        )
+        assert r.status_code == 200
+        return r.json()["id"]
+
+    def test_record_elapsed_preserved(self, web_env):
+        """POST add-keyframe with record_elapsed_s stores that exact t value.
+
+        First keyframe: record_elapsed_s=0.0  → stored t == 0.0
+        Second keyframe: record_elapsed_s=7.3  → stored t == 7.3
+        (NOT 0.0 + 2.0 = 2.0 — the blind default gap must be ignored.)
+        """
+        proj_path = str(web_env["project"].root)
+        path_id = self._create_path(web_env)
+
+        # First keyframe recorded at t=0.0 (note: 0.0 is falsy — must use is not None check)
+        r1 = web_env["client"].post(
+            f"/projects/{proj_path}/add-keyframe/{path_id}",
+            json={
+                "record_elapsed_s": 0.0,
+                "pos": [0.0, 0.0, 5.0],
+                "quat": [0.0, 0.0, 0.0, 1.0],
+                "fov": 60.0,
+            },
+        )
+        assert r1.status_code == 200
+
+        # Second keyframe recorded at t=7.3 (real flown elapsed time)
+        r2 = web_env["client"].post(
+            f"/projects/{proj_path}/add-keyframe/{path_id}",
+            json={
+                "record_elapsed_s": 7.3,
+                "pos": [1.0, 0.0, 3.0],
+                "quat": [0.0, 0.0, 0.0, 1.0],
+                "fov": 60.0,
+            },
+        )
+        assert r2.status_code == 200
+
+        # Fetch and verify stored t values match exactly what was recorded
+        proj = Project(web_env["project"].root)
+        paths = proj.scene_config.get("camera_paths") or []
+        ours = next(p for p in paths if p["id"] == path_id)
+        kfs = ours["keyframes"]
+        assert len(kfs) == 2
+        assert kfs[0]["t"] == pytest.approx(0.0), f"expected t=0.0, got {kfs[0]['t']}"
+        assert kfs[1]["t"] == pytest.approx(7.3), f"expected t=7.3, got {kfs[1]['t']}"
+
+    def test_fallback_gap_unchanged_when_no_record_elapsed(self, web_env):
+        """POST add-keyframe without record_elapsed_s uses the legacy last_t + 2.0 gap.
+
+        This ensures the manual '+ Record kf' path (no live recording session) is
+        byte-unchanged after the fix.
+        """
+        proj_path = str(web_env["project"].root)
+        path_id = self._create_path(web_env)
+
+        # First keyframe — no record_elapsed_s → t defaults to 0.0 (empty list case)
+        r1 = web_env["client"].post(
+            f"/projects/{proj_path}/add-keyframe/{path_id}",
+            json={"pos": [0.0, 0.0, 5.0], "quat": [0.0, 0.0, 0.0, 1.0], "fov": 60.0},
+        )
+        assert r1.status_code == 200
+
+        # Second keyframe — no record_elapsed_s → t = last_t + 2.0 = 2.0
+        r2 = web_env["client"].post(
+            f"/projects/{proj_path}/add-keyframe/{path_id}",
+            json={"pos": [1.0, 0.0, 3.0], "quat": [0.0, 0.0, 0.0, 1.0], "fov": 60.0},
+        )
+        assert r2.status_code == 200
+
+        proj = Project(web_env["project"].root)
+        paths = proj.scene_config.get("camera_paths") or []
+        ours = next(p for p in paths if p["id"] == path_id)
+        kfs = ours["keyframes"]
+        assert len(kfs) == 2
+        assert kfs[0]["t"] == pytest.approx(0.0)
+        assert kfs[1]["t"] == pytest.approx(2.0), f"expected t=2.0 (last_t + gap), got {kfs[1]['t']}"
+
+    def test_record_elapsed_bad_value_falls_back_to_gap(self, web_env):
+        """POST add-keyframe with a malformed record_elapsed_s falls back to the legacy gap.
+
+        A non-numeric value for record_elapsed_s (e.g. "not-a-number") must NOT
+        raise a 500 / ValueError; it must silently fall back to the legacy
+        last_t + 2.0 gap — identical to the absent-field behaviour and
+        consistent with the silent-fallback idiom used by other optional numeric
+        fields in this file.
+
+        Pre-Fix-1 this would raise ValueError inside float() → HTTP 500.
+        """
+        proj_path = str(web_env["project"].root)
+        path_id = self._create_path(web_env)
+
+        # First keyframe with malformed record_elapsed_s — empty list → t = 0.0
+        r1 = web_env["client"].post(
+            f"/projects/{proj_path}/add-keyframe/{path_id}",
+            json={
+                "record_elapsed_s": "not-a-number",
+                "pos": [0.0, 0.0, 5.0],
+                "quat": [0.0, 0.0, 0.0, 1.0],
+                "fov": 60.0,
+            },
+        )
+        assert r1.status_code == 200, f"expected 200, got {r1.status_code} (pre-fix would be 500)"
+
+        # Second keyframe with malformed record_elapsed_s — t = last_t + 2.0 = 2.0
+        r2 = web_env["client"].post(
+            f"/projects/{proj_path}/add-keyframe/{path_id}",
+            json={
+                "record_elapsed_s": "not-a-number",
+                "pos": [1.0, 0.0, 3.0],
+                "quat": [0.0, 0.0, 0.0, 1.0],
+                "fov": 60.0,
+            },
+        )
+        assert r2.status_code == 200, f"expected 200, got {r2.status_code} (pre-fix would be 500)"
+
+        # Stored t values must be the legacy gap values, not a 500 traceback
+        proj = Project(web_env["project"].root)
+        paths = proj.scene_config.get("camera_paths") or []
+        ours = next(p for p in paths if p["id"] == path_id)
+        kfs = ours["keyframes"]
+        assert len(kfs) == 2
+        assert kfs[0]["t"] == pytest.approx(0.0), f"expected t=0.0 (legacy gap, empty list), got {kfs[0]['t']}"
+        assert kfs[1]["t"] == pytest.approx(2.0), f"expected t=2.0 (last_t + gap), got {kfs[1]['t']}"

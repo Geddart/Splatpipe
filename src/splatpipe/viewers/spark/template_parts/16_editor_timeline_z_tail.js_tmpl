@@ -1,0 +1,401 @@
+
+    // ---- TEST-ONLY surface extension (mirror window.__clip /
+    //      __transport / the Task-16 window.__editor: getters +
+    //      deterministic hooks; NO production reader; inert without
+    //      the harness). Extends the EXISTING window.__editor object
+    //      (created by the Task-16 block above) so the harness reads
+    //      one surface. Every hook drives the REAL code path a user
+    //      action would (the same convention as __editor.scrubTo /
+    //      __clip.restart).
+    try {
+      if (window.__editor) {
+        const _api = {
+          // ---- read state ----
+          get tlPresent() { return !!_tlStrip.parentNode; },
+          get tlZoom() { return _tlZoom; },
+          get tlScroll() { return _tlScroll; },
+          get tlFps() { return _tlFps; },
+          get tlDuration() { return _tlDuration(_tlActivePath()); },
+          get tlSelection() {
+            return Array.from(_tlSel).sort((a, b) => a - b);
+          },
+          // The stored keyframe times (SECONDS) of the active path,
+          // in keyframe-array order (NOT sorted) so the harness can
+          // assert a SPECIFIC kf's t changed / is byte-identical.
+          get tlKfTimes() {
+            const p = _tlActivePath();
+            return (p && p.keyframes)
+              ? p.keyframes.map(k => (k.t || 0)) : [];
+          },
+          // Diamond screen positions (px) + their kf.t, so the
+          // harness can assert px == time->px under zoom/scroll.
+          get tlDiamonds() {
+            const p = _tlActivePath();
+            if (!p || !p.keyframes) return [];
+            return p.keyframes.map((k, i) => ({
+              i: i, t: (k.t || 0), x: _tlT2X(k.t || 0),
+              sel: _tlSel.has(i),
+            }));
+          },
+          // Playhead time (seconds) + px -- the harness asserts a
+          // playhead drag moves the CAMERA (read _spDebug.camera).
+          get tlPlayheadT() { return _tlPlayheadT(); },
+          get tlPlayheadX() {
+            return parseFloat(_tlPlayhead.style.left) || 0;
+          },
+          get tlActivePathId() {
+            const p = _tlActivePath();
+            return p ? (p.id || null) : null;
+          },
+          get tlLoop() {
+            const p = _tlActivePath();
+            return !!(p && p.loop);
+          },
+          // ---- deterministic hooks (drive the REAL handlers) ----
+          // Live scrub: routes through the REAL #path-scrub input
+          // mechanism (single source of truth -- takes _player over
+          // + rebases _t0, robust to the auto-tour). frac in 0..1.
+          tlScrub(frac) {
+            // R4 (#165): frac maps over the EFFECTIVE range (the full
+            // Length the playhead scrubs over), NOT the bare last-kf
+            // _tlDuration -- so tlScrub(1.0) reaches the 10 s floor /
+            // total_duration_s, matching the lane the user sees.
+            const eff = _tlEffectiveDur(_tlActivePath());
+            _tlScrubToTime(Math.max(0, Math.min(1, +frac || 0)) * eff);
+            return _tlPlayheadT();
+          },
+          // R4 (#165): scrub to an absolute SECONDS position over the
+          // effective range (drives the SAME _tlScrubToTime the ruler
+          // drag runs). Returns the resulting playhead seconds.
+          tlScrubSeconds(t) {
+            _tlScrubToTime(+t || 0);
+            return _tlPlayheadT();
+          },
+          get tlEffectiveDur() { return _tlEffectiveDur(_tlActivePath()); },
+          // Temporal edit: set keyframe[idx].t = newT (the SAME
+          // mutation a diamond drag performs) + rebuild.
+          tlDragKf(idx, newT) {
+            const p = _tlActivePath();
+            if (!p || !p.keyframes || !p.keyframes[idx]) return false;
+            let t = +newT;
+            if (!isFinite(t)) return false;
+            if (t < 0) t = 0;
+            // UX-Phase11-R2 #3 (2026-05-21): mirror the pointerdown diamond-
+            // drag snapshot so a programmatic/harness time-drag is undoable
+            // too (one snapshot at the gesture start, before the mutation).
+            _tlPushHistorySnap('kf-timeline-drag');
+            p.keyframes[idx].t = t;
+            _tlAfterEdit();
+            return true;
+          },
+          // Selection set (by kf index) -- the SAME state a marquee
+          // produces; lets the harness deterministically select 2+.
+          tlSelect(idxs) {
+            _tlSel.clear();
+            (idxs || []).forEach((i) => {
+              if (i >= 0) _tlSel.add(i | 0);
+            });
+            _tlDraw();
+            return Array.from(_tlSel).sort((a, b) => a - b);
+          },
+          // Box-select by a time window [t0,t1] (drives the SAME
+          // marquee selection math the pointer path uses).
+          tlBoxSelect(t0, t1) {
+            const p = _tlActivePath();
+            _tlSel.clear();
+            if (p && p.keyframes) {
+              const lo = Math.min(+t0, +t1), hi = Math.max(+t0, +t1);
+              for (let i = 0; i < p.keyframes.length; i++) {
+                const t = p.keyframes[i].t || 0;
+                if (t >= lo && t <= hi) _tlSel.add(i);
+              }
+            }
+            _tlDraw();
+            return Array.from(_tlSel).sort((a, b) => a - b);
+          },
+          // Scale the selected span by dragging an EDGE: move the
+          // grabbed edge ('left'|'right') to newEdgeT; the opposite
+          // edge is the fixed anchor; proportional rescale (the
+          // SAME math _tlOnMove('scale') runs). Returns the post-
+          // scale stored times of the selected kfs.
+          tlScaleSelection(edge, newEdgeT) {
+            const p = _tlActivePath();
+            if (!p || !p.keyframes || _tlSel.size < 2) return null;
+            let lo = Infinity, hi = -Infinity;
+            _tlSel.forEach((i) => {
+              const k = p.keyframes[i]; if (!k) return;
+              const t = k.t || 0;
+              if (t < lo) lo = t; if (t > hi) hi = t;
+            });
+            if (!isFinite(lo) || !isFinite(hi) || lo === hi)
+              return null;
+            // UX-Phase11-R2 #3 (2026-05-21): mirror the pointerdown scale-
+            // edge snapshot so a programmatic/harness rescale is undoable
+            // too (one snapshot at the gesture start, before the mutation).
+            _tlPushHistorySnap('kf-scale');
+            const anchor = (edge === 'right') ? lo : hi;
+            let base0 = Math.abs(((edge === 'right') ? hi : lo) -
+              anchor);
+            if (base0 <= 1e-6) return null;
+            let cur = Math.abs((+newEdgeT) - anchor);
+            if (cur < 1e-4) cur = 1e-4;
+            const ratio = cur / base0;
+            const base = [];
+            _tlSel.forEach((i) => {
+              base.push({ i: i, t0: (p.keyframes[i].t || 0) });
+            });
+            for (const e of base) {
+              let nt = anchor + (e.t0 - anchor) * ratio;
+              if (nt < 0) nt = 0;
+              p.keyframes[e.i].t = nt;
+            }
+            _tlAfterEdit();
+            return { anchor: anchor, ratio: ratio,
+              times: Array.from(_tlSel).sort((a, b) => a - b)
+                .map(i => (p.keyframes[i].t || 0)) };
+          },
+          // X delete the current selection (the SAME mutation the
+          // keydown handler performs; honours the >=2 clamp).
+          tlDeleteSelection() {
+            const p = _tlActivePath();
+            if (!p || !p.keyframes || !_tlSel.size) return false;
+            const keep = [];
+            for (let i = 0; i < p.keyframes.length; i++) {
+              if (!_tlSel.has(i)) keep.push(p.keyframes[i]);
+            }
+            if (keep.length < 2) return false;
+            // UX-Phase11-R2 #3 (2026-05-21): mirror the keydown X-handler's
+            // pre-mutation snapshot so the harness/test-surface delete is
+            // undoable too (once per gesture, past the >=2 clamp).
+            _tlPushHistorySnap('kf-delete');
+            p.keyframes = keep;
+            _tlSel.clear();
+            _tlAfterEdit();
+            return true;
+          },
+          // Transport (drive the REAL #path-play/#path-stop reuse).
+          tlPlay() {
+            const p = _tlActivePath();
+            if (p && p.id && selEl) {
+              try { selEl.value = p.id; } catch (e) {}
+            }
+            try { startPath(selEl ? selEl.value : (p && p.id)); }
+            catch (e) {}
+            return !!_player;
+          },
+          tlPause() {
+            try { stopPath(); } catch (e) {}
+            _tlSyncPlayhead();
+            return !_player;
+          },
+          // UX-Phase11A Issue 5: the unified Play/Pause toggle test
+          // hooks. tlPlayPauseToggle drives the REAL _tlPlay click
+          // path (selEl bind + window.__spTransport.playPauseToggle +
+          // icon sync); tlPlayState reads the tri-state; tlPlayIcon
+          // reads the current glyph so the harness can assert the
+          // ▶/⏸ swap end-to-end.
+          tlPlayPauseToggle() {
+            try { _tlPlay.click(); } catch (e) {}
+            return (window.__spTransport &&
+                    typeof window.__spTransport.playState === 'function')
+              ? window.__spTransport.playState() : 'idle';
+          },
+          tlPlayState() {
+            return (window.__spTransport &&
+                    typeof window.__spTransport.playState === 'function')
+              ? window.__spTransport.playState() : 'idle';
+          },
+          tlPlayIcon() { return _tlPlay.textContent; },
+          tlToggleLoop() {
+            const p = _tlActivePath();
+            if (!p) return null;
+            p.loop = !p.loop;
+            _tlAfterEdit();
+            return !!p.loop;
+          },
+          // Wheel zoom about a time (the SAME zoom math the wheel
+          // handler runs); factor>1 zooms IN. Storage stays seconds.
+          tlZoomAbout(tAt, factor) {
+            const xAt = _tlT2X(+tAt);
+            _tlZoom = Math.max(_TL_ZOOM_MIN,
+              Math.min(_TL_ZOOM_MAX, _tlZoom * (+factor || 1)));
+            _tlScroll = (+tAt) - (xAt - _TL_PAD) / _tlZoom;
+            if (_tlScroll < 0) _tlScroll = 0;
+            _tlDraw();
+            _tlSyncPlayhead();
+            return _tlZoom;
+          },
+          // fps grid toggle (RELABEL ONLY -- asserts stored t
+          // unchanged before/after). Pass a specific fps or cycle.
+          tlSetFps(v) {
+            _tlFps = (v && v > 0) ? (v | 0) : 0;
+            _tlFpsBtn.textContent =
+              _tlFps > 0 ? (_tlFps + 'fps') : 'fps';
+            _tlDraw();
+            return _tlFps;
+          },
+          // The Task-16 trajectory overlay's current keyframe
+          // signature -- so the harness can assert an in-memory
+          // temporal edit actually triggered the overlay rebuild
+          // (the sig CHANGED) without a save/network.
+          get tlOverlaySig() {
+            try {
+              const p = _tlActivePath();
+              return (typeof _trajKfSig === 'function')
+                ? _trajKfSig(p) : '';
+            } catch (e) { return ''; }
+          },
+          // v2-C Phase 2 follow-on (R2): force a timeline redraw
+          // against the current _tlActivePath(). Used by _camSelApply
+          // when the author rebinds to a different camera so the
+          // bottom-timeline diamonds reflect the NEW path immediately
+          // (the timeline IIFE's per-frame update() only syncs the
+          // playhead position; it never redraws the diamond row off
+          // path-change alone). _tlDraw + _tlSyncPlayhead are the SAME
+          // pair every existing edit-hook (_tlAfterEdit / tlZoomAbout
+          // / tlSetFps) uses, so this reuses the canonical refresh.
+          // Safe for a freshly-created empty-keyframes path:
+          // _tlDraw's `if (!p || !p.keyframes || !p.keyframes.length)
+          // return;` short-circuits AFTER clearing the canvas, so the
+          // strip ends up genuinely EMPTY rather than showing stale
+          // diamonds from the prior camera.
+          tlRedraw() {
+            // Phase 2C: the active path may have changed; refresh
+            // the Length field off the new path's
+            // total_duration_s / kf-derived ceiling.
+            _tlRefreshTotalUI();
+            // UX-Phase11-R2 #4: a path-select rebinds the timeline to a
+            // DIFFERENT path -- fit the px mapping to the new path's
+            // range so its diamonds frame the lane (instead of keeping
+            // the previous path's zoom/scroll). _tlFitToPath calls
+            // _tlDraw + _tlSyncPlayhead, so this still does the same
+            // refresh pair the prior body did.
+            _tlFitToPath();
+          },
+          // ---- Phase 2C test surface ----
+          // The Python-mirror helper (tests assert against it).
+          get tlEffectiveScrubRange() {
+            return _effectiveScrubRange(_tlActivePath());
+          },
+          // Drive the REAL handler the click runs (so the harness can
+          // assert the snapshot + cfg mutation without simulating a
+          // pointer event).
+          tlSkipPrev() { _tlSkipPrev(); return _tlPlayheadT(); },
+          tlSkipNext() { _tlSkipNext(); return _tlPlayheadT(); },
+          // Phase 2D multi-lane registry test surface.
+          get tlLaneCount() { return _tlLanesOrder.length; },
+          get tlLaneNames() { return _tlLanesOrder.slice(); },
+          get tlLabelGutterPx() { return _LABEL_W; },
+          // UX-Phase11-R2 #5: the always-on Length field's px-per-second
+          // zoom + scroll, so the harness can assert the #4 auto-fit
+          // reflow (diamonds move) after a length commit.
+          get tlZoomNow() { return _tlZoom; },
+          // Set the Length value (the SAME path Enter/blur in the input
+          // runs: one snapshot labelled 'path-length' + an auto-fit).
+          // Returns the post-commit value. A non-positive / non-finite
+          // value is rejected (no null write -- the field never reverts
+          // to "auto"); the prior value is returned.
+          tlSetTotalDuration(v) {
+            const p = _tlActivePath();
+            if (!p) return null;
+            const prev = (p.total_duration_s !== undefined &&
+              p.total_duration_s !== null) ? +p.total_duration_s : null;
+            if (!(isFinite(+v) && +v > 0)) return prev;
+            if (+v === prev) return prev;
+            _tlPushHistorySnap('path-length');
+            p.total_duration_s = +v;
+            _tlRefreshTotalUI();
+            _tlFitToPath();
+            return p.total_duration_s;
+          },
+          // ---- #164 clip editor test surface (drive the REAL level
+          //      transitions + read the two-level state). Functions, not
+          //      getters where a live value is needed (the descriptor copy
+          //      preserves getters too, but the level mutates so plain
+          //      getters are fine here -- they recompute per access).
+          get tlLevel() { return _tlLevel; },
+          get tlActiveClipId() { return _tlActiveClipId; },
+          get tlHasClips() { return _tlHasClips(); },
+          get tlSeqTotalDur() { return _tlSeqTotalDur(); },
+          get tlSeqPlayheadT() { return _tlSeqPlayheadT(); },
+          // The breadcrumb text + back-button visibility (so the harness
+          // can assert the affordances without reading pixels).
+          get tlCrumbText() { return _tlCrumb.textContent; },
+          get tlSeqBackVisible() {
+            return _tlSeqBack.style.display !== 'none';
+          },
+          // The ordered clip ids (playback order) -- so the harness can map
+          // an id to its sequence index for the click/enter hooks.
+          get tlClipIds() {
+            return _tlClipsLive().map(k => k && k.id);
+          },
+          // Resolve a clip id -> its bound camera_paths id (the value
+          // _tlEnterClip passes to _camSelApply). null if unresolvable.
+          tlClipPathId(clipId) {
+            const clip = _tlClipsLive().find(k => k && k.id === clipId);
+            const path = clip ? _tlClipPath(clip) : null;
+            return (path && path.id) || null;
+          },
+          // #167: the CLIP-LEVEL cuts-module-lane clip hit-test (the SAME
+          // _tlHitCutsLaneClip the pointerdown router runs). Returns the
+          // clip id at the given LANE-coord (x,y) (relative to the lane top-
+          // left, the _tlLaneXY space) or null. Lets the harness confirm a
+          // real-pixel coordinate maps to the expected clip without a click.
+          tlHitCutsLaneClipAt(x, y) { return _tlHitCutsLaneClip(+x, +y); },
+          // Click-a-clip -> load its camera + drop to clip level (the SAME
+          // _tlEnterClip the sequence-level pointerdown runs). Returns the
+          // post-enter level + the now-bound selEl path id.
+          tlEnterClip(clipId) {
+            const ok = _tlEnterClip(clipId);
+            let bound = null;
+            try { bound = selEl ? selEl.value : null; } catch (e) {}
+            return { ok: ok, level: _tlLevel, boundPathId: bound,
+              activeClipId: _tlActiveClipId };
+          },
+          // Back to the cuts track (the SAME _tlEnterSequence the back
+          // button runs). Returns the post-transition level.
+          tlEnterSequence() { _tlEnterSequence(); return _tlLevel; },
+          // Master (sequence) scrub to a master time in SECONDS -- the SAME
+          // _tlSeqScrubToMasterT the ruler-drag runs (cuts at clip
+          // boundaries via the EXISTING per-clip scrub path). Returns the
+          // now-bound camera path id (the previewed camera) + the master t.
+          tlSeqScrub(masterT) {
+            _tlSeqScrubToMasterT(+masterT || 0);
+            let bound = null;
+            try { bound = selEl ? selEl.value : null; } catch (e) {}
+            return { boundPathId: bound, masterT: _tlSeqScrubT,
+              activeClipId: _tlActiveClipId };
+          },
+          // Sequence-level Play -> the cut chain (the SAME window.__clip
+          // .restart() the _tlPlay click runs at sequence level). Returns
+          // whether the cut sequence is now active.
+          tlSeqPlay() {
+            if (_tlLevel === 'sequence' && _tlHasClips()) {
+              try {
+                if (window.__clip &&
+                    typeof window.__clip.restart === 'function') {
+                  window.__clip.restart();
+                }
+              } catch (e) {}
+            }
+            let active = false;
+            try {
+              active = (typeof _clipState !== 'undefined' && _clipState &&
+                _clipState.active);
+            } catch (e) {}
+            return active;
+          },
+        };
+        // Copy onto the Task-16 window.__editor PRESERVING getters as
+        // GETTERS (Object.assign would invoke each getter once and
+        // freeze the RESULT as a static data property -- so a later
+        // tlZoomAbout/tlSetFps/tlDragKf mutation would not be visible
+        // through window.__editor.tlZoom/.tlFps/.tlKfTimes). Copy the
+        // property DESCRIPTORS so the getters stay live (mirrors how
+        // the Task-16 surface itself uses real getters).
+        Object.defineProperties(
+          window.__editor, Object.getOwnPropertyDescriptors(_api));
+      }
+    } catch (e) {}
+  })();
+

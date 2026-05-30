@@ -1,0 +1,1169 @@
+  // ============================================================
+  //  v2-C Phase 1 -- top-bar Camera selector (#camera-select)
+  // ------------------------------------------------------------
+  //  Switches between free-fly ("Perspective") and an animated /
+  //  scene camera's binding (author) or playback (end-user).
+  //  "Perspective" is a RESERVED, NON-persisted pseudo-camera
+  //  sentinel (id literal _CAM_PERSP) -- it is NEVER written to
+  //  cfg, NEVER in the SPCP patch, NEVER a camera_paths/cameras
+  //  entry, purely a viewer-UI sentinel, exactly analogous to the
+  //  non-persisted 'idle-orbit'/'orbit' _activePathId sentinels.
+  //
+  //  #camera-select is the authoritative top-bar selector that
+  //  MIRRORS into the EXISTING hidden #path-select (selEl). The
+  //  ~30 mini-transport / _trajActivePath / _tlActivePath /
+  //  _gzActivePath / scrub / ClipPlayer call sites are NOT
+  //  rewired -- they keep reading selEl.value; this handler just
+  //  writes the chosen path id into selEl.value (the SAME thing
+  //  the play button / scrub already read lazily -- there is no
+  //  explicit selEl 'change' listener, so setting .value IS the
+  //  rebind) and then, for a real camera, AUTHOR = bind only
+  //  (the overlay/timeline/gizmo rebind off selEl on the next
+  //  OverlayScene tick; camera holds still -- A6 scrub-release-
+  //  no-autoplay parity), END-USER = drive that path's tour
+  //  (reusing the existing startPath / clip machinery). For
+  //  Perspective: stopPath() if playing + (end-user) _stopTour()
+  //  (an explicit interrupt, reusing the click-to-interrupt
+  //  machinery -- idle-orbit cancelled), leaving _player===null
+  //  so OrbitControls/WASD owns the camera; the editor overlay
+  //  inertly shows nothing (the _trajActivePath() Perspective
+  //  guard returns null). This whole block lands strictly INSIDE
+  //  the EXISTING #path-* wiring region so it is byte-lock
+  //  recipe-2c (absorbed; the remainder pin is unaffected by it
+  //  -- only the end-user #camera-select <select> MARKUP, which
+  //  is OUTSIDE every region, needs the deliberate re-pin).
+  const _CAM_PERSP = '__perspective__';
+  // v2-C Phase 2 REFINE: the "+ Create camera" sentinel was dropped in
+  // favour of a VISIBLE "+ Add camera" BUTTON (#add-camera-btn) wired
+  // straight to _camSelCreate() -- no dropdown sentinel any more (the
+  // dropdown is now the cleaner "Perspective | each camera" peer-list it
+  // semantically already is). #add-camera-btn + #rename-camera-btn live
+  // in the EXISTING T20-CAMSEL-DOM markup region and are CSS-gated to
+  // authormode in the EXISTING T12-CSS region (recipe-2c throughout --
+  // the byte-lock remainder pin stays UNCHANGED).
+  const _camSel = document.getElementById('camera-select');
+  // v2-C Phase 2 -- mirror of core/path_io.py::_new_id ('p_' + 10
+  // hex). The Python schema / set-camera-path accept exactly this
+  // shape, so a JS-created path id round-trips through the EXISTING
+  // SPCP / config_merge contract with ZERO codec change.
+  function _newCamId() {
+    let h = '';
+    try {
+      if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+        h = window.crypto.randomUUID().replace(/-/g, '');
+      }
+    } catch (e) {}
+    while (h.length < 10) {
+      h += Math.floor(Math.random() * 16).toString(16);
+    }
+    return 'p_' + h.slice(0, 10);
+  }
+  // v2-C Phase 2 -- next non-colliding "Camera N" (mirrors the
+  // editor's existing default-name convention). Scans BOTH the
+  // virtual cameras and the raw paths so a created name never
+  // duplicates an existing camera/path label.
+  function _camSelNextName() {
+    // Gap-fill semantics: returns the LOWEST unused "Camera N", so a
+    // deleted slot is reused -- e.g. {Camera 1, Camera 3} -> "Camera 2"
+    // (NOT a monotonic counter). Future rename UI is a separate concern.
+    const used = new Set();
+    const cams = Array.isArray(cfg.cameras) ? cfg.cameras : [];
+    for (const c of cams) { if (c && c.name) used.add(c.name); }
+    for (const p of cameraPaths) { if (p && p.name) used.add(p.name); }
+    let n = 1;
+    while (used.has('Camera ' + n)) n += 1;
+    return 'Camera ' + n;
+  }
+  // The animated/scene cameras the dropdown lists. UNION semantics:
+  // cfg.cameras' virtual-camera list ({id,name,path_id}) FIRST, then
+  // synthesise an entry from EACH cameraPaths[i] whose id is NOT already
+  // covered by some cfg.cameras[j].path_id (preserves original scene
+  // cameras when cfg.cameras gains a newly-Added entry but the SAME
+  // pre-existing camera_paths still ship -- WITHOUT this union the
+  // dropdown would switch off the cameraPaths fallback the moment
+  // cfg.cameras becomes non-empty and the original cameras would
+  // DISAPPEAR from the listing). Pure: NEITHER input array is mutated;
+  // the union is recomputed per call -- consistent with the existing
+  // pure-function shape _camSelBuildOptions / _camSelInit rely on.
+  // Each entry is { value:<pathId>, label } (the dropdown value is the
+  // path id -- the same value _camSelApply / selEl rebind read).
+  function _camSelCameras() {
+    const out = [];
+    const covered = new Set();
+    const cams = Array.isArray(cfg.cameras) ? cfg.cameras : [];
+    for (const c of cams) {
+      if (!c || !c.path_id) continue;
+      out.push({ value: c.path_id, label: c.name || c.path_id });
+      covered.add(c.path_id);
+    }
+    let n = 0;
+    for (const p of cameraPaths) {
+      if (!p || !p.id) continue;
+      n += 1;
+      if (covered.has(p.id)) continue;
+      out.push({ value: p.id, label: p.name || ('Camera ' + n) });
+    }
+    return out;
+  }
+  // True while we are programmatically setting _camSel.value (so
+  // the 'change' handler does not re-enter / fight the mirror).
+  let _camSelSyncing = false;
+  // Reflect an externally-chosen active path (ClipPlayer / the
+  // hidden #path-select / a resumed tour) back into #camera-select
+  // when it trivially maps to one of our options; otherwise leave
+  // it (full bidirectional robustness is Phase 2). NEVER selects
+  // the Perspective sentinel from a real path id.
+  function _camSelReflect(pathId) {
+    if (!_camSel) return;
+    if (!pathId) return;
+    let has = false;
+    for (const o of _camSel.options) {
+      if (o.value === pathId) { has = true; break; }
+    }
+    if (!has) return;
+    if (_camSel.value === pathId) return;
+    _camSelSyncing = true;
+    try { _camSel.value = pathId; } catch (e) {}
+    _camSelSyncing = false;
+  }
+  // Apply a #camera-select choice. val === _CAM_PERSP => free-fly;
+  // else bind/drive the chosen path. AUTHOR binds only (no auto-
+  // play); END-USER starts that path's tour.
+  function _camSelApply(val) {
+    const isUser = ModeManager.is('user');
+    // v2-C Phase 2 REFINE: the dropdown no longer carries a create
+    // sentinel -- "+ Add camera" is a visible button (#add-camera-btn)
+    // wired straight to _camSelCreate(). The dropdown is now purely
+    // "Perspective | each camera" -- nothing here to intercept.
+    if (!val || val === _CAM_PERSP) {
+      // Perspective = free-fly. Stop any path playback; in
+      // end-user mode treat it as an explicit interrupt (reuses
+      // the click-to-interrupt machinery -- idle-orbit cancelled,
+      // #user-play handled by _stopTour). Leave _player === null
+      // so OrbitControls/WASD owns the camera.
+      if (isUser && (typeof _stopTour === 'function') &&
+          (_player || (typeof _clipState !== 'undefined' &&
+                       _clipState && _clipState.active))) {
+        _stopTour({ byUser: true });
+      } else if (_player) {
+        stopPath();
+      }
+      if (typeof _cancelIdleOrbit === 'function') {
+        try { _cancelIdleOrbit({ silent: true }); } catch (e) {}
+      }
+      // UX-Phase11A Issue 1 (2026-05-21): the AUTHOR branch above
+      // does not call stopPath()/_stopTour() when _player===null
+      // (e.g. user scrubbed the timeline -- which sets _player +
+      // controls.enabled=false -- then released; no subsequent Play,
+      // so _player stays truthy AT scrub release but later transitions
+      // can leave it null while controls.enabled is STILL false).
+      // The original conditional re-enable above only fires when
+      // _player was truthy. Reproduced live: scrub on Fehmarn
+      // Cinematic, switch to Perspective via dropdown -> OrbitControls
+      // mouse drag does nothing because controls.enabled is false.
+      // Always re-enable on a Perspective switch + clear any paused-
+      // scrub state so the per-frame _trajLayer.update() rebase does
+      // not keep pinning the camera at the last scrub frame.
+      controls.enabled = true;
+      try {
+        if (typeof _pausedAt !== 'undefined') _pausedAt = null;
+        if (typeof _pausedAtPlayer !== 'undefined') _pausedAtPlayer = null;
+      } catch (e) {}
+      return;
+    }
+    // A real camera: mirror into the hidden #path-select (selEl)
+    // -- this IS the rebind (every consumer reads selEl.value
+    // lazily; there is no selEl 'change' listener to dispatch).
+    if (selEl) {
+      try { selEl.value = val; } catch (e) {}
+    }
+    // UX clip-dropdown cosmetic (2026-05-28): also reflect the bind into
+    // the VISIBLE #camera-select so its label is not stale when the bind
+    // is PROGRAMMATIC (e.g. a clip drill-in calls _camSelApply directly,
+    // not via the dropdown's own 'change'). _camSelReflect is guarded
+    // (_camSelSyncing), idempotent (no-ops when _camSel.value already ===
+    // val, e.g. when this runs from the dropdown change handler), and only
+    // selects an option that actually exists -- so this never fights the
+    // mirror nor selects a non-listed path.
+    try { _camSelReflect(val); } catch (e) {}
+    if (isUser) {
+      // END-USER: drive/preview this path's tour, reusing the
+      // existing path-playback machinery (a fresh explicit
+      // selection, so stop any current playback first).
+      if (typeof _stopTour === 'function' &&
+          (_player || (typeof _clipState !== 'undefined' &&
+                       _clipState && _clipState.active))) {
+        _stopTour({ byUser: true });
+      } else if (_player) {
+        stopPath();
+      }
+      startPath(val);
+      // v2-C Phase 2 (P1-deferred fix): switching camera mid-tour
+      // is a FRESH explicit selection that immediately starts a new
+      // tour -- the interrupt the _stopTour above set is over, so
+      // clear it and hide the stale "#user-play" Resume button (it
+      // would otherwise linger over a freshly-playing tour). This
+      // mirrors _resumeTour()'s own teardown EXACTLY
+      // (_userInterrupted = false; _showUserPlay(false)), so it
+      // leaves consistent state and does NOT regress normal
+      // click-to-interrupt / Resume for the default path (that
+      // path never calls _camSelApply -- only an explicit
+      // #camera-select change does). typeof-guarded like the
+      // _stopTour call above (this function only runs at user-
+      // interaction time, well after both are defined).
+      // GATE on `_player`: startPath(val) calls buildPlayer(val);
+      // when val's path has <2 keyframes, buildPlayer returns null
+      // and startPath shows an alert + returns WITHOUT setting
+      // _player -- playback never began. Without this guard the
+      // teardown below would silently drop _userInterrupted /
+      // hide #user-play even though no new tour started. Edge
+      // case (only reachable on a freshly-created camera with an
+      // empty keyframes list selected via dropdown before Record),
+      // but cheap to fix correctly.
+      if (_player) {
+        if (typeof _userInterrupted !== 'undefined') {
+          _userInterrupted = false;
+        }
+        if (typeof _showUserPlay === 'function') {
+          try { _showUserPlay(false); } catch (e) {}
+        }
+      }
+    } else {
+      // AUTHOR: bind only -- the editor/timeline/gizmo rebind off
+      // selEl on the next OverlayScene tick (_trajActivePath reads
+      // selEl.value); the camera holds still until the user presses
+      // Play/transport. (Consistent with A6: a bind is not a play.)
+      //
+      // v2-C Phase 2 follow-on (R2): the next-tick lazy rebind leaves
+      // a visible window where the PREVIOUSLY-bound camera's
+      // trajectory overlay + gizmo + bottom-timeline diamonds keep
+      // rendering until the OverlayScene update() detects the path-id
+      // mismatch. For an EMPTY new camera (just-created via "+ Add
+      // camera") that window is especially confusing because no
+      // rebuilt geometry replaces it -- the user sees the prior
+      // camera's path still drawn under the new (correct)
+      // #camera-select label. Force an immediate synchronous rebuild:
+      //   * _trajForceRebuild() rebuilds the trajectory polyline /
+      //     frusta / speed-dots for the NEW active path. Its body
+      //     gracefully handles a <2-keyframes empty path (_trajClear
+      //     drops every old child; _trajRebuild returns early at
+      //     `if (!player) return;` so the overlay ends up genuinely
+      //     EMPTY rather than stale-or-throwing).
+      //   * window.__editor.gzDetach() drops any stale gizmo
+      //     selection -- the previous keyframe index has no meaning
+      //     on the new camera. Already exposed (Task-18 surface);
+      //     typeof-guarded so this is safe even during early init.
+      //   * window.__editor.tlRedraw() forces the bottom timeline
+      //     canvas to redraw against the new active path so its
+      //     diamonds reflect the new keyframes (the timeline IIFE
+      //     only redraws on internal edits; its per-frame update()
+      //     only syncs the playhead position).
+      try { _trajForceRebuild(); } catch (e) {}
+      try {
+        if (window.__editor && typeof window.__editor.gzDetach ===
+            'function') { window.__editor.gzDetach(); }
+      } catch (e) {}
+      try {
+        if (window.__editor && typeof window.__editor.tlRedraw ===
+            'function') { window.__editor.tlRedraw(); }
+      } catch (e) {}
+      // UX-2 (2026-05-20): snap the viewport pose to the newly-bound
+      // path's current scrub frame so the author SEES where the
+      // camera lives. A6 (scrub-release-no-autoplay) is about NOT
+      // auto-RESUMING after a scrub release -- an EXPLICIT dropdown
+      // bind is a fresh selection where the user expects the camera
+      // to TELEPORT-PREVIEW. We sample the pose at the current scrub
+      // frac (0 if no prior scrub), write camera + orbit-target, and
+      // do NOT touch _player/_t0/_pausedAt -- so subsequent Play /
+      // scrub behaviour is unchanged. If a prior scrub left the
+      // player paused on a DIFFERENT path we stopPath() first so the
+      // stale player does not keep advancing past the snapped pose.
+      //
+      // UX-5 (2026-05-20): the prior nesting (stopPath()/controls re-
+      // enable INSIDE the `pv && pv.duration > 0` snap block) silently
+      // skipped both on a <2-keyframe path -- buildPlayer returns null
+      // for 0/1 kfs, the entire snap block is no-op'd, the stale
+      // _player + _pausedAt from a prior scrub keep the per-frame
+      // _trajLayer.update() rebase pinning the camera, AND controls
+      // stay disabled (so the user cannot mouse-drag to position
+      // keyframe #2). User-reported via Telegram on 2026-05-20:
+      // "I seem to not be able to scrub the timeline when I create a
+      // new camera that only has one keyframe. But how am I supposed
+      // to set the next keyframe if I cannot scrub?" The stale-player
+      // stop + controls.enabled=true are now UNCONDITIONAL on a real-
+      // path bind (the snap itself stays gated -- nothing to snap to
+      // on an empty path), so an empty/1-kf camera is mouse-draggable
+      // for Record-K to capture the next keyframe.
+      try {
+        const apPath = cameraPaths.find(x => x && x.id === val);
+        if (apPath) {
+          // UX-5: stale-player stop is UNCONDITIONAL on a real-path
+          // bind (lifted OUT of the snap block). On a <2-kf path the
+          // snap below no-ops; without this, _player + _pausedAt from
+          // a prior path's scrub would leak across the camera switch
+          // and the _trajLayer.update() per-frame rebase would keep
+          // pinning the camera at the OLD path's _pausedAt.
+          if (_player && _activePathId && _activePathId !== val) {
+            try { stopPath(); } catch (e) {}
+          }
+          const pv = buildPlayer(apPath);
+          if (pv && pv.duration > 0) {
+            const tFrac = scrubEl
+              ? Math.max(0, Math.min(1,
+                  (parseFloat(scrubEl.value) || 0) / 1000))
+              : 0;
+            const tSnap = tFrac * pv.duration;
+            const s = sampleAt(pv, tSnap);
+            if (s && s.pos) {
+              camera.position.set(s.pos[0], s.pos[1], s.pos[2]);
+              camera.quaternion.set(s.quat[0], s.quat[1], s.quat[2], s.quat[3]);
+              if (typeof s.fov === 'number' && camera.isPerspectiveCamera) {
+                camera.fov = s.fov;
+                camera.updateProjectionMatrix();
+              }
+              if (controls && controls.target) {
+                const _fwd = new THREE.Vector3(0, 0, -1)
+                  .applyQuaternion(camera.quaternion);
+                controls.target.copy(camera.position)
+                  .addScaledVector(_fwd, 5);
+                controls.update();
+              }
+            }
+          }
+          // UX-5: ALWAYS re-enable controls after an author-mode bind
+          // (lifted OUT of the snap block). Required for the <2-kf
+          // empty-path workflow: the user must be able to mouse-drag
+          // OrbitControls to position the camera for Record-K. stopPath
+          // above also sets controls.enabled=true, but it is gated on
+          // `_player && _activePathId !== val` -- a fresh tab with no
+          // prior path play would skip it. Belt-and-braces here so the
+          // bound state is always interactive.
+          controls.enabled = true;
+        }
+      } catch (e) {}
+    }
+  }
+  // v2-C Phase 2 -- (re)build the camera options. Single source of
+  // truth for BOTH #camera-select (Perspective sentinel kept as
+  // option 0 -- never destroyed -- then the cameras) AND the hidden
+  // #path-select (the ~30 selEl consumers read selEl.value; they
+  // need the new path as a real <option> so selEl.value = id sticks
+  // -- the SAME rebind contract Phase 1 relies on). Reused by init,
+  // by create (no duplicated option-build) AND by rename (so a new
+  // label shows up immediately). Phase 2 REFINE: no "+ Create
+  // camera" sentinel any more -- a visible #add-camera-btn replaces
+  // it (button click -> _camSelCreate() directly).
+  function _camSelBuildOptions() {
+    if (_camSel) {
+      // Drop everything AFTER the Perspective sentinel (option 0,
+      // already in the markup -- never rebuilt) then re-add.
+      while (_camSel.options.length > 1) {
+        _camSel.remove(_camSel.options.length - 1);
+      }
+      for (const c of _camSelCameras()) {
+        const opt = document.createElement('option');
+        opt.value = c.value;
+        opt.textContent = c.label;
+        _camSel.appendChild(opt);
+      }
+    }
+    // Rebuild the hidden #path-select with the SAME (value=p.id,
+    // text=p.name||p.id) options the ORIGINAL inline build used --
+    // byte-identical for the 6 live single-path scenes (no
+    // cfg.cameras there), plus any freshly-created path -- so
+    // selEl.value = <createdPathId> resolves. The Perspective /
+    // create sentinels are viewer-only (NOT real paths) so they
+    // are deliberately NOT mirrored into selEl.
+    if (selEl) {
+      selEl.innerHTML = '';
+      for (const p of cameraPaths) {
+        if (!p || !p.id) continue;
+        const opt = document.createElement('option');
+        opt.value = p.id;
+        opt.textContent = p.name || p.id;
+        selEl.appendChild(opt);
+      }
+    }
+  }
+  // v2-C Phase 2 -- AUTHOR-ONLY "+ Create camera". Builds a fresh
+  // PathDict mirroring core/path_io.py::new_path defaults (id via
+  // _newCamId == _new_id; interpolation 'catmull' == path_io
+  // DEFAULT_INTERPOLATION; smoothness 1.0; play_speed 1.0; loop
+  // false; keyframes []), registers it in BOTH cfg.camera_paths
+  // (== the live cameraPaths alias) AND cfg.cameras ({id,name,
+  // path_id} -- the SAME virtual-camera model _clipCameras /
+  // _camSelCameras already consume), rebuilds the options, selects
+  // it, and binds the editor to its (empty) path via the EXISTING
+  // _camSelApply / selEl rebind (NO duplicated rebind logic). The
+  // spline's buildPlayer already guards <2 keyframes, so an empty
+  // keyframes:[] never throws (Record-K then populates it). The
+  // created/selected camera's path id is written to
+  // cfg.default_path_id so the EXISTING _buildPatch / SPCP path
+  // round-trips it -- NO new wire key, NO _encodeSpcp / _PATCH_KEYS
+  // change, primary_asset force-keep untouched (it is excluded by
+  // _buildPatch already -- left that way).
+  function _camSelCreate() {
+    if (!_EDITOR_AUTHOR) return;
+    const camId = _newCamId();
+    const pathId = _newCamId();
+    const name = _camSelNextName();
+    const newPath = {
+      id: pathId,
+      name: name,
+      loop: false,
+      interpolation: 'catmull',
+      smoothness: 1.0,
+      play_speed: 1.0,
+      keyframes: [],
+    };
+    // Push into the LIVE `cameraPaths` binding (what startPath /
+    // buildPlayer / the _camSelCameras fallback / the selEl rebuild
+    // all read) AND keep cfg.camera_paths pointing at that SAME
+    // array (what _buildPatch / the SPCP token / _clipPath read) --
+    // they are normally already the same reference (`const
+    // cameraPaths = cfg.camera_paths || []`), but if cfg had no
+    // camera_paths at init they diverged; re-alias so a created
+    // path is visible to BOTH the editor AND the save patch.
+    cameraPaths.push(newPath);
+    cfg.camera_paths = cameraPaths;
+    // cfg.cameras is MUTATED here; _clipCameras / _clipMode were
+    // frozen at init by design -- Phase 2 does NOT activate clip mode
+    // at runtime. Create-camera + clip is a future-phase concern.
+    if (!Array.isArray(cfg.cameras)) cfg.cameras = [];
+    cfg.cameras.push({ id: camId, name: name, path_id: pathId });
+    // Authored-selection persistence: reuse cfg.default_path_id (no
+    // new wire key). _buildPatch / the SPCP token round-trip it.
+    cfg.default_path_id = pathId;
+    _camSelBuildOptions();
+    _camSelSyncing = true;
+    if (_camSel) { try { _camSel.value = pathId; } catch (e) {} }
+    _camSelSyncing = false;
+    // Bind via the EXISTING apply path (author branch = bind only;
+    // it mirrors pathId into selEl so _trajActivePath / the gizmo /
+    // timeline / _gzRecordKeyframe operate on the new empty path).
+    _camSelApply(pathId);
+  }
+  // v2-C Phase 2 REFINE -- AUTHOR-ONLY rename of the currently-selected
+  // camera. In-place mutation of BOTH cfg.cameras[i].name AND the
+  // matching cfg.camera_paths/cameraPaths entry's .name (so the
+  // dropdown rebuild + the SPCP _buildPatch round-trip both see the
+  // new label). NO new wire change: `cameras` / `camera_paths` are
+  // already in _PATCH_KEYS, primary_asset force-keep is unchanged,
+  // and a renamed-in-place entry round-trips through the EXISTING
+  // SPCP / config_merge contract with ZERO codec change. The
+  // Perspective sentinel cannot be renamed (it is not a real camera).
+  function _camSelRename() {
+    if (!_EDITOR_AUTHOR) return;
+    if (!_camSel) return;
+    const val = _camSel.value;
+    if (!val || val === _CAM_PERSP) return;
+    // Locate the path entry by id (the dropdown value is always the
+    // path id -- both from _camSelCameras' cfg.cameras branch and its
+    // raw cameraPaths fallback).
+    const pathIdx = cameraPaths.findIndex(p => p && p.id === val);
+    let camsArr = Array.isArray(cfg.cameras) ? cfg.cameras : null;
+    let camIdx = -1;
+    if (camsArr) {
+      camIdx = camsArr.findIndex(c => c && c.path_id === val);
+    }
+    if (pathIdx < 0 && camIdx < 0) return;
+    const cur = (camIdx >= 0 && camsArr[camIdx] && camsArr[camIdx].name)
+      ? camsArr[camIdx].name
+      : ((pathIdx >= 0 && cameraPaths[pathIdx] && cameraPaths[pathIdx].name)
+         ? cameraPaths[pathIdx].name
+         : '');
+    let next;
+    try { next = window.prompt('Rename camera', cur || ''); }
+    catch (e) { next = null; }
+    if (next === null) return;          // cancelled
+    next = ('' + next).trim();
+    if (!next) return;                  // reject blank
+    if (next.length > 60) next = next.slice(0, 60);
+    if (next === cur) return;           // no-op
+    if (camIdx >= 0) camsArr[camIdx].name = next;
+    if (pathIdx >= 0) cameraPaths[pathIdx].name = next;
+    // Keep cfg.camera_paths pointing at the live cameraPaths binding
+    // (defensive -- same re-alias _camSelCreate does, harmless if
+    // they were already the same reference).
+    cfg.camera_paths = cameraPaths;
+    // Rebuild dropdown options reflecting the new label, then
+    // re-select the same camera (_camSelReflect is a no-op when
+    // _camSel.value already matches `val`, so this is idempotent).
+    _camSelBuildOptions();
+    _camSelReflect(val);
+  }
+  // v2-C Phase 3 -- AUTHOR-ONLY Delete of the currently-selected camera.
+  // Removes the entry from BOTH cfg.cameras AND cfg.camera_paths
+  // (kept-in-sync mutation -- mirrors _camSelRename's dual-walk),
+  // with two guards:
+  //   1. Clip-reference guard: refuses deletion if the camera id is
+  //      bound to any clip in cfg.clips' cut sequence (so the cut
+  //      timeline never points at a vanished id). The JS walk is a
+  //      mirror of core/scene_cuts.py::find_clips_referencing_camera
+  //      (same shape, same defensive isArray gate); the camera id
+  //      checked here is the camsArr entry's `id`, NOT the path_id
+  //      (clips reference cfg.cameras[i].id via camera_id, NOT path
+  //      ids -- the same contract validate_clips enforces).
+  //   2. Last-camera guard: refuses deletion of the LAST remaining
+  //      camera (a scene must always have >=1 camera; auto-fall back
+  //      to Perspective would create a stale-tour-resume edge case).
+  // After mutation, if the deleted camera was currently selected, the
+  // current-camera fallback is the FIRST remaining camera (spec
+  // requirement: predictable visible camera, not Perspective).
+  // _camSelApply(newId) triggers the same overlay-refresh hooks
+  // _camSelRename does NOT need to (rename keeps the same path id) --
+  // delete does need them (the new path id changes the active
+  // trajectory + gizmo + timeline). The defense-in-depth guard uses
+  // ModeManager.is('author') (NOT _EDITOR_AUTHOR -- declared later in
+  // scope at template.py:4454; ModeManager is safe at this scope).
+  function _camSelDelete() {
+    if (!ModeManager.is('author')) return;
+    if (!_camSel) return;
+    const val = _camSel.value;
+    if (!val || val === _CAM_PERSP) return;
+    // Locate the path entry by id (same lookup _camSelRename does --
+    // the dropdown value is always the path id).
+    const pathIdx = cameraPaths.findIndex(p => p && p.id === val);
+    const camsArr = Array.isArray(cfg.cameras) ? cfg.cameras : null;
+    let camIdx = -1;
+    if (camsArr) {
+      camIdx = camsArr.findIndex(c => c && c.path_id === val);
+    }
+    if (pathIdx < 0 && camIdx < 0) return;
+    // Resolve display name + camera id for the alerts/confirm dialog
+    // (the camera id is what clips reference; the name is for the UI).
+    const camId = (camIdx >= 0 && camsArr[camIdx] && camsArr[camIdx].id)
+      ? camsArr[camIdx].id : null;
+    const displayName = (camIdx >= 0 && camsArr[camIdx] && camsArr[camIdx].name)
+      ? camsArr[camIdx].name
+      : ((pathIdx >= 0 && cameraPaths[pathIdx] && cameraPaths[pathIdx].name)
+         ? cameraPaths[pathIdx].name
+         : val);
+    // Guard 1: clip-reference -- JS mirror of
+    // core/scene_cuts.py::find_clips_referencing_camera. Defensive
+    // isArray gate (the 6 live single-camera scenes carry NO cfg.clips,
+    // so this is an empty-list walk -> 0 refs -> safe to proceed past
+    // this gate). If the camera has no `id` in cfg.cameras (path-only
+    // camera, no virtual-camera entry), it cannot be referenced by a
+    // clip (clips need a camera_id pointing at cfg.cameras[i].id) ->
+    // skip the walk.
+    if (camId) {
+      const rawClips = Array.isArray(cfg.clips) ? cfg.clips : [];
+      const refs = [];
+      for (const clip of rawClips) {
+        if (!clip || typeof clip !== 'object') continue;
+        const cid = clip.camera_id;
+        if (cid === null || cid === undefined) continue;
+        if (cid === camId) refs.push(clip);
+      }
+      if (refs.length > 0) {
+        try {
+          alert('Cannot delete "' + displayName + '" — it\'s referenced by '
+                + refs.length + ' clip(s) in the cut sequence. '
+                + 'Remove those clips first.');
+        } catch (e) {}
+        return;
+      }
+    }
+    // Guard 2: last-camera. The remaining-count is taken AFTER hypothetical
+    // removal: if the post-delete camera count drops to 0, refuse. The
+    // "camera count" is the number of dropdown entries (UNION of
+    // cfg.cameras + raw cameraPaths via _camSelCameras), NOT cfg.cameras
+    // alone (a path-only camera still counts as a dropdown entry). This
+    // matches what the user actually sees in the #camera-select dropdown.
+    const remainingCount = _camSelCameras().length - 1;
+    if (remainingCount <= 0) {
+      try {
+        alert('At least one camera must exist. '
+              + 'Add another camera before deleting this one.');
+      } catch (e) {}
+      return;
+    }
+    // Confirm. ASCII-only message (the apostrophe in "cannot" is fine
+    // -- this is JS string content, not the .py source). The
+    // confirmation reads the displayName (the rename-aware label).
+    let proceed = false;
+    try {
+      proceed = window.confirm('Delete "' + displayName
+                               + '"? This cannot be undone.');
+    } catch (e) { proceed = false; }
+    if (!proceed) return;
+    // ---- Mutation -----------------------------------------------------
+    // Remove from cfg.camera_paths / cameraPaths. We splice the live
+    // array (the same reference cfg.camera_paths aliases -- preserved by
+    // _camSelCreate / _camSelRename's defensive re-alias below). The
+    // alternative (rebuild via .filter) would BREAK the alias and lose
+    // any future mutation; splice keeps it stable.
+    if (pathIdx >= 0) {
+      cameraPaths.splice(pathIdx, 1);
+    }
+    if (camIdx >= 0 && camsArr) {
+      camsArr.splice(camIdx, 1);
+    }
+    // Defensive re-alias (same pattern _camSelCreate / _camSelRename
+    // already do, harmless if they were already the same reference).
+    cfg.camera_paths = cameraPaths;
+    // If the deleted camera was the saved default, re-point at the
+    // FIRST remaining camera's path id (current-camera fallback rule).
+    if (cfg.default_path_id === val) {
+      const firstRemain = (cameraPaths[0] && cameraPaths[0].id) || null;
+      cfg.default_path_id = firstRemain;
+    }
+    // ---- UI refresh ---------------------------------------------------
+    // Rebuild the dropdown so the deleted entry is gone, then bind to
+    // the FIRST remaining camera. _camSelApply's author branch fires
+    // _trajForceRebuild() + window.__editor.gzDetach() + window.__editor
+    // .tlRedraw() (the same hooks the v2-C P2 rename refine relies on
+    // -- consistent stale-overlay refresh after a binding change). For
+    // the create flow this hop-back is "use the newly created path id";
+    // for delete it is "use the first remaining path id" -- the same
+    // _camSelApply path, no new rebind logic.
+    _camSelBuildOptions();
+    const nextPathId = (cameraPaths[0] && cameraPaths[0].id) || null;
+    _camSelSyncing = true;
+    if (_camSel) {
+      try { _camSel.value = nextPathId || _CAM_PERSP; } catch (e) {}
+    }
+    _camSelSyncing = false;
+    // Bind via the EXISTING apply path so the trajectory/gizmo/timeline
+    // rebuild against the new active camera (overlay-refresh hooks
+    // fire). If the post-delete state has no cameras at all (defended
+    // by guard 2, but belt-and-braces here), _camSelApply on the
+    // Perspective sentinel just stops any player and clears overlays.
+    _camSelApply(nextPathId || _CAM_PERSP);
+  }
+  function _camSelInit() {
+    if (!_camSel) return;
+    // Build the camera options after the Perspective sentinel
+    // (always option 0, already in the markup -- never rebuilt),
+    // mirroring them into the hidden #path-select too.
+    _camSelBuildOptions();
+    // Initialise to match the scene's default tour if it maps to
+    // one of our options, else Perspective (free-fly default).
+    // NOTE: deliberately NOT written as a bare
+    // `if (cfg.default_path_id) {` line -- that exact text is the
+    // byte-lock _T13_AS_START anchor and MUST stay unique; use a
+    // local + a truthiness test instead.
+    let init = _CAM_PERSP;
+    const _dpId = cfg.default_path_id || null;
+    if (_dpId) {
+      for (const o of _camSel.options) {
+        if (o.value === _dpId) { init = _dpId; break; }
+      }
+    }
+    _camSelSyncing = true;
+    _camSel.value = init;
+    _camSelSyncing = false;
+    _camSel.addEventListener('change', () => {
+      if (_camSelSyncing) return;
+      _camSelApply(_camSel.value);
+    });
+    // v2-C Phase 2 REFINE -- visible "+ Add camera" + kebab menu (the
+    // kebab opens a small floating popup whose Rename item invokes
+    // _camSelRename). All three (button + kebab + popup) are CSS-gated
+    // to authormode (T12-CSS region) so an end-user never sees them;
+    // the handlers double-guard via _EDITOR_AUTHOR (a devtools click in
+    // usermode is a no-op). The button DOM lives in the EXISTING
+    // T20-CAMSEL-DOM markup region (between the camera-select </select>
+    // and the Bench button) so it is recipe-2c-absorbed and contributes
+    // ZERO to the byte-lock pin.
+    const _addBtn = document.getElementById('add-camera-btn');
+    if (_addBtn) {
+      _addBtn.addEventListener('click', () => { _camSelCreate(); });
+    }
+    // --- Kebab menu wiring -------------------------------------------
+    // Click on #cam-menu-btn toggles #cam-menu-popup; while open we
+    // install ONE document-level click listener (removed on close) that
+    // closes the menu on a click OUTSIDE both the kebab and the popup.
+    // Escape also closes. The menu item (Rename) closes the menu first,
+    // then calls _camSelRename() (existing, unchanged). The teardown is
+    // important so multiple opens never leak listeners.
+    const _camMenuBtn = document.getElementById('cam-menu-btn');
+    const _camMenuPop = document.getElementById('cam-menu-popup');
+    const _camMenuRen = document.getElementById('cam-menu-rename');
+    // v2-C Phase 3: Delete menu item -- mirrors _camMenuRen.
+    const _camMenuDel = document.getElementById('cam-menu-delete');
+    let _camMenuOutside = null;
+    let _camMenuEsc = null;
+    // UX-M2 (2026-05-28): a window-resize listener installed while the
+    // popup is open so the absolutely-positioned menu never leaks to
+    // stale getBoundingClientRect coords.
+    let _camMenuResize = null;
+    // UX-M3 (2026-05-28): focusable menu items in DOM order, for keyboard
+    // navigation (ArrowUp/Down/Home/End move focus; Enter/Space activate).
+    function _camMenuItems() {
+      if (!_camMenuPop) return [];
+      return Array.prototype.slice.call(
+        _camMenuPop.querySelectorAll('[role="menuitem"], button')
+      );
+    }
+    function _camMenuFocusItem(items, idx) {
+      if (!items.length) return;
+      let i = idx;
+      if (i < 0) i = items.length - 1;
+      if (i >= items.length) i = 0;
+      try { items[i].focus(); } catch (e) {}
+    }
+    function _camMenuClose(opts) {
+      if (!_camMenuPop) return;
+      _camMenuPop.style.display = 'none';
+      if (_camMenuBtn) _camMenuBtn.setAttribute('aria-expanded', 'false');
+      _camMenuPop.setAttribute('aria-hidden', 'true');
+      if (_camMenuOutside) {
+        document.removeEventListener('click', _camMenuOutside, true);
+        _camMenuOutside = null;
+      }
+      if (_camMenuEsc) {
+        document.removeEventListener('keydown', _camMenuEsc, true);
+        _camMenuEsc = null;
+      }
+      if (_camMenuResize) {
+        window.removeEventListener('resize', _camMenuResize);
+        _camMenuResize = null;
+      }
+      // UX-M3: on a KEYBOARD close (Escape) return focus to the kebab
+      // trigger so keyboard users are not dumped to <body>. NOT on an
+      // outside-click close (yanking focus there would be rude).
+      if (opts && opts.restoreFocus && _camMenuBtn) {
+        try { _camMenuBtn.focus(); } catch (e) {}
+      }
+    }
+    function _camMenuOpen() {
+      if (!_camMenuBtn || !_camMenuPop) return;
+      // Position the popup directly beneath the kebab (right-aligned
+      // to its right edge so it never spills off the right side of
+      // the top bar).
+      const r = _camMenuBtn.getBoundingClientRect();
+      _camMenuPop.style.display = 'block';
+      _camMenuPop.setAttribute('aria-hidden', 'false');
+      _camMenuBtn.setAttribute('aria-expanded', 'true');
+      // Measure AFTER making visible so offsetWidth is real.
+      const pw = _camMenuPop.offsetWidth || 120;
+      // Anchor: top = below the kebab; left = align popup's right edge
+      // with the kebab's right edge (clamped to viewport left=4).
+      const top = Math.round(r.bottom + 4);
+      let left = Math.round(r.right - pw);
+      if (left < 4) left = 4;
+      _camMenuPop.style.top = top + 'px';
+      _camMenuPop.style.left = left + 'px';
+      _camMenuOutside = function (e) {
+        if (!e || !e.target) return;
+        const t = e.target;
+        if (t.closest && (t.closest('#cam-menu-btn') ||
+            t.closest('#cam-menu-popup'))) return;
+        _camMenuClose();
+      };
+      // UX-M3 (2026-05-28): focus the first item on open + full keyboard
+      // nav (ArrowDown/Up + Home/End move focus; Enter/Space activate the
+      // focused item; Escape closes + restores focus to the kebab).
+      const _items0 = _camMenuItems();
+      if (_items0.length) { try { _items0[0].focus(); } catch (e) {} }
+      _camMenuEsc = function (e) {
+        if (!e) return;
+        const items = _camMenuItems();
+        const cur = items.indexOf(document.activeElement);
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          _camMenuClose({ restoreFocus: true });
+        } else if (e.key === 'ArrowDown') {
+          e.preventDefault(); _camMenuFocusItem(items, cur + 1);
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault(); _camMenuFocusItem(items, cur - 1);
+        } else if (e.key === 'Home') {
+          e.preventDefault(); _camMenuFocusItem(items, 0);
+        } else if (e.key === 'End') {
+          e.preventDefault(); _camMenuFocusItem(items, items.length - 1);
+        } else if ((e.key === 'Enter' || e.key === ' ') && cur >= 0) {
+          e.preventDefault();
+          try { items[cur].click(); } catch (e2) {}
+        }
+      };
+      _camMenuResize = function () { _camMenuClose(); };
+      // useCapture=true so an outside-click is caught before any
+      // bubbling handler can swallow it.
+      document.addEventListener('click', _camMenuOutside, true);
+      document.addEventListener('keydown', _camMenuEsc, true);
+      window.addEventListener('resize', _camMenuResize);
+    }
+    if (_camMenuBtn && _camMenuPop) {
+      _camMenuBtn.addEventListener('click', (e) => {
+        // Stop the click from re-firing the just-installed outside-
+        // click listener (it sees the kebab itself as a closer).
+        if (e && e.stopPropagation) e.stopPropagation();
+        const open = (_camMenuPop.style.display === 'block');
+        if (open) _camMenuClose();
+        else _camMenuOpen();
+      });
+    }
+    if (_camMenuRen) {
+      _camMenuRen.addEventListener('click', () => {
+        _camMenuClose();
+        _camSelRename();
+      });
+    }
+    // v2-C Phase 3: Delete handler -- closes the popup first (so the
+    // alert/confirm dialogs that may open are not obscured by it),
+    // then runs the guarded delete flow. _camSelDelete double-guards
+    // via ModeManager.is('author') so a devtools click in usermode is
+    // a no-op (defense-in-depth -- the kebab itself is CSS-hidden in
+    // user/embed via the T12-CSS region).
+    if (_camMenuDel) {
+      _camMenuDel.addEventListener('click', () => {
+        _camMenuClose();
+        _camSelDelete();
+      });
+    }
+    // R2 #2 (#156): AUTHOR-ONLY "Set as default" -- point
+    // cfg.default_path_id at the currently-selected camera's path id so
+    // the EXISTING _buildPatch / SPCP token round-trips it as the
+    // scene's default tour (the SAME wire key _camSelCreate writes; no
+    // new key). The Perspective sentinel is never a default. Used by the
+    // right-click context menu below.
+    function _camSelSetDefault() {
+      if (!ModeManager.is('author')) return;
+      if (!_camSel) return;
+      const val = _camSel.value;
+      if (!val || val === _CAM_PERSP) return;
+      cfg.default_path_id = val;
+    }
+    // R2 #2 (#156): right-click the camera dropdown -> the SAME actions
+    // the kebab offers (Rename / Delete / Set as default), per-row. The
+    // native <select> cannot reliably surface a per-<option> contextmenu,
+    // so the menu acts on the CURRENTLY-SELECTED camera (the dropdown's
+    // value) -- which is what the kebab already does, now reachable via
+    // right-click. Author-gated + preventDefault (no browser menu). Items
+    // are disabled on the Perspective sentinel (it is not a real camera).
+    if (_camSel) {
+      _camSel.addEventListener('contextmenu', (ev) => {
+        if (!ModeManager.is('author')) return;
+        ev.preventDefault();
+        const val = _camSel.value;
+        const isPersp = (!val || val === _CAM_PERSP);
+        // The selected camera's display label (for the menu title).
+        let label = 'camera';
+        try {
+          for (const o of _camSel.options) {
+            if (o.value === val) { label = o.textContent || label; break; }
+          }
+        } catch (e) {}
+        const isDefault = (cfg && cfg.default_path_id === val);
+        const items = [
+          {
+            label: 'Rename',
+            disabled: isPersp,
+            title: isPersp ? 'Perspective cannot be renamed'
+              : 'Rename ' + label,
+            onSelect: () => { _camSelRename(); },
+          },
+          {
+            label: 'Set as default',
+            disabled: isPersp || isDefault,
+            title: isPersp ? 'Perspective cannot be the default camera'
+              : (isDefault ? 'Already the default camera'
+                 : 'Make ' + label + ' the scene’s default tour'),
+            onSelect: () => { _camSelSetDefault(); },
+          },
+          { separator: true },
+          {
+            label: 'Delete',
+            danger: true,
+            disabled: isPersp,
+            title: isPersp ? 'Perspective cannot be deleted'
+              : 'Delete ' + label,
+            onSelect: () => { _camSelDelete(); },
+          },
+        ];
+        try { openContextMenu(ev.clientX, ev.clientY, items); } catch (e) {}
+      });
+    }
+    // UX-Phase11A Issue 3 (2026-05-21): rebuild the dropdown options
+    // whenever the EditHistory restores cfg (undo/redo) or any module
+    // broadcasts a wholesale cfg change. WITHOUT this, an undo that
+    // adds/removes a camera_paths entry (now restored IN PLACE by the
+    // 17a _restore fix so the alias stays valid) leaves the dropdown
+    // <option> list stale -- the user sees a camera that no longer
+    // exists, or loses one that came back ("sometimes the Fehmarn cam
+    // is missing all of a sudden"). _camSelBuildOptions is idempotent
+    // + reads the live cfg.cameras + cameraPaths, so re-running it
+    // re-syncs the dropdown to the restored cfg. We also re-assert the
+    // current selection (clamped to a still-existing option, else
+    // Perspective) so a deleted-then-undone camera re-selects cleanly.
+    try {
+      if (typeof EditorModuleRegistry !== 'undefined' &&
+          typeof EditorModuleRegistry.on === 'function') {
+        const _camSelOnCfgRestore = function () {
+          try {
+            const prevVal = _camSel ? _camSel.value : null;
+            _camSelBuildOptions();
+            // Re-select the previous value if it still maps to an
+            // option; else fall back to Perspective (a deleted camera).
+            if (_camSel) {
+              let stillThere = false;
+              for (const o of _camSel.options) {
+                if (o.value === prevVal) { stillThere = true; break; }
+              }
+              _camSelSyncing = true;
+              _camSel.value = stillThere ? prevVal : _CAM_PERSP;
+              _camSelSyncing = false;
+            }
+          } catch (e) {}
+        };
+        EditorModuleRegistry.on('history:undo', _camSelOnCfgRestore);
+        EditorModuleRegistry.on('history:redo', _camSelOnCfgRestore);
+      }
+    } catch (e) {}
+  }
+  _camSelInit();
+
+  function startPath(pathId) {
+    const p = cameraPaths.find(x => x.id === pathId);
+    if (!p) return;
+    // UX-3 (2026-05-20): RESUME from _pausedAt when Play is pressed
+    // while the player was scrub-paused on THIS path; else fresh
+    // start at t=0 (the original behaviour). The discriminator is
+    // the prior _activePathId AND _pausedAtPlayer object identity --
+    // a bench/clip launcher in between would have swapped _player so
+    // _pausedAtPlayer !== <whatever bench set> and we naturally fall
+    // back to the fresh-start branch. Read BEFORE buildPlayer so we
+    // do not pick up the freshly-built player as the discriminator.
+    const _resumeT = (_pausedAt !== null && _activePathId === pathId &&
+      _pausedAtPlayer === _player) ? _pausedAt : null;
+    _player = buildPlayer(p);
+    if (!_player) {
+      // UX hot-fix (2026-05-20): the prior alert nag interrupted the
+      // real authoring loop (the user kept iterating, hit Play, got
+      // the modal, lost focus on the K recorder). A <2-keyframe path
+      // cannot play -- bail silently. console.warn keeps the signal
+      // for devs / harnesses without disrupting the author.
+      // - 0 kf: Play silently no-ops (camera holds at start_view)
+      // - 1 kf: Play silently no-ops (camera holds at that pose)
+      // - >=2 kf: normal playback (existing branch below)
+      const _pName = (p && p.name) ? p.name : (p && p.id) ? p.id : '?';
+      const _pKfN = (p && Array.isArray(p.keyframes))
+        ? p.keyframes.length : 0;
+      console.warn("Path '" + _pName + "' has only " + _pKfN +
+        " keyframe(s) -- Play deferred until >=2 keyframes.");
+      return;
+    }
+    // Clear paused state (we are starting/resuming playback now).
+    _pausedAt = null; _pausedAtPlayer = null;
+    const _sp = _player.playSpeed || 1.0;
+    _t0 = _resumeT !== null
+      ? performance.now() - (_resumeT / _sp) * 1000
+      : performance.now();
+    _activePathId = pathId;
+    controls.enabled = false;
+    // Route the existing camera-ownership through InteractionManager
+    // (Task 0). `_player` stays the live per-handler gate so every
+    // `if (_player) return` is byte-identical; this just mirrors the
+    // same ownership into the single queryable broker.
+    InteractionManager.requestPointer('player');
+    _pathIconSync();   // A1: glyph -> STOP (now playing)
+    // v2-C Phase 1: keep the top-bar #camera-select in sync when a
+    // path is started from ANY entry (the hidden #path-select play
+    // button, _introStartTour, _resumeTour) -- trivial reflect only
+    // (maps a real path id to an existing option; never selects the
+    // Perspective sentinel). Region-interior (recipe-2c absorbed).
+    if (typeof _camSelReflect === 'function') _camSelReflect(pathId);
+  }
+  // R2 #9 (2026-05-21): hand the camera back to OrbitControls CLEANLY.
+  // After a tour the player has written camera.position/quaternion every
+  // frame WHILE OrbitControls' update() was skipped (tick() 18:`if
+  // (!_player) controls.update()`), so controls' internal spherical +
+  // controls.target are STALE -- left over from before the tour. The
+  // first controls.update() after _player goes null re-derives the
+  // camera from that stale spherical and snaps it to look at the stale
+  // target (documented "symptom B"; the visible interp-open / Rec / Stop
+  // camera jump). The fix: BEFORE re-enabling controls, point
+  // controls.target at a spot directly ahead of where the camera now
+  // sits and call controls.update() ONCE so the spherical is re-derived
+  // from the LIVE pose. Then every subsequent controls.update() is a
+  // no-op (no snap). Distance: preserve the existing camera->target
+  // distance when finite+positive (keeps the orbit radius natural),
+  // else fall back to ~5 m forward (the same construction the UX-2
+  // bind-snap + the 08_input start-view pivot use:
+  // controls.target.copy(camera.position).addScaledVector(fwd, d)).
+  function _syncControlsToCamera() {
+    if (!controls || !controls.target) return;
+    const _fwd = new THREE.Vector3(0, 0, -1)
+      .applyQuaternion(camera.quaternion);
+    let _d = camera.position.distanceTo(controls.target);
+    if (!(Number.isFinite(_d) && _d > 1e-3)) _d = 5;
+    controls.target.copy(camera.position).addScaledVector(_fwd, _d);
+    // Re-derive OrbitControls' internal spherical from the live camera
+    // pose. Must run with the camera at its final tour pose -- callers
+    // invoke this AFTER the player's last write, BEFORE controls.enabled
+    // flips true, so this single update() cannot fight a stale spherical.
+    try { controls.update(); } catch (e) {}
+  }
+  function stopPath() {
+    _player = null; _activePathId = null; _lastTriggeredAnnotation = null;
+    // UX-3 (2026-05-20): clear paused-scrub state; this is the ONLY
+    // explicit teardown path (besides startPath's clear) so a stale
+    // _pausedAt never survives across a real stop.
+    _pausedAt = null; _pausedAtPlayer = null;
+    // R2 #9: re-sync OrbitControls to the live camera pose BEFORE
+    // re-enabling it, so the next controls.update() in tick() does not
+    // snap the camera to the stale pre-tour target.
+    _syncControlsToCamera();
+    controls.enabled = true;
+    InteractionManager.releasePointer('player');
+    markerObjs.forEach(m => m.el.querySelector('.ann-dot').classList.remove('path-active'));
+    // If a path-driven bench was tied to this path, end its recording too.
+    if (_benchActive && (_benchAutoMode === 'path' || _benchAutoMode === 'cold' || _benchAutoMode === 'probe' || _benchAutoMode === 'rotate')) _benchStop();
+    _pathIconSync();   // A1: glyph -> PLAY (stopped; covers natural end)
+  }
+  // UX-Phase11A Issue 5 (2026-05-21): unified Play/Pause toggle.
+  // User-requested: "we can totally get rid of the pause button and
+  // have the play button do that. So if you push the play button
+  // twice, it becomes a pause icon. And then you click it again, and
+  // it becomes a play icon again, and it plays." These helpers expose
+  // the play/pause/resume tri-state so the 16_editor_timeline transport
+  // can drive ONE toggle button. The pause mechanism reuses the
+  // EXISTING UX-3 paused-scrub state (_pausedAt + _pausedAtPlayer + the
+  // per-frame _trajLayer.update() rebase that PINS the camera at
+  // _pausedAt) -- a pause is "freeze _player at the current playhead",
+  // NOT a stopPath() (which clears _player). Resume reuses startPath's
+  // EXISTING UX-3 resume-from-_pausedAt branch.
+  //
+  //   _pathPlayState() -> 'idle' | 'playing' | 'paused'
+  //   _pathPlayPauseToggle() -> drives the tri-state transition
+  //
+  // _player / _pausedAt / _t0 are all scoped here (09/10); the timeline
+  // calls these functions instead of reaching into the closure.
+  function _pathPlayState() {
+    if (!_player) return 'idle';
+    return (_pausedAt !== null && _pausedAtPlayer === _player)
+      ? 'paused' : 'playing';
+  }
+  function _pathPauseHere() {
+    // Freeze the live player at the current playhead. Compute the
+    // current elapsed t from the SAME formula tick() uses, clamp to the
+    // player duration, set _pausedAt + _pausedAtPlayer so the per-frame
+    // rebase pins it. Does NOT clear _player (that would be a stop).
+    if (!_player) return;
+    const sp = _player.playSpeed || 1.0;
+    let tn = ((performance.now() - _t0) / 1000) * sp;
+    if (_player.loop && tn > _player.duration) tn = tn % _player.duration;
+    tn = Math.max(0, Math.min(tn, _player.duration));
+    _pausedAt = tn;
+    _pausedAtPlayer = _player;
+    if (selEl && selEl.value) _activePathId = selEl.value;
+    _pathIconSync();
+  }
+  function _pathPlayPauseToggle() {
+    const st = _pathPlayState();
+    if (st === 'playing') {
+      _pathPauseHere();
+    } else {
+      // idle OR paused -> (re)start. startPath's UX-3 branch resumes
+      // from _pausedAt when _activePathId + _pausedAtPlayer match THIS
+      // path; otherwise it is a fresh t=0 start. Use selEl.value (the
+      // active path the timeline edits) as the path id.
+      startPath(selEl ? selEl.value : _activePathId);
+    }
+  }
+  // Expose for the 16_editor_timeline transport (loaded AFTER this
+  // fragment). Window-level so the timeline IIFE reads ONE surface
+  // (mirrors the existing _camSelReflect / startPath / stopPath
+  // cross-fragment access pattern; these are plain functions, not the
+  // test-only window.__editor getters).
+  try {
+    window.__spTransport = window.__spTransport || {};
+    window.__spTransport.playState = _pathPlayState;
+    window.__spTransport.playPauseToggle = _pathPlayPauseToggle;
+    window.__spTransport.pauseHere = _pathPauseHere;
+  } catch (e) {}
+  playBtn.addEventListener('click', () => startPath(selEl.value));
+  stopBtn.addEventListener('click', stopPath);
+  scrubEl.addEventListener('input', () => {
+    // UX-R3 #6 (2026-05-21): scrubbing in PERSPECTIVE must NOT hijack the
+    // view camera. The dropdown sentinel _CAM_PERSP means free-fly --
+    // OrbitControls/WASD owns the camera and _player is left null. The
+    // block below (build a _player off selEl.value -> set _t0/_pausedAt ->
+    // the 18_frame_loop `if (_player)` block writes camera.position/
+    // quaternion + the 15 rebase pins it) would TELEPORT the free-fly view
+    // to the path's sampled pose even though the user is looking at the
+    // tour camera FROM OUTSIDE. User-reported: "switch to Perspective, move
+    // freely, scrub -> the view jumps onto the path (dropdown still says
+    // Perspective)". When in Perspective we therefore ONLY let the slider
+    // value change + nudge the trajectory/timeline redraw: the per-frame
+    // _trajRefreshActive() (15) + _tlSyncPlayhead() (16) both read
+    // scrubEl.value DIRECTLY in their not-playing branch, so the frustum/
+    // active-key marker + the bottom-timeline playhead slide along the path
+    // (previewing the tour position from outside) WITHOUT any camera write.
+    // Guard ONLY changes Perspective behaviour; binding a real path camera
+    // (selEl.value mirrors it) keeps today's follow-the-scrub behaviour.
+    if (_camSel && _camSel.value === _CAM_PERSP) {
+      // No _player build, no controls.enabled=false, no camera write --
+      // OrbitControls keeps the free-fly view. The active-key frustum/ring
+      // (_trajRefreshActive in 15) and the bottom-timeline playhead
+      // (_tlSyncPlayhead in 16) BOTH read scrubEl.value directly in their
+      // not-playing branch and run every frame in author mode, so the
+      // marker slides along the path on the next rAF with no explicit
+      // nudge (a per-input geometry rebuild would jank the drag). Just keep
+      // the play/pause glyph honest and bail before any camera-drive code.
+      _pathIconSync();
+      return;
+    }
+    if (!_player) {
+      const p = cameraPaths.find(x => x.id === selEl.value);
+      if (!p) return;
+      _player = buildPlayer(p);
+      if (!_player) return;
+      controls.enabled = false;
+    }
+    const t = (parseFloat(scrubEl.value) / 1000) * _player.duration;
+    _t0 = performance.now() - (t / (_player.playSpeed || 1.0)) * 1000;
+    // UX-3 (2026-05-20): PAUSE at scrub time. The _trajLayer.update()
+    // per-frame rebase below (T16-TRAJ region) re-pins _t0 every
+    // frame so the tick() player block samples ~_pausedAt instead of
+    // advancing freely (the old behaviour where releasing the scrub
+    // mid-drag left the camera auto-playing). _activePathId is set so
+    // a subsequent Play press resumes from this paused frame.
+    // _pausedAtPlayer is the identity discriminator -- a bench/clip
+    // launcher that reassigns _player makes the rebase a no-op.
+    _pausedAt = t;
+    _pausedAtPlayer = _player;
+    if (selEl && selEl.value) _activePathId = selEl.value;
+    _pathIconSync();   // A1: scrub sets _player directly -> keep glyph in sync
+  });
+  // Pause (don't teleport) the path player when the tab is backgrounded.
+  // The per-frame advance is `(performance.now() - _t0)/1000 * speed`;
+  // performance.now() keeps advancing while the tab is hidden but rAF
+  // (and thus the tick() camera write) is paused, so on return the raw
+  // delta would have grown by the whole hidden interval and the camera
+  // would jump that many seconds down the spline. Rebasing _t0 by the
+  // hidden duration cancels exactly that gap → playback RESUMES where it
+  // paused. Scoped strictly to the path-player clock: it only adjusts
+  // _t0, only while a path is actually playing (`_player` truthy — the
+  // same gate every `if (_player)` reads); bench/scrub/free-look clocks
+  // are untouched. A no-op when nothing is playing. No existing
+  // visibilitychange listener to unify with (the only document/window
+  // visibility hooks are the `blur` key/look resets, a different
+  // concern), so this is the single owner of this event.
+  document.addEventListener('visibilitychange', () => {
+    if (!_player) { _hidAt = 0; return; }  // not playing → harmless no-op
+    if (document.hidden) {
+      // Going hidden: freeze the clock reference (only the first hidden
+      // event in a hidden streak counts; later ones keep the original).
+      if (!_hidAt) _hidAt = performance.now();
+    } else if (_hidAt) {
+      // Becoming visible again: advance _t0 by exactly the time spent
+      // hidden so (performance.now() - _t0) is unchanged across the gap.
+      _t0 += performance.now() - _hidAt;
+      _hidAt = 0;
+    }
+  });
+  if (cfg.default_path_id) {
+    // Task 13: the default-path tour used to auto-start HERE, synchronously
+    // at init (so the camera flew while still hidden behind the loading
+    // screen). It is now deferred into _introStartTour() (just below) and
+    // OWNED by the intro controller: in the cinematic end-user path it runs
+    // AFTER the intro fade-out; for intro.type="none" / non-usermode it
+    // runs straight away (same timing as before for those modes). This
+    // `if` is kept (anchor-stable, intentionally inert now) so the byte-
+    // lock region START stays on a line that pre-exists unchanged.
+    selEl.value = cfg.default_path_id;
+  }
+

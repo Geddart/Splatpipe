@@ -16,7 +16,9 @@ from .status_cmd import status
 from .path_cmd import path_import, path_import_colmap
 from .build_lod_cmd import build_lod_cmd
 from .set_start_view_cmd import set_start_view
+from .set_camera_path_cmd import set_camera_path
 from .publish_cmd import publish
+from .init_php_auth_cmd import init_php_auth
 
 # Make CLI stdout/stderr robust on a non-UTF-8 (Windows cp1252) console.
 # Commands stream external tool output verbatim (e.g. build-lod prints lines
@@ -51,7 +53,9 @@ app.command(name="path-import")(path_import)
 app.command(name="path-import-colmap")(path_import_colmap)
 app.command(name="build-lod")(build_lod_cmd)
 app.command(name="set-start-view")(set_start_view)
+app.command(name="set-camera-path")(set_camera_path)
 app.command()(publish)
+app.command(name="init-php-auth")(init_php_auth)
 
 
 if __name__ == "__main__":

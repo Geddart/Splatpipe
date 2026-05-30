@@ -1,0 +1,287 @@
+  // ============================================================
+  //  EditorModuleRegistry (Phase 2 -- editor-arc-design #122)
+  // ------------------------------------------------------------
+  //  The single coordinator over the editor modules. Loaded as a
+  //  pre-framework fragment (04a_) so the registry exists by the
+  //  time 05_framework wires it onto window.__sceneview.modules.
+  //
+  //  Each editor module is a PLAIN-JS OBJECT that satisfies the
+  //  EditorModule shape (no classes, no inheritance -- splatpipe
+  //  convention is IIFE-as-module). The contract every registered
+  //  object SHOULD expose (the registry is duck-typed and tolerant
+  //  of missing optionals; required-with-no-default surfaces are
+  //  asserted as no-ops with console.warn rather than throws):
+  //
+  //    name              string  -- REQUIRED, unique
+  //    stateKey          string  -- REQUIRED (dotted top-level cfg key
+  //                                 the module owns; e.g. "camera_paths")
+  //    defaultModes      string[] -- optional, defaults to ['author']
+  //    mount(scene, hud, interaction, modes)  REQUIRED
+  //    unmount()                              REQUIRED
+  //    onCfgChange(prev, next)                optional
+  //    onModeChange(prev, next)               optional
+  //    getDirtyState()                        REQUIRED -> {isDirty, patchObject}
+  //    markClean()                            REQUIRED
+  //    timelineLane                           optional
+  //                                           {rows, label, render(ctx,x,y,w,h,t)}
+  //    overlayGroup                           optional, THREE.Group
+  //    testSurface                            optional, merged onto window.__editor
+  //    renderSceneSettings(parentEl)          optional, populates the
+  //                                           right-side Scene Settings drawer
+  //
+  //  PUBLIC METHODS (exposed at window.__sceneview.modules by 05_framework
+  //  after this fragment runs):
+  //
+  //    register(module)            mount + add to ordered list (FCFS)
+  //    unregister(name)            unmount + remove
+  //    get(name)                   lookup
+  //    list()                      shallow copy of the ordered list
+  //    notifyCfgChange(stateKey, prev, next)
+  //                                broadcast cfg edit to every module's
+  //                                onCfgChange (filtered to relevant)
+  //    collectPatch()              walk every module's getDirtyState +
+  //                                build the Contract-C SPCP1-shape patch
+  //                                (only modules reporting isDirty are
+  //                                included). Returns { patch, dirtyNames }.
+  //    markAllClean()              call markClean() on every registered
+  //                                module (post-save bookkeeping)
+  //    pushUndo(entry)             delegate to window.__sceneview.history
+  //                                if present; else no-op (history is
+  //                                wired by the 17a_edit_history fragment
+  //                                which runs AFTER this fragment but
+  //                                BEFORE any save UI calls pushUndo)
+  //    undo() / redo()             same delegation pattern
+  //    canUndo() / canRedo()       same
+  //    emit(event, ...args)        notify listeners registered via on()
+  //    on(event, fn)               attach a listener; returns an
+  //                                unsubscribe function
+  //
+  //  TEST SURFACE: the registry is exposed at
+  //  window.__sceneview.modules; per-module testSurface objects are
+  //  merged onto window.__editor (the existing test surface the
+  //  CameraPathModule already populates).
+  // ============================================================
+  const EditorModuleRegistry = (() => {
+    // FCFS ordered list -- insertion order matters for visual stacking
+    // (timeline lane order, Scene Settings drawer section order).
+    const _modules = [];
+    const _byName = Object.create(null);
+    const _listeners = Object.create(null);
+    let _booted = false;
+
+    function _warn(msg) {
+      try { console.warn('[EditorModuleRegistry] ' + msg); } catch (e) {}
+    }
+
+    function _historyOrNull() {
+      try {
+        return (window.__sceneview && window.__sceneview.history) || null;
+      } catch (e) { return null; }
+    }
+
+    function register(mod) {
+      if (!mod || typeof mod !== 'object') {
+        _warn('register: argument must be an object');
+        return null;
+      }
+      const name = mod.name;
+      if (!name || typeof name !== 'string') {
+        _warn('register: module.name is required (string)');
+        return null;
+      }
+      if (Object.prototype.hasOwnProperty.call(_byName, name)) {
+        _warn('register: duplicate module name "' + name + '"');
+        return null;
+      }
+      if (!mod.stateKey || typeof mod.stateKey !== 'string') {
+        _warn('register: "' + name + '" missing required stateKey');
+      }
+      if (typeof mod.mount !== 'function') {
+        _warn('register: "' + name + '" missing required mount()');
+      }
+      if (typeof mod.unmount !== 'function') {
+        _warn('register: "' + name + '" missing required unmount()');
+      }
+      if (typeof mod.getDirtyState !== 'function') {
+        _warn('register: "' + name + '" missing required getDirtyState()');
+      }
+      if (typeof mod.markClean !== 'function') {
+        _warn('register: "' + name + '" missing required markClean()');
+      }
+      _modules.push(mod);
+      _byName[name] = mod;
+      // Merge per-module testSurface onto window.__editor (lazy --
+      // window.__editor may not exist yet on a non-author boot).
+      if (mod.testSurface && typeof mod.testSurface === 'object') {
+        try {
+          window.__editor = window.__editor || {};
+          Object.assign(window.__editor, mod.testSurface);
+        } catch (e) {}
+      }
+      // mount() is called once SceneView is fully wired (after 05_framework
+      // creates the four managers); the post-boot mount path is driven by
+      // a 'boot' emit. If we're already past boot, mount immediately.
+      if (_booted) {
+        try {
+          mod.mount(
+            (window.__sceneview && window.__sceneview.overlay) || null,
+            (window.__sceneview && window.__sceneview.hud) || null,
+            (window.__sceneview && window.__sceneview.interaction) || null,
+            (window.__sceneview && window.__sceneview.modes) || null,
+          );
+        } catch (e) { _warn('mount error for "' + name + '": ' + e); }
+      }
+      emit('register', mod);
+      return mod;
+    }
+
+    function unregister(name) {
+      const mod = _byName[name];
+      if (!mod) return false;
+      const i = _modules.indexOf(mod);
+      if (i !== -1) _modules.splice(i, 1);
+      delete _byName[name];
+      try {
+        if (typeof mod.unmount === 'function') mod.unmount();
+      } catch (e) { _warn('unmount error for "' + name + '": ' + e); }
+      emit('unregister', mod);
+      return true;
+    }
+
+    function get(name) { return _byName[name] || null; }
+    function list() { return _modules.slice(); }
+
+    function notifyCfgChange(stateKey, prev, next) {
+      for (const m of _modules) {
+        if (typeof m.onCfgChange !== 'function') continue;
+        // Modules MAY filter on stateKey themselves; we pass it as a 3rd
+        // arg so a downstream module (e.g. CutsModule reacting to
+        // CameraPathModule edits) can react selectively. Errors in one
+        // module never break the broadcast to the next.
+        try { m.onCfgChange(prev, next, stateKey); }
+        catch (e) { _warn('onCfgChange error in "' + m.name + '": ' + e); }
+      }
+    }
+
+    function collectPatch() {
+      // Walks every registered module asking "are you dirty? if so what's
+      // your patch slice?". The aggregate is a Contract-C-shaped flat
+      // dict keyed by each module's stateKey. Modules that return falsy
+      // or { isDirty:false } are skipped.
+      const patch = {};
+      const dirtyNames = [];
+      for (const m of _modules) {
+        if (typeof m.getDirtyState !== 'function') continue;
+        let state = null;
+        try { state = m.getDirtyState(); }
+        catch (e) { _warn('getDirtyState error in "' + m.name + '": ' + e); }
+        if (!state || !state.isDirty) continue;
+        dirtyNames.push(m.name);
+        if (state.patchObject !== undefined && m.stateKey) {
+          patch[m.stateKey] = state.patchObject;
+        }
+      }
+      return { patch: patch, dirtyNames: dirtyNames };
+    }
+
+    function markAllClean() {
+      for (const m of _modules) {
+        if (typeof m.markClean !== 'function') continue;
+        try { m.markClean(); }
+        catch (e) { _warn('markClean error in "' + m.name + '": ' + e); }
+      }
+    }
+
+    // ---- Undo/redo delegation. The actual ring buffer lives in
+    //      17a_edit_history.js_tmpl (window.__sceneview.history). We
+    //      delegate so callers (modules + the Save dispatcher) always
+    //      talk to ONE coordinator. If history is not yet wired (early
+    //      boot), pushUndo silently no-ops -- it is safe to call
+    //      pushUndo before history exists; in practice the gesture
+    //      handlers that call it only fire on user interaction which
+    //      is well after boot.
+    function pushUndo(entry) {
+      const h = _historyOrNull();
+      if (!h || typeof h.push !== 'function') return false;
+      try { return h.push(entry); } catch (e) { return false; }
+    }
+    function undo() {
+      const h = _historyOrNull();
+      if (!h || typeof h.undo !== 'function') return null;
+      try { return h.undo(); } catch (e) { return null; }
+    }
+    function redo() {
+      const h = _historyOrNull();
+      if (!h || typeof h.redo !== 'function') return null;
+      try { return h.redo(); } catch (e) { return null; }
+    }
+    function canUndo() {
+      const h = _historyOrNull();
+      return !!(h && typeof h.canUndo === 'function' && h.canUndo());
+    }
+    function canRedo() {
+      const h = _historyOrNull();
+      return !!(h && typeof h.canRedo === 'function' && h.canRedo());
+    }
+
+    // ---- Event bus (tiny). Listeners attach via on(event, fn);
+    //      emit fans out. Errors in one listener never break the next.
+    function on(event, fn) {
+      if (!event || typeof fn !== 'function') return function () {};
+      const arr = _listeners[event] || (_listeners[event] = []);
+      arr.push(fn);
+      return function unsubscribe() {
+        const i = arr.indexOf(fn);
+        if (i !== -1) arr.splice(i, 1);
+      };
+    }
+    function emit(event /*, ...args */) {
+      const arr = _listeners[event];
+      if (!arr || !arr.length) return;
+      const args = Array.prototype.slice.call(arguments, 1);
+      for (const fn of arr.slice()) {
+        try { fn.apply(null, args); }
+        catch (e) { _warn('listener error for "' + event + '": ' + e); }
+      }
+    }
+
+    // ---- _bootMount: called by 05_framework AFTER the four managers
+    //      exist + AFTER window.__sceneview is wired. Mounts every
+    //      already-registered module ONCE. Modules registered later
+    //      mount on-register (see _booted gate above).
+    function _bootMount() {
+      _booted = true;
+      for (const m of _modules) {
+        try {
+          if (typeof m.mount === 'function') {
+            m.mount(
+              (window.__sceneview && window.__sceneview.overlay) || null,
+              (window.__sceneview && window.__sceneview.hud) || null,
+              (window.__sceneview && window.__sceneview.interaction) || null,
+              (window.__sceneview && window.__sceneview.modes) || null,
+            );
+          }
+        } catch (e) { _warn('boot mount error for "' + m.name + '": ' + e); }
+      }
+      emit('boot');
+    }
+
+    return {
+      register: register,
+      unregister: unregister,
+      get: get,
+      list: list,
+      notifyCfgChange: notifyCfgChange,
+      collectPatch: collectPatch,
+      markAllClean: markAllClean,
+      pushUndo: pushUndo,
+      undo: undo,
+      redo: redo,
+      canUndo: canUndo,
+      canRedo: canRedo,
+      on: on,
+      emit: emit,
+      _bootMount: _bootMount,
+    };
+  })();
+

@@ -1,0 +1,802 @@
+
+    // ---- R2 #2 (#156): right-click a trajectory FRUSTUM (a keyframe
+    //      in the 3D view) -> the SAME context menu the bottom-timeline
+    //      diamond offers. Reuses the EXISTING author pick path
+    //      (_gzPickFrustum -- the screen-space keyframe-pivot hit test
+    //      the left-click select uses) so a frustum right-click selects
+    //      that keyframe (_gzAttach) then opens openContextMenu (04b) at
+    //      the cursor with Delete keyframe / Set interp (flattened) /
+    //      Go to keyframe. Author-gated; preventDefault is ALSO done by
+    //      the 08:223 canvas suppressor (kept for non-author), but we
+    //      preventDefault here too so the browser menu never shows over
+    //      a frustum hit. A right-click that misses every frustum does
+    //      nothing (no menu) -> the 08 suppressor still ate the browser
+    //      menu, byte-behaviourally consistent with before.
+    function _gzGoToKeyframe(idx) {
+      // Reuse the REAL #path-scrub mechanism via the timeline's
+      // _tlScrubToTime surface -- the single source of truth that takes
+      // _player over + rebases _t0. R4 (#165): scrub to the keyframe's
+      // ABSOLUTE seconds via window.__editor.tlScrubSeconds (the timeline
+      // playhead now scrubs over the effective range, NOT a 0..1 frac of
+      // the player duration -- a frac mapping would land at frac*effDur,
+      // not the keyframe time). The timeline surface exists by the time a
+      // user right-clicks, so the lookup is safe at runtime.
+      const p = _gzActivePath();
+      if (!p || !Array.isArray(p.keyframes) || !p.keyframes[idx]) return;
+      const t = Math.max(0, p.keyframes[idx].t || 0);
+      try {
+        if (window.__editor &&
+            typeof window.__editor.tlScrubSeconds === 'function') {
+          window.__editor.tlScrubSeconds(t);
+        } else if (window.__editor &&
+            typeof window.__editor.tlScrub === 'function') {
+          // Legacy fallback (older surface): frac over effective range.
+          let dur = 0;
+          try { const pl = buildPlayer(p); if (pl) dur = pl.duration || 0; }
+          catch (e) {}
+          window.__editor.tlScrub(dur > 0 ? Math.min(1, t / dur) : 0);
+        }
+      } catch (e) {}
+    }
+    function _gzDeleteKeyframe(idx) {
+      // Mirror the timeline X-delete: refuse below 2 keyframes (the
+      // spline-validity clamp) + ONE 'kf-delete' EditHistory snapshot
+      // before the mutation (Batch B convention). Detach the gizmo
+      // (the selected index is gone) + _gzAfterEdit (rebuild trajectory
+      // / timeline / live player).
+      const p = _gzActivePath();
+      if (!p || !Array.isArray(p.keyframes) || !p.keyframes[idx]) return;
+      if (p.keyframes.length - 1 < 2) return;     // >=2 clamp
+      try {
+        if (typeof EditorModuleRegistry !== 'undefined' &&
+            typeof EditorModuleRegistry.pushUndo === 'function') {
+          EditorModuleRegistry.pushUndo('kf-delete');
+        }
+      } catch (e) {}
+      const keep = [];
+      for (let i = 0; i < p.keyframes.length; i++) {
+        if (i !== idx) keep.push(p.keyframes[i]);
+      }
+      p.keyframes = keep;
+      _gzDetach();
+      _gzAfterEdit();
+    }
+    function _gzOnCanvasContextMenu(ev) {
+      if (!ModeManager.is('author')) return;
+      const idx = _gzPickFrustum(ev.clientX, ev.clientY);
+      if (idx < 0) return;          // no frustum under the cursor
+      // A frustum hit: suppress the browser menu + select the keyframe
+      // (the SAME _gzAttach a left-click runs) so the gizmo + tangents
+      // reflect the menu target.
+      ev.preventDefault();
+      _gzAttach(idx);
+      const p = _gzActivePath();
+      if (!p || !Array.isArray(p.keyframes) || !p.keyframes[idx]) return;
+      const kf = p.keyframes[idx];
+      const curInterp = (kf && typeof kf.interp === 'string' &&
+        _VALID_INTERP[kf.interp]) ? kf.interp : 'automatic';
+      const canDelete = (p.keyframes.length - 1) >= 2;
+      const items = [];
+      items.push({
+        label: 'Delete keyframe',
+        danger: true,
+        disabled: !canDelete,
+        title: canDelete ? 'Remove this keyframe (undoable)'
+          : 'A path needs at least 2 keyframes',
+        onSelect: () => { _gzDeleteKeyframe(idx); },
+      });
+      items.push({ separator: true });
+      // FLATTENED interp choices. Each writes via the EXISTING
+      // _gzSetInterp (single-target branch -> 'kf-interp' snapshot +
+      // bezier seeds tangents). The gizmo is attached to `idx` so
+      // _gzSetInterp's _gzSelKfObj() targets the right keyframe.
+      for (const nm of Object.keys(_VALID_INTERP)) {
+        items.push({
+          label: (nm === curInterp ? '✓ ' : '  ') + 'Interp: ' + nm,
+          disabled: (nm === curInterp),
+          title: 'Set this keyframe’s interpolation to ' + nm,
+          onSelect: () => { _gzSetInterp(nm); },
+        });
+      }
+      items.push({ separator: true });
+      items.push({
+        label: 'Go to keyframe',
+        title: 'Scrub the playhead to this keyframe',
+        onSelect: () => { _gzGoToKeyframe(idx); },
+      });
+      try { openContextMenu(ev.clientX, ev.clientY, items); } catch (e) {}
+    }
+    renderer.domElement.addEventListener(
+      'contextmenu', _gzOnCanvasContextMenu);
+
+    // ---- The 5-type interp popover (V). A segmented control over
+    //      the EXISTING _VALID_INTERP set (auto_clamped / automatic
+    //      / linear / bezier / stepped -- the real constant, not a
+    //      hardcoded list). Selecting writes the SELECTED keyframe's
+    //      kf.interp and rebuilds (the spline already honours
+    //      per-keyframe interp via _kfMeta). Built lazily, injected
+    //      into the Task-12 #author-root (CSS-gated to authormode --
+    //      no new CSS region, inline-styled like #sp-hud / the
+    //      Task-16 toggle), removed on close (no leak).
+    const _GZ_INTERPS = Object.keys(_VALID_INTERP);
+    function _gzClosePopover() {
+      if (_gzPopEl && _gzPopEl.parentNode) {
+        _gzPopEl.parentNode.removeChild(_gzPopEl);
+      }
+      _gzPopEl = null;
+    }
+    function _gzSelInterpVal() {
+      const kf = _gzSelKfObj();
+      return (kf && kf.interp) ? kf.interp : null;
+    }
+    function _gzSetInterp(val) {
+      if (!val || !_VALID_INTERP[val]) return false;
+      // UX-Phase11A Issue 4 (2026-05-21): the interp popover was
+      // SINGLE-target -- it only wrote to the gizmo-selected kf
+      // (_gzSelKf). User-reported: "When I select several keyframes
+      // and change the interpolation, it doesn't seem to work for
+      // multiple keyframes. But it should." Fix: when the bottom
+      // timeline has a multi-selection (tlSelection.length >= 2),
+      // apply the new interp to EVERY selected kf. The multi-write
+      // branch takes precedence over the gizmo-target branch (a
+      // multi-select implies user is operating on the batch, NOT
+      // the single gizmo target).
+      //
+      // The timeline IIFE's _tlSel Set is scope-private; we read
+      // it through the existing window.__editor.tlSelection getter
+      // surface (an Array<number> sorted asc) which already exists
+      // for the Task-17 harness. Defensive try/catch -- if the
+      // surface is absent (early init / non-author / harness
+      // teardown) fall back to the single-target write.
+      let targets = null;
+      try {
+        if (window.__editor && Array.isArray(window.__editor.tlSelection) &&
+            window.__editor.tlSelection.length >= 2) {
+          targets = window.__editor.tlSelection;
+        }
+      } catch (e) {}
+      const p = _gzActivePath();
+      if (targets && p && Array.isArray(p.keyframes)) {
+        // Multi-write: ONE EditHistory snapshot for the batch
+        // (Phase 2A R8 §4.2 pattern -- never per-keystroke). Filter
+        // out-of-range indices defensively (a stale selection during
+        // a fast rebuild could carry a phantom index).
+        try {
+          if (typeof EditorModuleRegistry !== 'undefined' &&
+              typeof EditorModuleRegistry.pushUndo === 'function') {
+            EditorModuleRegistry.pushUndo('interp-multi');
+          }
+        } catch (e) {}
+        let bezierSeen = false;
+        let anyWritten = false;
+        for (const idx of targets) {
+          if (typeof idx !== 'number' || idx < 0 ||
+              idx >= p.keyframes.length) continue;
+          const tk = p.keyframes[idx];
+          if (!tk) continue;
+          tk.interp = val;
+          anyWritten = true;
+          if (val === 'bezier') bezierSeen = true;
+        }
+        if (!anyWritten) return false;
+        // Match the single-target side effects: bezier seeds the
+        // gizmo-selected kf's tangents (so the grab-able handles
+        // appear on the currently-attached gizmo); other modes hide
+        // them. We DO NOT seed tangents on the non-attached selected
+        // kfs (that would be confusing -- the tangent UI is gizmo-
+        // anchored). _gzAfterEdit() runs once for the full batch.
+        if (bezierSeen && _gzSelKf >= 0 &&
+            _gzSelKf < p.keyframes.length &&
+            p.keyframes[_gzSelKf].interp === 'bezier') {
+          _tanEnableBezier();
+        } else {
+          _gzAfterEdit();
+          _tanHide();
+        }
+        return true;
+      }
+      // Single-target fallback (no multi-select): gizmo target only.
+      const kf = _gzSelKfObj();
+      if (!kf) return false;
+      // UX-Phase11-R2 #3 (2026-05-21): the single-target interp write was
+      // NOT pushing an EditHistory snapshot (only the multi-write branch
+      // above did 'interp-multi'), so changing ONE keyframe's interp could
+      // not be undone + the undo button greyed out wrongly. Snapshot the
+      // pre-mutation cfg BEFORE the write (gesture-start, once-per-gesture
+      // -- this is a single popover-button click, not a drag).
+      try {
+        if (typeof EditorModuleRegistry !== 'undefined' &&
+            typeof EditorModuleRegistry.pushUndo === 'function') {
+          EditorModuleRegistry.pushUndo('kf-interp');
+        }
+      } catch (e) {}
+      kf.interp = val;
+      // Picking `bezier` from the interp popover is the same
+      // intent as the tangents button: seed the derived defaults
+      // (no curve jump) + reveal the grab-able handles. Any other
+      // mode hides them (explicit tangents only bite as bezier).
+      if (kf.interp === 'bezier') {
+        _tanEnableBezier();
+      } else {
+        _gzAfterEdit();
+        _tanHide();
+      }
+      return kf.interp === val;
+    }
+    // R2 #1 (2026-05-21): when NOTHING is selected, auto-target the
+    // keyframe nearest the current playhead time so clicking Interp
+    // always gives feedback (it was a SILENT no-op before -- the user
+    // clicks "interp (V)" and nothing happens). Reuses the SAME
+    // playhead the Task-16 active-key highlight uses: first re-derive
+    // _trajActiveKf via _trajRefreshActive() (the spline maps the live
+    // player / scrub position to its source-keyframe index), and if
+    // that resolves use it. It does NOT resolve on a <2-keyframe path
+    // (buildPlayer returns null there), so fall back to the nearest
+    // keyframe by raw |kf.t - playheadTime| -- which still picks a
+    // sensible target (e.g. the single keyframe on a 1-kf path). Pure
+    // read of the EXISTING module-scope _trajActivePath/_trajPlayhead/
+    // scrubEl; returns -1 only when the active path has zero keyframes.
+    function _gzNearestKfToPlayhead() {
+      try {
+        if (typeof _trajRefreshActive === 'function') _trajRefreshActive();
+      } catch (e) {}
+      try {
+        if (typeof _trajActiveKf === 'number' && _trajActiveKf >= 0) {
+          return _trajActiveKf;
+        }
+      } catch (e) {}
+      // Fallback: nearest keyframe by time to the current playhead.
+      const p = _gzActivePath();
+      if (!p || !Array.isArray(p.keyframes) || !p.keyframes.length) return -1;
+      // Resolve the playhead time in seconds: the live player clock if
+      // a tour is driving this path, else the scrub-slider position
+      // mapped through the path duration (mirror _trajPlayhead's two
+      // cases without depending on a built player existing).
+      let phT = 0;
+      try {
+        const ph = buildPlayer(p);
+        if (ph) {
+          const v = _trajPlayhead(ph);
+          if (typeof v === 'number' && isFinite(v)) phT = Math.max(0, v);
+        } else if (typeof scrubEl !== 'undefined' && scrubEl) {
+          // <2-kf path: no duration -> map the scrub fraction onto the
+          // keyframe time span so the slider still biases the pick.
+          const f = Math.max(0, Math.min(1,
+            (parseFloat(scrubEl.value) || 0) / 1000));
+          let tMin = Infinity, tMax = -Infinity;
+          for (const k of p.keyframes) {
+            const tt = (typeof k.t === 'number' && isFinite(k.t)) ? k.t : 0;
+            if (tt < tMin) tMin = tt;
+            if (tt > tMax) tMax = tt;
+          }
+          if (isFinite(tMin) && isFinite(tMax)) phT = tMin + f * (tMax - tMin);
+        }
+      } catch (e) {}
+      let best = -1, bestD = Infinity;
+      for (let i = 0; i < p.keyframes.length; i++) {
+        const k = p.keyframes[i];
+        const tt = (k && typeof k.t === 'number' && isFinite(k.t)) ? k.t : 0;
+        const d = Math.abs(tt - phT);
+        if (d < bestD) { bestD = d; best = i; }
+      }
+      return best;
+    }
+    // R2 #1: brief inline hint when there is genuinely nothing to
+    // target (zero keyframes on the active path). Reuses the existing
+    // #controls-hint element (author-mode chrome) -- flash a short
+    // message then restore its prior text. NOT a silent no-op.
+    // R2 Batch F (Layout 1, 2026-05-21): the static nav-hint strip is now
+    // CSS-hidden in author mode (body.authormode #controls-hint{display:none})
+    // -- its hints moved to the Scene Settings "Navigation" section. So
+    // this transient flash must TEMPORARILY un-hide the element for its
+    // ~1.8 s lifetime (an inline display override beats the stylesheet
+    // rule) then restore display:none on the same timer that restores the
+    // text. User / embed are unaffected (the rule does not apply there).
+    let _gzHintRestore = null;
+    function _gzFlashSelectHint() {
+      const el = document.getElementById('controls-hint');
+      if (!el) return;
+      try {
+        if (_gzHintRestore && _gzHintRestore.timer) {
+          clearTimeout(_gzHintRestore.timer);
+        }
+        const prev = (_gzHintRestore && typeof _gzHintRestore.text === 'string')
+          ? _gzHintRestore.text : el.textContent;
+        el.textContent = 'Select a keyframe first';
+        // Author mode hides the strip by default; force it visible for the
+        // flash so the message is NOT a silent no-op.
+        if (ModeManager.is('author')) el.style.display = 'block';
+        _gzHintRestore = {
+          text: prev,
+          timer: setTimeout(() => {
+            try { el.textContent = prev; } catch (e) {}
+            try {
+              if (ModeManager.is('author')) el.style.display = '';
+            } catch (e) {}
+            _gzHintRestore = null;
+          }, 1800),
+        };
+      } catch (e) {}
+    }
+    function _gzOpenPopover() {
+      // UX-Phase11A Issue 4 (2026-05-21): the popover now opens
+      // either on a gizmo-selected kf OR on a multi-selection from
+      // the bottom timeline. Without this lift, V on a multi-select
+      // was a silent no-op because the user did not single-click any
+      // single kf for the gizmo (the multi-select was a box drag).
+      let _mSelLen = 0;
+      try {
+        if (window.__editor && Array.isArray(window.__editor.tlSelection)) {
+          _mSelLen = window.__editor.tlSelection.length;
+        }
+      } catch (e) {}
+      if (_gzSelKf < 0 && _mSelLen < 2) {
+        // R2 #1 (2026-05-21): auto-target the playhead-nearest keyframe
+        // instead of bailing silently. _gzAttach sets _gzSelKf via the
+        // SAME path a frustum click uses (proxy + TransformControls),
+        // so the popover below then opens for that keyframe. Only when
+        // there is no keyframe to target at all do we flash the hint.
+        const _autoIdx = _gzNearestKfToPlayhead();
+        if (_autoIdx >= 0) {
+          _gzAttach(_autoIdx);
+        } else {
+          _gzFlashSelectHint();
+          return;
+        }
+      }
+      _gzStopTour();
+      _gzClosePopover();
+      const root = document.getElementById('author-root');
+      if (!root) return;
+      const kf = _gzSelKfObj();
+      const cur = (kf && typeof kf.interp === 'string' &&
+        _VALID_INTERP[kf.interp]) ? kf.interp : '';
+      const box = document.createElement('div');
+      box.id = 'editor-interp-pop';
+      box.style.cssText =
+        'position:absolute;top:54px;left:12px;z-index:51;' +
+        'display:flex;gap:4px;align-items:center;flex-wrap:wrap;' +
+        'max-width:360px;padding:8px 10px;border-radius:8px;' +
+        'background:rgba(20,20,20,0.86);' +
+        '-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);' +
+        'font:12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;' +
+        'color:#eee;user-select:none;';
+      const lab = document.createElement('span');
+      lab.textContent = 'interp:';
+      lab.style.cssText = 'opacity:.7;margin-right:4px;';
+      box.appendChild(lab);
+      _GZ_INTERPS.forEach((nm) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = nm;
+        b.setAttribute('data-interp', nm);
+        b.style.cssText =
+          'background:' + (nm === cur
+            ? 'rgba(53,224,255,0.34)' : 'rgba(255,255,255,0.10)') +
+          ';color:#eee;border:0;border-radius:5px;' +
+          'padding:4px 8px;cursor:pointer;font:12px monospace;' +
+          'line-height:1;';
+        b.addEventListener('click', () => {
+          _gzSetInterp(nm);
+          _gzClosePopover();
+        });
+        box.appendChild(b);
+      });
+      root.appendChild(box);
+      _gzPopEl = box;
+    }
+
+    // ---- Record(K): append a keyframe = the LIVE camera pose +
+    //      the REAL elapsed playhead t. The playhead is taken from
+    //      _trajPlayhead() (the SAME single-source-of-truth clock
+    //      the Task-16 overlay + Task-17 timeline read: the live
+    //      _player/_t0 clock while a tour plays, else the
+    //      #path-scrub position) -- the in-viewer analogue of the
+    //      Task-5 "recording uses real elapsed time" fix, NOT a
+    //      reinvented timer. The new keyframe is inserted into the
+    //      active path's keyframes[] (buildPlayer sorts by t, so a
+    //      record at any playhead lands correctly) and the
+    //      trajectory rebuilds. Recording also stops the auto-tour
+    //      first (explicit interaction stop) so the captured pose is
+    //      the user's, not a tour frame.
+    const _GZ_R = (x) => Math.round(x * 1e5) / 1e5;
+    // UX-5 (2026-05-20): default temporal spacing for the SECOND
+    // keyframe on a fresh path (no playhead clock yet). Aligns with
+    // the editor's "Position camera + Record-K" rhythm: 2 s gives
+    // the spline real, scrub-able duration on the very first K
+    // after the initial kf at t=0 -- if we used t=0 again the path
+    // would collapse to duration 0 and stay unscrub-able. Kept as a
+    // local constant so the in-viewer feel of "two K presses ->
+    // scrubbable path" is the single source of truth (no new wire
+    // key; only an in-memory edit). User-reported regression: K on a
+    // 1-kf path overwrites at t=0 -> no duration -> no scrub.
+    const _GZ_DEFAULT_KF_DT = 2.0;
+    function _gzRecordKeyframe() {
+      const p = _gzActivePath();
+      if (!p) return null;
+      if (!Array.isArray(p.keyframes)) p.keyframes = [];
+      // Read the real elapsed playhead BEFORE stopping the tour
+      // (stopPath() clears _player; we want the elapsed time the
+      // user is parked at).
+      // R4 (#165): PREFER the timeline's EFFECTIVE playhead seconds
+      // (window.__editor.tlPlayheadT) -- it returns the live player clock
+      // while playing AND the _tlScrubSeconds scrub position when not
+      // playing, which (unlike the old _trajPlayhead) is NOT capped at the
+      // last keyframe time. So if the user scrubbed the playhead PAST the
+      // last keyframe (now possible -- the scrub range is the effective
+      // 10 s floor / total_duration_s), Record drops the new keyframe THERE
+      // instead of clamping it back onto the last one. This is the in-
+      // viewer "scrub forward, then Rec to extend the path" loop the user
+      // expects. Falls back to _trajPlayhead (legacy) then the 1-kf
+      // bootstrap below.
+      // UX-5 (2026-05-20): on a <2-kf path buildPlayer returns null so the
+      // playhead is 0; we default t to (last_kf_t + _GZ_DEFAULT_KF_DT) for
+      // kf #2, or 0 for the very first kf, so the second K after Add-camera
+      // builds a real (duration > 0) scrubbable spline instead of
+      // collapsing two kfs at t=0.
+      let t = 0;
+      // R4 (#165): the VERY FIRST keyframe (0-kf path) ALWAYS anchors at
+      // t=0 -- the canonical path origin -- regardless of where the
+      // playhead happens to sit. The path should start at 0; recording kf
+      // #1 at a scrubbed-forward playhead would leave a [0, t) gap with no
+      // keyframe and start the spline mid-air. Only kf #2+ follow the
+      // playhead (the "scrub forward then Rec to extend" loop below).
+      let phResolved = (p.keyframes.length === 0);
+      if (!phResolved) {
+        try {
+          if (window.__editor &&
+              typeof window.__editor.tlPlayheadT === 'number') {
+            const v = window.__editor.tlPlayheadT;
+            if (typeof v === 'number' && isFinite(v) && v > 0) {
+              t = Math.max(0, v);
+              phResolved = true;
+            }
+          }
+        } catch (e) {}
+      }
+      if (!phResolved) {
+        try {
+          const ph = buildPlayer(p);
+          if (ph) {
+            const v = _trajPlayhead(ph);
+            if (typeof v === 'number' && isFinite(v) && v > 0) {
+              t = Math.max(0, v);
+              phResolved = true;
+            }
+          }
+        } catch (e) {}
+      }
+      if (!phResolved && p.keyframes.length === 1) {
+        // Exactly one kf + playhead at 0 -> place kf #2 at last_t + DT so
+        // the new path has nonzero duration and is scrub-able.
+        const lastT = (typeof p.keyframes[0].t === 'number' &&
+          isFinite(p.keyframes[0].t)) ? p.keyframes[0].t : 0;
+        t = Math.max(0, lastT) + _GZ_DEFAULT_KF_DT;
+      }
+      // p.keyframes.length === 0 -> t stays 0 (kf #1 at t=0; the canonical
+      // first-keyframe origin).
+      _gzStopTour();
+      // The LIVE camera pose to capture (shared by the overwrite + append
+      // branches below).
+      const _pos = [_GZ_R(camera.position.x), _GZ_R(camera.position.y),
+        _GZ_R(camera.position.z)];
+      const _quat = [_GZ_R(camera.quaternion.x), _GZ_R(camera.quaternion.y),
+        _GZ_R(camera.quaternion.z), _GZ_R(camera.quaternion.w)];
+      const _fov = _GZ_R(camera.fov);
+      const _pushSnap = (label) => {
+        // UX-Phase11-R2 #3 (2026-05-21): record (K hotkey OR Rec button, both
+        // reach here) was NOT pushing an EditHistory snapshot, so a freshly
+        // recorded / overwritten keyframe could not be undone + the undo
+        // button greyed out wrongly. Snapshot the pre-mutation cfg BEFORE the
+        // mutation (gesture-start, once-per-gesture -- a single discrete
+        // K/Rec action).
+        try {
+          if (typeof EditorModuleRegistry !== 'undefined' &&
+              typeof EditorModuleRegistry.pushUndo === 'function') {
+            EditorModuleRegistry.pushUndo(label);
+          }
+        } catch (e) {}
+      };
+      // #166: OVERWRITE-IN-PLACE when the playhead is parked AT (within a
+      // small epsilon of) an existing keyframe's t. Pressing Rec/K there
+      // should UPDATE that keyframe's pose (pos/quat/fov) rather than insert
+      // a DUPLICATE at the same time (two keyframes at ~the same t collapse a
+      // spline segment to ~zero duration and are impossible to tell apart on
+      // the diamond row). Off any existing keyframe -> fall through to the
+      // APPEND branch (create a new keyframe), exactly as before.
+      //   * Gated on >= 2 existing keyframes: a 0/1-kf path is still being
+      //     BOOTSTRAPPED (the UX-5 "two K presses -> a scrub-able path" loop
+      //     above deliberately places kf #2 at last_t + DT, NOT on top of
+      //     kf #1 at t=0) -- overwriting there would break that loop. The
+      //     #166 scenario is editing a parked keyframe on a real (>= 2-kf)
+      //     authored path.
+      //   * The matched keyframe KEEPS its own t (and easing_out / hold_s /
+      //     annotation_id / interp / tangents) -- only the pose is rewritten;
+      //     the playhead t is an approximation of the parked keyframe's exact
+      //     t, so writing _GZ_R(t) onto it would nudge the keyframe in time.
+      //   * EPSILON is a hair above the #path-scrub quantisation (the slider
+      //     is 0..1000 of the player duration, so one step ~= duration/1000;
+      //     0.05 s covers a deliberate "park on this keyframe" -- incl. via
+      //     Prev/Next-skip which scrubs to the EXACT kf.t -- without
+      //     swallowing a genuinely-distinct nearby keyframe an author placed
+      //     by hand).
+      //   * The match is against the GENUINE current playhead (the timeline's
+      //     effective tlPlayheadT, which is valid incl. exactly 0 -- parked on
+      //     the first keyframe), NOT the bootstrap-adjusted `t` above (which
+      //     only matters for the 0/1-kf append cases this branch excludes).
+      const _KF_OVERWRITE_EPS = 0.05;
+      let _parkedT = null;
+      try {
+        if (window.__editor &&
+            typeof window.__editor.tlPlayheadT === 'number' &&
+            isFinite(window.__editor.tlPlayheadT)) {
+          _parkedT = Math.max(0, window.__editor.tlPlayheadT);
+        }
+      } catch (e) {}
+      if (_parkedT === null && phResolved) _parkedT = t;  // fallback
+      if (p.keyframes.length >= 2 && _parkedT !== null) {
+        let bestI = -1, bestD = Infinity;
+        for (let i = 0; i < p.keyframes.length; i++) {
+          const kt = (p.keyframes[i] && typeof p.keyframes[i].t === 'number')
+            ? p.keyframes[i].t : null;
+          if (kt === null || !isFinite(kt)) continue;
+          const d = Math.abs(kt - _parkedT);
+          if (d <= _KF_OVERWRITE_EPS && d < bestD) { bestD = d; bestI = i; }
+        }
+        if (bestI >= 0) {
+          _pushSnap('kf-overwrite');
+          const ex = p.keyframes[bestI];
+          ex.pos = _pos;
+          ex.quat = _quat;
+          ex.fov = _fov;
+          _gzAfterEdit();
+          return ex;
+        }
+      }
+      // No existing keyframe under the playhead -> APPEND a new one (the
+      // pre-#166 behaviour). buildPlayer sorts by t, so a record at any
+      // playhead lands in chronological order.
+      const kf = { t: _GZ_R(t), pos: _pos, quat: _quat, fov: _fov };
+      _pushSnap('kf-record');
+      p.keyframes.push(kf);
+      _gzAfterEdit();
+      return kf;
+    }
+
+    // ---- Save / Emit. SAVE_MODE=="cli" (decision-A DEFAULT):
+    //      emit the SPCP1 token + the `splatpipe set-camera-path
+    //      <token>` command in an on-screen textarea + clipboard,
+    //      MIRRORING the existing SPV1 "Set start view" relay UI
+    //      (same overlay/card/textarea/copy pattern, same trust
+    //      model -- no client secret). SAVE_MODE=="http" (opt-in):
+    //      POST the camera-scope patch JSON to SAVE_ENDPOINT with
+    //      Authorization: Bearer <token> where <token> is read
+    //      ONLY from the author URL fragment (#token=<token>) --
+    //      never baked, never in viewer-config.json. Returns the
+    //      token (cli) or a Promise (http) so the harness can
+    //      deterministically assert both paths.
+    function _gzEsc(s) {
+      return String(s).replace(/[&<>]/g, (c) =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    }
+    function _gzReadAuthToken() {
+      // The http-mode bearer lives ONLY in the URL fragment
+      // (#token=<token>), never baked / in config. Parse it leniently
+      // (#token=... possibly among &-joined fields). Backwards-compat:
+      // also reads the legacy #author=<secret> form with a warn -- the
+      // fragment-param rename (per spec §11.5 / Q5) decoupled the bearer
+      // name from the ?author=1 mode flag, but in-flight bookmarks saved
+      // during testing should keep working until the operator rotates.
+      // PREFER the canonical #token= over a legacy #author= if both are
+      // present (the explicit migration path).
+      try {
+        const h = (location.hash || '').replace(/^#/, '');
+        let legacy = '';
+        let modern = '';
+        for (const part of h.split('&')) {
+          const eq = part.indexOf('=');
+          if (eq <= 0) continue;
+          const key = part.slice(0, eq);
+          if (key === 'token') {
+            modern = decodeURIComponent(part.slice(eq + 1));
+          } else if (key === 'author') {
+            legacy = decodeURIComponent(part.slice(eq + 1));
+          }
+        }
+        if (modern) return modern;
+        if (legacy) {
+          try {
+            console.warn(
+              '[splatpipe] #author=<secret> URL fragment is deprecated -- ' +
+              'use #token=<token> instead (per init-php-auth output).'
+            );
+          } catch (e) {}
+          return legacy;
+        }
+      } catch (e) {}
+      return '';
+    }
+    let _gzLastToken = '';
+    // UX-Phase11F H7 (2026-05-21): the Save card needs (a) an Escape
+    // close, (b) focus restored to the opener button on close, and (c)
+    // to NOT stack behind / under the Set-start-view card. _gzSaveOpener
+    // remembers the focused element at open time; _gzSaveEscHandler is
+    // the ONE named window keydown listener attached on open + removed on
+    // close (one-shot, no leak). _gzCloseSaveCard is idempotent (no-op
+    // when the card is already gone) so the cross-fragment
+    // _closeAllEditorOverlays() coordinator can call it freely.
+    let _gzSaveOpener = null;
+    let _gzSaveEscHandler = null;
+    function _gzCloseSaveCard() {
+      if (_gzSaveEscHandler) {
+        try { window.removeEventListener('keydown', _gzSaveEscHandler, true); }
+        catch (e) {}
+        _gzSaveEscHandler = null;
+      }
+      const ov = document.getElementById('gz-save-overlay');
+      if (ov) { try { ov.remove(); } catch (e) {} }
+      // Restore focus to whatever opened the card (the Save button) so
+      // keyboard focus is not left orphaned on document.body.
+      const opener = _gzSaveOpener;
+      _gzSaveOpener = null;
+      if (opener && typeof opener.focus === 'function' &&
+          document.contains(opener)) {
+        try { opener.focus(); } catch (e) {}
+      }
+    }
+    // Register once with the cross-fragment overlay coordinator (04) so
+    // opening the Set-start-view card closes this one and vice-versa.
+    try { _registerEditorOverlayCloser(_gzCloseSaveCard); } catch (e) {}
+    function _gzShowTokenCard(token) {
+      // Mirror the SPV1 relay overlay/card EXACTLY (same structure,
+      // wording shape, textarea + copy-again + done).
+      // H7: close any OTHER editor overlay first (no stacking) + remember
+      // the opener for focus restore.
+      _gzSaveOpener = document.activeElement;
+      try { _closeAllEditorOverlays(_gzCloseSaveCard); } catch (e) {}
+      const old = document.getElementById('gz-save-overlay');
+      if (old) old.remove();
+      const cmd = 'splatpipe set-camera-path ' + token;
+      const ov = document.createElement('div');
+      ov.id = 'gz-save-overlay';
+      // H7: role=dialog + tabindex so focus can land on the overlay (the
+      // H6 hotkey guard already blocks gizmo keys while a [role=dialog]
+      // is focused) and aria-modal for assistive tech.
+      ov.setAttribute('role', 'dialog');
+      ov.setAttribute('aria-modal', 'true');
+      ov.setAttribute('tabindex', '-1');
+      ov.style.cssText =
+        'position:fixed;inset:0;z-index:9999;display:flex;' +
+        'align-items:center;justify-content:center;' +
+        'background:rgba(0,0,0,.55);font:14px system-ui,sans-serif;';
+      const card = document.createElement('div');
+      card.style.cssText =
+        'background:#1f1f24;color:#eee;max-width:560px;width:90%;' +
+        'padding:20px 22px;border-radius:12px;' +
+        'box-shadow:0 8px 40px rgba(0,0,0,.5);';
+      let copied = false;
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(token);
+          copied = true;
+        }
+      } catch (e) {}
+      card.innerHTML =
+        '<div style="font-weight:600;font-size:16px;margin-bottom:6px;">' +
+        (copied ? 'Copied to clipboard \u2713'
+                : 'Camera-path token') + '</div>' +
+        '<div style="opacity:.75;margin-bottom:10px;">Send this ' +
+        'token to Claude on Telegram, or run the command below, to ' +
+        'save these camera paths for <b>' + _gzEsc(_gzProjName) +
+        '</b> for everyone:</div>' +
+        '<textarea id="gz-tok" readonly style="width:100%;height:84px;' +
+        'box-sizing:border-box;background:#111;color:#9fd;' +
+        'border:1px solid #333;border-radius:8px;padding:8px;' +
+        'font:12px monospace;resize:none;"></textarea>' +
+        '<div style="opacity:.6;margin:8px 0 4px;">CLI:</div>' +
+        '<textarea id="gz-cmd" readonly style="width:100%;height:44px;' +
+        'box-sizing:border-box;background:#111;color:#9fd;' +
+        'border:1px solid #333;border-radius:8px;padding:8px;' +
+        'font:12px monospace;resize:none;"></textarea>' +
+        '<div style="display:flex;gap:10px;justify-content:flex-end;' +
+        'margin-top:14px;">' +
+        '<button id="gz-copy" class="quality-btn">Copy again</button>' +
+        '<button id="gz-done" class="quality-btn" ' +
+        'style="background:#2d6cdf;color:#fff;">Done</button></div>';
+      ov.appendChild(card);
+      document.body.appendChild(ov);
+      // H7: Escape closes the card. One named window listener (capture
+      // phase so it wins before any bubble handler), removed in
+      // _gzCloseSaveCard -> no leak, no stacked listeners across re-opens.
+      _gzSaveEscHandler = function (ev) {
+        if (ev && ev.key === 'Escape') {
+          ev.preventDefault();
+          ev.stopPropagation();
+          _gzCloseSaveCard();
+        }
+      };
+      try { window.addEventListener('keydown', _gzSaveEscHandler, true); }
+      catch (e) {}
+      const ta = card.querySelector('#gz-tok');
+      ta.value = token;
+      card.querySelector('#gz-cmd').value = cmd;
+      // Focus the textarea so the token is selectable for copy (the
+      // textarea is INSIDE the role=dialog, so the H6 guard still blocks
+      // gizmo hotkeys while it has focus).
+      ta.focus(); ta.select();
+      ov.addEventListener('click', (e) => {
+        if (e.target === ov) _gzCloseSaveCard();
+      });
+      card.querySelector('#gz-done').addEventListener('click', () => {
+        _gzCloseSaveCard();
+      });
+      card.querySelector('#gz-copy').addEventListener('click', () => {
+        ta.focus(); ta.select();
+        try {
+          if (navigator.clipboard) navigator.clipboard.writeText(token);
+        } catch (e) {}
+        try { document.execCommand('copy'); } catch (e) {}
+      });
+    }
+    // UX-Phase11D Issue H1 (2026-05-21): on a SUCCESSFUL save the
+    // registry must be told every module is now clean. Each module's
+    // markClean() resets its own dirty flag; WITHOUT this the modules
+    // stay dirty forever -> every subsequent Save re-emits the FULL
+    // payload (collectPatch keeps returning all the dirty slices) and
+    // the dirty-state surface never settles. Guarded (typeof) so it is
+    // safe before the registry exists / on a non-registry build. NOT
+    // called on a failed save (a failed save leaves the work unsaved =
+    // still dirty, correctly).
+    function _gzMarkAllClean() {
+      try {
+        if (typeof EditorModuleRegistry !== 'undefined' &&
+            typeof EditorModuleRegistry.markAllClean === 'function') {
+          EditorModuleRegistry.markAllClean();
+        }
+      } catch (e) {}
+    }
+    // The CLI-default Save: build the payload from the AUTHORED
+    // in-memory state, encode the SPCP1 token (byte-identical port),
+    // mirror the SPV1 relay UI. Returns the token string.
+    function _gzSaveCli() {
+      const payload = _buildSpcpPayload();
+      const token = _encodeSpcp(_gzSlug, payload);
+      _gzLastToken = token;
+      _gzShowTokenCard(token);
+      // H1: token emitted == the save committed (the user now relays it
+      // via `splatpipe set-camera-path`). Mark every module clean.
+      _gzMarkAllClean();
+      return token;
+    }
+    // The opt-in http Save: POST {slug, ...patch} (flat top-level
+    // body shape -- slug + the allow-listed camera-scope patch keys
+    // ONLY -- NEVER primary_asset) to SAVE_ENDPOINT with Bearer
+    // <fragment token>. The body shape MATCHES the PHP adapter's
+    // wire contract (infra/php/save-camera.php reads $patch['slug']
+    // and iterates $patch as a flat dict; the cross-language oracle
+    // sends json.dumps({"slug": SLUG, **patch}) too). Returns the
+    // fetch Promise so the harness can assert the call.
+    function _gzSaveHttp() {
+      const patch = _buildPatch();
+      const token = _gzReadAuthToken();
+      const body = JSON.stringify(Object.assign({ slug: _gzSlug }, patch));
+      const headers = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = 'Bearer ' + token;
+      return fetch(SAVE_ENDPOINT, {
+        method: 'POST', headers: headers, body: body,
+      }).then((resp) => {
+        // H1: ONLY a 200-OK POST commits the save -> mark modules clean.
+        // A non-ok status (4xx/5xx) is a failed save; leave them dirty.
+        // The returned `resp` is passed through UNCHANGED so the caller's
+        // own .then(resp => resp.ok) feedback chain still drives the
+        // button state exactly as before (no contract change).
+        if (resp && resp.ok) _gzMarkAllClean();
+        return resp;
+      });
+    }
+    function _gzSave() {
+      if (SAVE_MODE === 'http' && SAVE_ENDPOINT) {
+        return _gzSaveHttp();
+      }
+      return _gzSaveCli();
+    }

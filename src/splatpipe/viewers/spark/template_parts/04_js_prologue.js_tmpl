@@ -1,0 +1,127 @@
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@@@THREE_VERSION@@/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@@@THREE_VERSION@@/examples/jsm/",
+      "@sparkjsdev/spark": "@@SPARK_FORK_URL@@"
+    }
+  }
+  </script>
+  <script type="module">
+  import * as THREE from 'three';
+  import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+  import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+  import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark';
+
+  const canvas = document.getElementById('app-canvas');
+  const PRIMARY_ASSET = '@@PRIMARY_ASSET@@';
+  const PAGED = @@PAGED_JSON@@;
+  // Save-backend plumbing (publish-time; see html_for). INERT - no code
+  // reads these yet; the Save UI (a later task) will branch on SAVE_MODE
+  // ('cli' = read-only; 'http' = POST edits to SAVE_ENDPOINT). The per-scene
+  // SECRET is NEVER here / in viewer-config.json (http-mode: URL fragment).
+  const SAVE_MODE = @@SAVE_MODE_JSON@@;
+  const SAVE_ENDPOINT = @@SAVE_ENDPOINT_JSON@@;
+
+  // ?stock=1 in the URL strips all Splatpipe perf modifications (no DPR cap,
+  // no mobile Spark-knob bundle, no maxSh cap, no processUploads throttle).
+  // Useful for A/B visual comparisons against pure Spark defaults.
+  const STOCK = new URLSearchParams(location.search).get('stock') === '1';
+  if (STOCK) console.info('[Splatpipe] STOCK mode: all perf mods disabled');
+
+  // UX-Phase11F H6 (2026-05-21): the SINGLE source of truth for "should
+  // an editor hotkey be SWALLOWED right now because the user is typing /
+  // operating a menu, not driving the viewer?". Every global keydown
+  // handler in the bundle (08 WASD + H/F, 16 timeline X + Ctrl-arrows,
+  // 17 gizmo R/T/K/V/B/Space/Escape, 17a Ctrl+Z/Y) calls this FIRST and
+  // bails when it returns true. Declared in this earliest JS fragment so
+  // it is hoisted across the one shared <script type="module"> scope and
+  // visible to every later fragment (IIFE or top-level).
+  //
+  // It SUPERSETS the prior INPUT/TEXTAREA/SELECT-only guards (so existing
+  // behaviour is preserved) and additionally blocks while:
+  //   * a contenteditable element is focused (a rich-text field) -- so
+  //     typing X / K there edits the text instead of deleting a keyframe
+  //     / recording, AND
+  //   * focus is inside a [role=menu] (the camera-actions kebab popup,
+  //     03_body_chrome #cam-menu-popup) or a [role=dialog] (the Save card
+  //     + Set-start-view card, H7) -- so Tab-ing to a menu/dialog button
+  //     and pressing K / X / V does NOT fire the gizmo/timeline hotkey
+  //     behind the open menu/overlay.
+  // Returns true = the hotkey MUST be ignored; false = let it through.
+  function _editorHotkeyBlocked() {
+    let a;
+    try { a = document.activeElement; } catch (e) { return false; }
+    if (!a) return false;
+    const tag = a.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+    if (a.isContentEditable === true) return true;
+    try {
+      if (typeof a.closest === 'function' &&
+          a.closest('[role=menu],[role=dialog]')) return true;
+    } catch (e) {}
+    return false;
+  }
+
+  // UX-Phase11G WF-H3 (#144): a NARROWER guard for the non-destructive
+  // undo/redo hotkeys (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z). The broad
+  // _editorHotkeyBlocked() above blocks ALL hotkeys while a [role=dialog]
+  // owns focus -- but the Scene Settings drawer IS a [role=dialog], so it
+  // killed Ctrl+Z while the user was editing in the drawer (the WF-H3 "undo
+  // dead in drawer" report). Undo/redo is SAFE inside a dialog: the only
+  // thing it must NOT hijack is a real TEXT-ENTRY field (INPUT text/number/
+  // search/etc, TEXTAREA, contenteditable) where the browser's NATIVE text
+  // undo must win. SELECT / range / checkbox / file / buttons carry no
+  // editable text, so Ctrl+Z there is free to drive the editor's undo.
+  // Returns true = the undo/redo hotkey MUST be ignored (a text field is
+  // focused); false = let it through (incl. inside a [role=dialog]/[role=menu]).
+  // The DESTRUCTIVE single-key hotkeys (T/R/X/K/V/B) keep using the broad
+  // _editorHotkeyBlocked() so H6 stays intact (K/X never fire behind the
+  // kebab menu or a dialog).
+  const _EDITOR_NON_TEXT_INPUT_TYPES = {
+    button: true, checkbox: true, color: true, file: true, hidden: true,
+    image: true, radio: true, range: true, reset: true, submit: true,
+  };
+  function _editorUndoHotkeyBlocked() {
+    let a;
+    try { a = document.activeElement; } catch (e) { return false; }
+    if (!a) return false;
+    if (a.isContentEditable === true) return true;
+    const tag = a.tagName;
+    if (tag === 'TEXTAREA') return true;
+    if (tag === 'INPUT') {
+      // Default <input> type is 'text'. Block every type EXCEPT the
+      // explicitly-non-text ones (so type=text/number/search/email/url/
+      // tel/password/date/... all block; range/checkbox/file/button allow).
+      const t = (a.getAttribute('type') || 'text').toLowerCase();
+      return !_EDITOR_NON_TEXT_INPUT_TYPES[t];
+    }
+    return false;
+  }
+
+  // UX-Phase11F H7 (2026-05-21): cross-fragment coordinator for the modal
+  // editor overlays that live in SEPARATE IIFEs -- the Save-camera card
+  // (#gz-save-overlay, 17_editor_gizmo) and the Set-start-view card
+  // (#ss-overlay, 18_frame_loop, also opened by StartViewModule 15i).
+  // Each overlay registers ITS OWN close function here once; opening one
+  // calls _closeAllEditorOverlays(myCloser) FIRST so the other never
+  // STACKS behind it (the H7 "they pile up confusingly" report). Declared
+  // in this earliest JS fragment so both later IIFEs share the one list
+  // across the single <script type="module"> scope.
+  const _editorOverlayClosers = [];
+  function _registerEditorOverlayCloser(fn) {
+    if (typeof fn === 'function' &&
+        _editorOverlayClosers.indexOf(fn) === -1) {
+      _editorOverlayClosers.push(fn);
+    }
+  }
+  function _closeAllEditorOverlays(except) {
+    // Run every registered closer except the one opening now. A closer is
+    // idempotent (no-op when its overlay is already gone), so calling it
+    // when nothing is open is harmless.
+    for (const fn of _editorOverlayClosers.slice()) {
+      if (fn === except) continue;
+      try { fn(); } catch (e) {}
+    }
+  }
+

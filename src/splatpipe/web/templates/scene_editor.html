@@ -826,14 +826,30 @@
   }
 
   // --- Path playback ---
+  // LOCKSTEP: the CubicSpline + buildPlayer logic below is kept byte-identical with
+  //   src/splatpipe/viewers/spark/template.py -- edit BOTH files together.
+  //   (tests/test_html_for_save_mode.py enforces this.)
   // Cubic Hermite spline with `smoothness` knob 0..1 (0 = linear, 1 = smooth Catmull-Rom).
   // Ported from SuperSplat (PlayCanvas Ltd, MIT) src/anim/spline.ts.
   // Splines all 8 dims at once: pos.xyz + quat.xyzw + fov, then renormalises quat per frame.
   // Continuous velocity through every keyframe — no stop-start at keys.
+  // Per-keyframe interp modes (Task-1 schema; CONVENTION only — never
+  // schema-enforced in JS). Absent OR any unknown/invalid string falls
+  // through to the EXISTING global-`smoothness` path, byte-for-byte
+  // unchanged (the live scenes carry no `interp` → behaviorally identical).
+  const KF_LINEAR = 'linear', KF_STEPPED = 'stepped',
+        KF_AUTOMATIC = 'automatic', KF_AUTO_CLAMPED = 'auto_clamped',
+        KF_BEZIER = 'bezier';
   class CubicSpline {
-    constructor(times, knots) {
+    constructor(times, knots, meta) {
       this.times = times; this.knots = knots;
       this.dim = knots.length / times.length / 3;
+      // `meta` is a per-spline-knot array (parallel to `times`) of the
+      // source keyframe's {interp,in_tan,out_tan} (or null = legacy
+      // global-smoothness knot). calcKnots already baked the tangents;
+      // evaluate() only needs it for the `stepped`/`linear` SEGMENT
+      // overrides. null/absent ⇒ the unchanged cubic-Hermite path.
+      this.meta = meta || null;
     }
     evaluate(time, result) {
       const times = this.times; const last = times.length - 1;
@@ -841,6 +857,30 @@
       if (time >= times[last]) { this.getKnot(last, result); return; }
       let seg = 0;
       while (time >= times[seg + 1]) seg++;
+      // Per-keyframe SEGMENT override, keyed on the segment's SOURCE knot
+      // (`seg`). `stepped` holds that knot's value flat for the whole
+      // outgoing segment (a step until the next t). `linear` makes the
+      // outgoing segment the straight p0→p1 LERP (a true corner — colinear,
+      // no spline bulge) regardless of the next knot's mode. Both are
+      // segment-source overrides so the behavior matches DCC f-curves.
+      // Absent/unknown ⇒ the cubic Hermite below (legacy path, unchanged).
+      const sm = this.meta ? this.meta[seg] : null;
+      const mode = sm ? sm.interp : null;
+      if (mode === KF_STEPPED || mode === KF_LINEAR) {
+        const dim = this.dim; const i0 = seg * 3 * dim;
+        if (mode === KF_STEPPED) {
+          for (let i = 0; i < dim; i++) result[i] = this.knots[i0 + i * 3 + 1];
+        } else {
+          const u = (time - times[seg]) / (times[seg + 1] - times[seg]);
+          const i1 = (seg + 1) * 3 * dim;
+          for (let i = 0; i < dim; i++) {
+            const a = this.knots[i0 + i * 3 + 1];
+            const b = this.knots[i1 + i * 3 + 1];
+            result[i] = a + (b - a) * u;
+          }
+        }
+        return;
+      }
       this.evaluateSegment(seg, (time - times[seg]) / (times[seg + 1] - times[seg]), result);
     }
     getKnot(index, result) {
@@ -864,11 +904,14 @@
           m1 * (t2 * (t - 1));
       }
     }
-    static calcKnots(times, points, smoothness) {
+    static calcKnots(times, points, smoothness, meta) {
       const n = times.length; const dim = points.length / n;
       const knots = new Array(n * dim * 3);
       for (let i = 0; i < n; i++) {
         const t = times[i];
+        // This knot's per-keyframe mode (or null ⇒ legacy global path).
+        const km = meta ? meta[i] : null;
+        const mode = km ? km.interp : null;
         for (let j = 0; j < dim; j++) {
           const idx = i * dim + j;
           const p = points[idx];
@@ -878,43 +921,115 @@
           else tangent = (points[idx + dim] - points[idx - dim]) / (times[i + 1] - times[i - 1]);
           const inScale = i > 0 ? (times[i] - times[i - 1]) : (times[1] - times[0]);
           const outScale = i < n - 1 ? (times[i + 1] - times[i]) : (times[i] - times[i - 1]);
-          knots[idx * 3] = tangent * inScale * smoothness;
+          // EXISTING global-smoothness tangents (unchanged default path).
+          let mIn = tangent * inScale * smoothness;
+          let mOut = tangent * outScale * smoothness;
+          // ── Per-keyframe tangent override (Task-11) ──────────────────
+          // ONLY for the 5 known modes; absent/unknown leaves mIn/mOut
+          // EXACTLY as the global-smoothness path computed them above
+          // (the 6 live scenes have no `interp` ⇒ byte-identical result).
+          if (mode === KF_LINEAR) {
+            // Corner: straight secants toward each neighbor (zero spline
+            // curvature into/out of this knot). The OUTGOING segment is
+            // additionally LERP-locked in evaluate() so it stays colinear
+            // regardless of the next knot's mode.
+            const pPrev = (i > 0) ? points[idx - dim] : p;
+            const pNext = (i < n - 1) ? points[idx + dim] : p;
+            mIn = (p - pPrev);
+            mOut = (pNext - p);
+          } else if (mode === KF_STEPPED) {
+            // Hold: zero tangents; the outgoing segment value is held flat
+            // at p0 by evaluate()'s stepped branch (a step until next t).
+            mIn = 0; mOut = 0;
+          } else if (mode === KF_AUTOMATIC) {
+            // Catmull at FULL smoothness regardless of the path's global
+            // smoothness slider (an explicit per-key "smooth" choice).
+            mIn = tangent * inScale;
+            mOut = tangent * outScale;
+          } else if (mode === KF_AUTO_CLAMPED) {
+            // Catmull (full smoothness) but clamp so the segment can't
+            // overshoot the adjacent knot value range (kills the bulge —
+            // the editor default). Local extremum (this knot is above OR
+            // below BOTH neighbors) ⇒ flatten (Blender auto-clamped);
+            // otherwise cap each tangent at 3× the nearer secant so
+            // neither half-segment overshoots its end value.
+            mIn = tangent * inScale;
+            mOut = tangent * outScale;
+            const pPrev = (i > 0) ? points[idx - dim] : p;
+            const pNext = (i < n - 1) ? points[idx + dim] : p;
+            if ((p - pPrev) * (pNext - p) <= 0) {
+              mIn = 0; mOut = 0;
+            } else {
+              const lim = 3 * Math.min(Math.abs(p - pPrev), Math.abs(pNext - p));
+              if (Math.abs(mIn) > lim) mIn = (mIn < 0 ? -lim : lim);
+              if (Math.abs(mOut) > lim) mOut = (mOut < 0 ? -lim : lim);
+            }
+          } else if (mode === KF_BEZIER) {
+            // Draggable handles are a later phase. With explicit world-space
+            // in_tan/out_tan, map them onto the pos.xyz tangents (dims 0-2;
+            // the spline tangent convention IS a value-delta, so the handle
+            // vector components ARE the tangents); quat/fov + the no-handle
+            // case fall back to `automatic`.
+            mIn = tangent * inScale;
+            mOut = tangent * outScale;
+            if (j < 3 && km && km.in_tan && km.in_tan.length === 3) mIn = km.in_tan[j];
+            if (j < 3 && km && km.out_tan && km.out_tan.length === 3) mOut = km.out_tan[j];
+          }
+          knots[idx * 3] = mIn;
           knots[idx * 3 + 1] = p;
-          knots[idx * 3 + 2] = tangent * outScale * smoothness;
+          knots[idx * 3 + 2] = mOut;
         }
       }
       return knots;
     }
-    static fromPoints(times, points, smoothness = 1) {
-      return new CubicSpline(times, CubicSpline.calcKnots(times, points, smoothness));
+    static fromPoints(times, points, smoothness = 1, meta) {
+      return new CubicSpline(times, CubicSpline.calcKnots(times, points, smoothness, meta), meta);
     }
-    // Loop-aware variant: prepends/appends 2 phantom keyframes so the wrap
-    // point has a smooth tangent. `length` is the loop period.
-    static fromPointsLooping(length, times, points, smoothness = 1) {
-      if (times.length < 2) return CubicSpline.fromPoints(times, points, smoothness);
+    static fromPointsLooping(length, times, points, smoothness = 1, meta) {
+      if (times.length < 2) return CubicSpline.fromPoints(times, points, smoothness, meta);
       const dim = points.length / times.length;
       const newTimes = times.slice();
       const newPoints = points.slice();
-      // append first two points at length+t0 and length+t1
+      // `meta` is reordered EXACTLY parallel to times/points so the phantom
+      // wrap knots inherit their real keyframe's interp mode (loop C1).
+      const newMeta = meta ? meta.slice() : null;
       newTimes.push(length + times[0], length + times[1]);
       newPoints.push(...points.slice(0, dim * 2));
-      // prepend last two points at t-length
+      if (newMeta) newMeta.push(meta[0], meta[1]);
       newTimes.splice(0, 0, times[times.length - 2] - length, times[times.length - 1] - length);
       newPoints.splice(0, 0, ...points.slice(points.length - dim * 2));
-      return CubicSpline.fromPoints(newTimes, newPoints, smoothness);
+      if (newMeta) newMeta.splice(0, 0, meta[meta.length - 2], meta[meta.length - 1]);
+      return CubicSpline.fromPoints(newTimes, newPoints, smoothness, newMeta);
     }
   }
 
   let _activePlayer = null;
 
+  // Per-keyframe interp metadata for one spline knot, or null when the
+  // keyframe carries no (recognised) `interp` ⇒ the spline uses the
+  // EXISTING global-smoothness path for that knot, byte-for-byte
+  // unchanged. ABSENT and any unknown/invalid string both map to null
+  // (defensive: never throws, never NaN; schema membership is convention
+  // only, never enforced in JS).
+  const _VALID_INTERP = { auto_clamped: 1, automatic: 1, linear: 1,
+                          bezier: 1, stepped: 1 };
+  function _kfMeta(kf) {
+    const m = (kf && typeof kf.interp === 'string'
+               && _VALID_INTERP[kf.interp]) ? kf.interp : null;
+    if (!m) return null;
+    return { interp: m,
+             in_tan: (Array.isArray(kf.in_tan) && kf.in_tan.length === 3)
+               ? kf.in_tan : null,
+             out_tan: (Array.isArray(kf.out_tan) && kf.out_tan.length === 3)
+               ? kf.out_tan : null };
+  }
+
   function buildPlayer(p) {
     const sortedKfs = (p.keyframes || []).slice().sort((a, b) => (a.t || 0) - (b.t || 0));
     if (sortedKfs.length < 2) return null;
-
-    // Expand hold_s by duplicating each keyframe at t and t+hold_s so the
-    // spline sits at the same point during the hold (zero tangent there).
-    const times = []; const points = []; const sourceKf = [];
+    const times = []; const points = []; const sourceKf = []; const meta = [];
     let acc = 0;
+    let anyMeta = false;
     const lastDef = { quat: [0, 0, 0, 1], fov: 60 };
     for (let i = 0; i < sortedKfs.length; i++) {
       const kf = sortedKfs[i];
@@ -922,30 +1037,37 @@
       const quat = (kf.quat && kf.quat.length === 4) ? kf.quat : lastDef.quat;
       const fov = (typeof kf.fov === 'number') ? kf.fov : lastDef.fov;
       lastDef.quat = quat; lastDef.fov = fov;
-      // Sign-align quat with previous so component-spline doesn't take the long way around.
       let q = quat;
       if (sourceKf.length > 0) {
-        const prev = points.slice(-5, -1);  // last quat written
+        const prev = points.slice(-5, -1);
         const dot = prev[0]*q[0] + prev[1]*q[1] + prev[2]*q[2] + prev[3]*q[3];
         if (dot < 0) q = [-q[0], -q[1], -q[2], -q[3]];
       }
+      const km = _kfMeta(kf);
+      if (km) anyMeta = true;
       times.push(tBase);
       points.push(kf.pos[0], kf.pos[1], kf.pos[2], q[0], q[1], q[2], q[3], fov);
-      sourceKf.push(i);
+      sourceKf.push(i); meta.push(km);
       if (kf.hold_s && kf.hold_s > 0) {
         times.push(tBase + kf.hold_s);
         points.push(kf.pos[0], kf.pos[1], kf.pos[2], q[0], q[1], q[2], q[3], fov);
         sourceKf.push(i);
+        // Hold tail re-uses the SAME interp as its source knot so the held
+        // segment behaves consistently (e.g. a stepped+hold stays stepped).
+        meta.push(km);
         acc += kf.hold_s;
       }
     }
     const smoothness = (typeof p.smoothness === 'number') ? p.smoothness : 1.0;
     const playSpeed = (typeof p.play_speed === 'number' && p.play_speed > 0) ? p.play_speed : 1.0;
     const duration = times[times.length - 1];
-    // Loop-aware spline avoids the C0 jump at wrap by phantom-keyframing both ends.
+    // Pass `meta` ONLY when at least one keyframe has a recognised interp;
+    // otherwise pass undefined so the spline takes the byte-identical legacy
+    // path (no behavior change for the existing scenes).
+    const sMeta = anyMeta ? meta : undefined;
     const spline = p.loop
-      ? CubicSpline.fromPointsLooping(duration, times, points, smoothness)
-      : CubicSpline.fromPoints(times, points, smoothness);
+      ? CubicSpline.fromPointsLooping(duration, times, points, smoothness, sMeta)
+      : CubicSpline.fromPoints(times, points, smoothness, sMeta);
     return { spline, times, sortedKfs, sourceKf, duration, loop: !!p.loop, playSpeed };
   }
 

@@ -1,0 +1,779 @@
+  // ============================================================
+  //  AudioModule (Phase 7 -- editor-arc-design #122 §4.4)
+  // ------------------------------------------------------------
+  //  Per user-locked Q3 (2026-05-20): build the editor capacity
+  //  now -- the user provides assets later. cfg.audio defaults to
+  //  [] (empty array -- no audio); the editor lets the user upload
+  //  + manage tracks via the Scene Settings drawer's Audio section.
+  //
+  //  THIS module is the canonical owner of the cfg.audio slot. It
+  //  REPLACES the legacy 08_input.js_tmpl audio loader when
+  //  registered -- the legacy auto-play block is GUARDED by
+  //  `if (!_audioOwnedByModule) { ... }` so it only runs when this
+  //  module is absent. When this module is present:
+  //    * mount() builds an HTMLAudioElement per cfg.audio entry
+  //      + auto-plays (matches the legacy behaviour).
+  //    * unmount() tears down all elements (pause + src='').
+  //    * onCfgChange (an EditHistory undo, or a save reload)
+  //      tears down + rebuilds from the new cfg.
+  //    * renderSceneSettings(parentEl) populates the drawer's
+  //      Audio section with per-track cards (volume slider, loop
+  //      toggle, positional toggle, delete button) + "+ Add
+  //      track" button (UX-H3: POSTs to the http-mode
+  //      upload-asset.php derived from SAVE_ENDPOINT -- the old
+  //      dashboard-only ../upload-audio 404'd on a live CDN scene).
+  //
+  //  WHY HTMLAudioElement (not THREE.Audio): the legacy 08_input
+  //  loader used THREE.Audio + THREE.AudioListener, which requires
+  //  Web Audio API context-resume gymnastics for autoplay and ties
+  //  positional sources to the camera object. v1 ships the
+  //  capacity to manage tracks (CRUD + volume/loop) using the
+  //  simpler HTMLAudioElement primitive; positional audio
+  //  (Web Audio API + PositionalAudio) is documented in the schema
+  //  but deferred to Phase 9 -- the "positional" toggle still
+  //  stores the flag so the schema is forward-compatible, but the
+  //  module plays positional tracks as plain non-positional audio
+  //  in v1 (until the Phase 9 follow-on wires Web Audio).
+  //
+  //  WHY DEFAULT-MODES = ALL: audio plays in EVERY mode
+  //  (author/user/embed); the editor UI is gated separately by
+  //  the drawer's HudLayer registration in 17b. Putting the
+  //  module's defaultModes at ['author'] would WRONGLY silence
+  //  audio in enduser/embed -- audio is a PUBLIC scene element.
+  //
+  //  CONTRACT (per spec §4.4):
+  //    name              'audio'
+  //    stateKey          'audio'
+  //    defaultModes      ['author', 'user', 'embed']
+  //    mount/unmount     build + tear down HTMLAudioElement per track
+  //    onCfgChange       wholesale cfg replacement (undo) -> rebuild
+  //    getDirtyState     conservative slice-signature diff (mirrors 15a)
+  //    markClean         snapshot current slice as new clean baseline
+  //    timelineLane      { rows: 1, label: 'audio',
+  //                        render(ctx, x, y, w, h, t) } -- v1 draws
+  //                        ONE continuous full-width block per track
+  //                        (per-track t_in/t_out is deferred)
+  //    renderSceneSettings(parentEl)  -- populates the drawer's
+  //                        Audio section (replaces the 17b
+  //                        placeholder)
+  //
+  //  TEST SURFACE: window.__editor.audioModule exposes the module
+  //  instance + getters for harness assertions:
+  //    { audioModule, audioElements, audioDirty,
+  //      audioSectionEl, audioTrackCount,
+  //      audioAddTrack(file, opts), audioDeleteTrack(idx),
+  //      audioUpdateTrack(idx, patch) }
+  // ============================================================
+  (function _audioInit() {
+    if (typeof EditorModuleRegistry === 'undefined') return;
+
+    // ---- Live cfg helper (mirrors 15a / 15b / 15c -- one source of
+    //      truth for the cfg reference per IIFE). The cfg const is set
+    //      up in 06_cfg with a {file, positional, volume, loop, pos?}
+    //      array shape (matches PUBLIC_VIEWER_CONFIG_KEYS).
+    function _liveCfg() {
+      try { if (typeof cfg !== 'undefined' && cfg) return cfg; }
+      catch (e) {}
+      try { if (window.cfg) return window.cfg; }
+      catch (e) {}
+      return null;
+    }
+    function _slice() {
+      const c = _liveCfg();
+      if (!c) return [];
+      return Array.isArray(c.audio) ? c.audio : [];
+    }
+    function _sig(slice) {
+      try { return JSON.stringify(slice || []); }
+      catch (e) { return ''; }
+    }
+
+    // ---- Asset-upload endpoint (UX-H3 fix, 2026-05-21) -----------------
+    //  The OLD POST target was ``../upload-audio`` (relative) -- that only
+    //  exists on the splatpipe web DASHBOARD (the FastAPI dev server). On a
+    //  DEPLOYED CDN scene it 404s silently, so the audio upload was DEAD.
+    //  The http-mode fix: derive a SIBLING ``upload-asset.php`` from the
+    //  baked SAVE_ENDPOINT (e.g. https://geddart.de/save-camera.php ->
+    //  https://geddart.de/upload-asset.php) and POST the file there as
+    //  multipart with the same per-scene Bearer token Save uses. Mirrors
+    //  the 15b PanoramaModule helper verbatim (self-contained per IIFE).
+    //  Returns null when SAVE_MODE!=='http' (cli-default static scene has
+    //  no write endpoint -- caller surfaces a clear inline message).
+    function _assetUploadEndpoint() {
+      try {
+        if (typeof SAVE_MODE === 'undefined' || SAVE_MODE !== 'http') {
+          return null;
+        }
+        if (typeof SAVE_ENDPOINT === 'undefined' || !SAVE_ENDPOINT) {
+          return null;
+        }
+        return String(SAVE_ENDPOINT).replace(
+          /[^/]*(\?.*)?$/, 'upload-asset.php$1');
+      } catch (e) { return null; }
+    }
+
+    // Read the http-mode bearer from the URL fragment ONLY (#token=<token>,
+    // legacy #author=<secret>). MIRRORS 17_editor_gizmo::_gzReadAuthToken.
+    function _readAuthToken() {
+      try {
+        const h = (location.hash || '').replace(/^#/, '');
+        let legacy = '';
+        let modern = '';
+        for (const part of h.split('&')) {
+          const eq = part.indexOf('=');
+          if (eq <= 0) continue;
+          const key = part.slice(0, eq);
+          if (key === 'token') modern = decodeURIComponent(part.slice(eq + 1));
+          else if (key === 'author') legacy = decodeURIComponent(part.slice(eq + 1));
+        }
+        return modern || legacy || '';
+      } catch (e) { return ''; }
+    }
+
+    // The scene slug -- PREFER the gizmo's window.__editor.gzSlug; else
+    // derive it IDENTICALLY to 17_editor_gizmo::_gzSlug (#title h1, lower-
+    // cased + [a-z0-9_-] sanitiser the http-save slug regex requires).
+    function _uploadSlug() {
+      try {
+        if (window.__editor && typeof window.__editor.gzSlug === 'string'
+            && window.__editor.gzSlug) {
+          return window.__editor.gzSlug;
+        }
+      } catch (e) {}
+      try {
+        const h1 = document.querySelector('#title h1');
+        const name = ((h1 && h1.textContent) || 'scene').trim();
+        return (name.toLowerCase().replace(/[^a-z0-9_-]+/g, '_')
+          .slice(0, 48)) || 'scene';
+      } catch (e) { return 'scene'; }
+    }
+
+    // POST ``file`` to the derived upload-asset.php as multipart with the
+    // Bearer token + slug. RESOLVES with the server JSON ({ok:true,
+    // url:'<relative-filename>'}) or REJECTS with an Error whose .message
+    // is a human-readable inline-surfaceable string (401 / 413 / 415 /
+    // network / cli-mode). NEVER a silent console.warn-only.
+    function _uploadAsset(file) {
+      const endpoint = _assetUploadEndpoint();
+      if (!endpoint) {
+        return Promise.reject(new Error(
+          'Asset upload requires the http save backend. Run the scene in ' +
+          'the dashboard editor for local uploads, or switch save_mode to ' +
+          'http.'));
+      }
+      const token = _readAuthToken();
+      const fd = new FormData();
+      fd.append('slug', _uploadSlug());
+      fd.append('file', file);
+      const headers = {};
+      if (token) headers['Authorization'] = 'Bearer ' + token;
+      return fetch(endpoint, { method: 'POST', headers: headers, body: fd })
+        .then(function (r) {
+          return r.json().catch(function () { return null; }).then(
+            function (data) {
+              if (r.ok && data && data.ok && data.url) return data;
+              let msg;
+              if (r.status === 401) {
+                msg = 'Upload unauthorized (401). Open the scene via the ' +
+                      'private author link (#token=...).';
+              } else if (r.status === 413) {
+                msg = 'File too large (413).';
+              } else if (r.status === 415 || r.status === 400) {
+                msg = (data && data.error)
+                  ? ('Upload rejected: ' + data.error)
+                  : 'Upload rejected (unsupported file).';
+              } else {
+                msg = (data && data.error)
+                  ? ('Upload failed: ' + data.error)
+                  : ('Upload failed (HTTP ' + r.status + ').');
+              }
+              throw new Error(msg);
+            });
+        }, function (netErr) {
+          throw new Error('Upload failed (network error). ' +
+            ((netErr && netErr.message) ? netErr.message : ''));
+        });
+    }
+
+    // ---- Module-local state ----
+    const _audioElements = [];   // HTMLAudioElement[], index-aligned with cfg.audio
+    let _isDirty = false;
+    let _cleanSig = null;
+    let _sectionEl = null;       // <details data-section="audio"> in 17b drawer
+    let _sectionBodyEl = null;   // .spcp-scene-settings-section-body inside it
+    let _dockAttached = false;   // idempotency guard for _attachToDrawer
+    let _statusEl = null;        // inline upload status/error line (UX-H3)
+
+    // Surface an upload status / error message inline under the "+ Add
+    // track" button. ``isError`` colours it red; an empty msg hides it.
+    // Tolerant of a not-yet-rendered section (no-op).
+    function _setStatus(msg, isError) {
+      if (!_statusEl) return;
+      if (!msg) {
+        _statusEl.style.display = 'none';
+        _statusEl.textContent = '';
+        return;
+      }
+      _statusEl.textContent = msg;
+      _statusEl.style.color = isError ? '#ff8a8a' : '#9aa';
+      _statusEl.style.display = '';
+    }
+
+    // ---- Build from cfg.audio -- mirrors the legacy 08_input loader
+    //      behaviour but uses HTMLAudioElement (simpler than THREE.Audio
+    //      for v1 -- positional Web Audio is Phase 9). Auto-plays each
+    //      track; modern browsers may block until user gesture, in
+    //      which case the .play() promise rejects silently. Looping is
+    //      configurable per track; volume in [0..1] range.
+    function _buildFromCfg() {
+      const audio = _slice();
+      for (let i = 0; i < audio.length; i++) {
+        const track = audio[i];
+        if (!track || !track.file) {
+          _audioElements.push(null);
+          continue;
+        }
+        let el = null;
+        try {
+          el = new Audio(track.file);
+          el.volume = (typeof track.volume === 'number')
+            ? Math.max(0, Math.min(1, track.volume)) : 0.5;
+          el.loop = (track.loop !== false);
+          // Auto-play: matches the legacy 08_input behaviour. Many
+          // browsers block until user gesture; the .play() promise
+          // catches that case and silent-warns (NOT a throw).
+          const playP = el.play();
+          if (playP && typeof playP.catch === 'function') {
+            playP.catch(function (e) {
+              try {
+                console.warn('[AudioModule] play blocked (autoplay policy?):', e);
+              } catch (_) {}
+            });
+          }
+        } catch (e) {
+          try { console.warn('[AudioModule] Audio() construction failed:', e); }
+          catch (_) {}
+        }
+        _audioElements.push(el);
+      }
+    }
+
+    // ---- Tear down every HTMLAudioElement we built. pause() + src=''
+    //      release the underlying network connection + media element
+    //      buffer immediately. Tolerant of mid-init failures (a null
+    //      placeholder may exist if an Audio() construct threw).
+    function _disposeAll() {
+      while (_audioElements.length) {
+        const el = _audioElements.pop();
+        if (!el) continue;
+        try { el.pause(); } catch (e) {}
+        try { el.src = ''; } catch (e) {}
+      }
+    }
+
+    // ---- Push ONE EditHistory snapshot per gesture (R8 §4.2). Safe
+    //      no-op if history is not yet wired (early boot).
+    function _pushUndo(label) {
+      try {
+        if (typeof EditorModuleRegistry !== 'undefined' &&
+            typeof EditorModuleRegistry.pushUndo === 'function') {
+          EditorModuleRegistry.pushUndo(label || 'audio-edit');
+        }
+      } catch (e) {}
+    }
+
+    // ---- Rebuild = dispose + buildFromCfg. Called after any edit op
+    //      that touches the live cfg.audio array shape (add/delete/
+    //      url-change) so the live HTMLAudioElement pool stays in
+    //      lockstep with the cfg.
+    function _rebuild() {
+      _disposeAll();
+      _buildFromCfg();
+    }
+
+    // ---- Edit ops -- each pushes ONE snapshot at gesture-end. All
+    //      mutate cfg.audio in place + flip _isDirty + re-render the
+    //      drawer cards.
+    function _addTrack(file, opts) {
+      if (!file) return null;
+      const c = _liveCfg(); if (!c) return null;
+      if (!Array.isArray(c.audio)) c.audio = [];
+      _pushUndo('audio-add');
+      opts = opts || {};
+      const track = {
+        file: file,
+        volume: (typeof opts.volume === 'number') ? opts.volume : 0.5,
+        loop: (opts.loop !== false),
+        positional: !!opts.positional,
+      };
+      if (Array.isArray(opts.pos) && opts.pos.length === 3) {
+        track.pos = [opts.pos[0], opts.pos[1], opts.pos[2]];
+      }
+      c.audio.push(track);
+      _isDirty = true;
+      _rebuild();
+      _renderTrackList();
+      return track;
+    }
+    function _deleteTrack(idx) {
+      const c = _liveCfg(); if (!c) return false;
+      if (!Array.isArray(c.audio)) return false;
+      if (idx < 0 || idx >= c.audio.length) return false;
+      _pushUndo('audio-delete');
+      c.audio.splice(idx, 1);
+      _isDirty = true;
+      _rebuild();
+      _renderTrackList();
+      return true;
+    }
+    function _updateTrack(idx, patch) {
+      const c = _liveCfg(); if (!c) return false;
+      if (!Array.isArray(c.audio)) return false;
+      if (idx < 0 || idx >= c.audio.length) return false;
+      const track = c.audio[idx];
+      if (!track || !patch) return false;
+      let label = 'audio-update';
+      let changed = false;
+      if (typeof patch.volume === 'number' &&
+          patch.volume !== track.volume) {
+        label = 'audio-volume';
+        track.volume = Math.max(0, Math.min(1, patch.volume));
+        // Live-apply to the running element (no rebuild needed).
+        if (_audioElements[idx]) {
+          try { _audioElements[idx].volume = track.volume; } catch (e) {}
+        }
+        changed = true;
+      }
+      if (typeof patch.loop === 'boolean' && patch.loop !== track.loop) {
+        label = 'audio-loop';
+        track.loop = patch.loop;
+        if (_audioElements[idx]) {
+          try { _audioElements[idx].loop = patch.loop; } catch (e) {}
+        }
+        changed = true;
+      }
+      if (typeof patch.positional === 'boolean' &&
+          patch.positional !== track.positional) {
+        label = 'audio-positional';
+        track.positional = patch.positional;
+        // Positional audio toggle is a schema-only change in v1; the
+        // running HTMLAudioElement is non-positional regardless (Phase
+        // 9 wires Web Audio API for real positional playback).
+        changed = true;
+      }
+      if (Array.isArray(patch.pos) && patch.pos.length === 3) {
+        label = 'audio-pos';
+        track.pos = [patch.pos[0], patch.pos[1], patch.pos[2]];
+        changed = true;
+      }
+      if (!changed) return false;
+      _pushUndo(label);
+      _isDirty = true;
+      _renderTrackList();
+      return true;
+    }
+
+    // ---- Scene Settings drawer audio section.
+    //
+    //      The Phase-2D drawer (17b) emits a placeholder
+    //      <details data-section="audio"> in registration order; we
+    //      attach to it on register-time + on every subsequent
+    //      edit (re-render after add/delete keeps the card list in
+    //      sync without rebuilding the section element).
+    function _attachToDrawer() {
+      if (_dockAttached) return;
+      const drawer = document.getElementById('scene-settings-drawer');
+      if (!drawer) return;
+      const body = drawer.querySelector('#scene-settings-body');
+      if (!body) return;
+      _sectionEl = body.querySelector('details[data-section="audio"]');
+      if (!_sectionEl) return;  // placeholder not present (e.g. enduser)
+      _sectionBodyEl = _sectionEl.querySelector(
+        '.spcp-scene-settings-section-body');
+      if (!_sectionBodyEl) return;
+      _dockAttached = true;
+      _renderTrackList();
+    }
+
+    // ---- Render the track-list cards into _sectionBodyEl. Re-runs
+    //      after every edit op so the list stays in sync. Replaces
+    //      _sectionBodyEl content wholesale (the card DOM is cheap +
+    //      a per-card patch would complicate event-handler bookkeeping).
+    function _renderTrackList() {
+      if (!_sectionBodyEl) return;
+      _sectionBodyEl.innerHTML = '';
+      _sectionBodyEl.style.cssText =
+        'padding:6px 0 4px 0;color:#ccc;font-size:11px;' +
+        'display:flex;flex-direction:column;gap:6px;';
+
+      // "+ Add track" button at the top (always reachable even for
+      // a long track list).
+      const addBtn = document.createElement('button');
+      addBtn.type = 'button';
+      addBtn.textContent = '+ Add track';
+      addBtn.style.cssText =
+        'background:rgba(53,224,255,0.18);color:#35e0ff;' +
+        'border:1px solid rgba(53,224,255,0.40);border-radius:5px;' +
+        'font-size:11px;padding:5px 10px;cursor:pointer;' +
+        'margin-bottom:6px;width:100%;';
+      // Hidden file input that the button triggers; on file-select we
+      // POST the file to the http-mode upload-asset.php endpoint (see the
+      // change handler below) + on success add the returned relative url
+      // to cfg.audio. Server-side extension/size/auth hardening lives in
+      // upload-asset.php (mirrors the bug-audit #7 dashboard route).
+      const fileInput = document.createElement('input');
+      fileInput.type = 'file';
+      fileInput.accept = '.mp3,.wav,.ogg,.opus,.m4a,.aac,.flac,.webm,' +
+        'audio/mpeg,audio/wav,audio/ogg,audio/opus,audio/mp4,audio/aac,' +
+        'audio/flac,audio/webm';
+      fileInput.style.display = 'none';
+      addBtn.addEventListener('click', function () {
+        fileInput.click();
+      });
+      // On file-select POST the file to the http-mode upload-asset.php
+      // endpoint (derived from SAVE_ENDPOINT -- UX-H3 fix 2026-05-21; the
+      // old ../upload-audio target only existed on the dashboard + 404'd
+      // silently on a live CDN scene), then add the returned RELATIVE url
+      // as a new track. Errors (cli-mode / 401 / 413 / unsupported /
+      // network) surface INLINE -- never a silent console.warn-only.
+      fileInput.addEventListener('change', function () {
+        if (!fileInput.files || !fileInput.files.length) return;
+        const file = fileInput.files[0];
+        // cli-mode short-circuit: static CDN scene has no http write
+        // endpoint. Surface the actionable message + bail.
+        if (!_assetUploadEndpoint()) {
+          _setStatus(
+            'Asset upload requires the http save backend. Run the scene in ' +
+            'the dashboard editor for local uploads, or switch save_mode to ' +
+            'http.', true);
+          try { fileInput.value = ''; } catch (e) {}
+          return;
+        }
+        _setStatus('Uploading ' + (file.name || 'audio') + '...', false);
+        _uploadAsset(file)
+          .then(function (data) {
+            // Add the returned relative url as a new track (default volume
+            // + loop). _addTrack re-renders the list (clearing the status).
+            _addTrack(data.url, { volume: 0.5, loop: true });
+          })
+          .catch(function (err) {
+            const msg = (err && err.message) ? err.message : 'Upload failed.';
+            _setStatus(msg, true);
+            try { console.warn('[AudioModule] upload error:', err); }
+            catch (e) {}
+          });
+        // Clear so re-selecting the same file fires `change` again.
+        try { fileInput.value = ''; } catch (e) {}
+      });
+      _sectionBodyEl.appendChild(addBtn);
+      _sectionBodyEl.appendChild(fileInput);
+
+      // Inline upload status / error line (UX-H3). Hidden until an upload
+      // starts or fails; surfaces 401 / 413 / unsupported / cli-mode /
+      // network messages right under the "+ Add track" button.
+      const statusEl = document.createElement('div');
+      statusEl.className = 'audio-upload-status';
+      statusEl.style.cssText =
+        'font-size:10px;line-height:1.35;display:none;margin:-2px 0 2px 0;';
+      _sectionBodyEl.appendChild(statusEl);
+      _statusEl = statusEl;
+
+      // R2 (2026-05-21): subtle static expectation-setter -- uploads
+      // require opening the scene via the private author-token link
+      // (the #token=... bookmark). With the token link present, auth is
+      // wired and uploads work; without it the inline error above
+      // surfaces the 401. Small + dim so it never crowds the button.
+      const authHint = document.createElement('div');
+      authHint.className = 'audio-auth-hint';
+      authHint.style.cssText =
+        'font-size:9px;color:#667;line-height:1.3;margin:-2px 0 4px 0;';
+      authHint.textContent = 'Upload opens via your author link (#token=…).';
+      _sectionBodyEl.appendChild(authHint);
+
+      // Per-track cards.
+      const tracks = _slice();
+      if (!tracks.length) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'color:#888;font-style:italic;padding:6px 0;';
+        empty.textContent =
+          'No audio tracks yet. Click + Add track to upload one.';
+        _sectionBodyEl.appendChild(empty);
+        return;
+      }
+      for (let i = 0; i < tracks.length; i++) {
+        _sectionBodyEl.appendChild(_renderTrackCard(tracks[i], i));
+      }
+    }
+
+    // ---- Build one per-track card. Volume slider + loop toggle +
+    //      positional toggle + delete button. Each control commits
+    //      via the gesture-end snapshot pattern (pointerdown ->
+    //      pushUndo / change -> commit cfg).
+    function _renderTrackCard(track, idx) {
+      const card = document.createElement('div');
+      card.className = 'spcp-audio-track-card';
+      card.dataset.trackIdx = String(idx);
+      card.style.cssText =
+        'background:rgba(255,255,255,0.04);border-radius:5px;' +
+        'padding:6px 8px;border:1px solid rgba(255,255,255,0.06);' +
+        'display:flex;flex-direction:column;gap:4px;';
+
+      // File name header (read-only -- the file URL is the track id
+      // in v1; renaming would require a server-side move).
+      const head = document.createElement('div');
+      head.style.cssText =
+        'display:flex;align-items:center;gap:6px;' +
+        'justify-content:space-between;';
+      const fileLbl = document.createElement('span');
+      fileLbl.style.cssText =
+        'color:#fff;font-weight:600;font-size:11px;flex:1;' +
+        'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+      // Show only the basename for compactness.
+      const baseName = (track.file || '').split('/').pop() || '(no file)';
+      fileLbl.textContent = (idx + 1) + '. ' + baseName;
+      fileLbl.title = track.file || '';
+      head.appendChild(fileLbl);
+      // Delete button.
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.textContent = 'Delete';
+      delBtn.className = 'sp-del-btn';   // L11: shared delete look
+      delBtn.addEventListener('click', function () {
+        // L11/M1: immediate + undoable (audio-delete snapshot), no modal.
+        _deleteTrack(idx);
+      });
+      head.appendChild(delBtn);
+      card.appendChild(head);
+
+      // Volume slider (gesture-end snapshot pattern -- pushUndo on
+      // pointerdown, commit on change/blur, NEVER per input event).
+      const volRow = document.createElement('label');
+      volRow.style.cssText = 'display:flex;gap:6px;align-items:center;';
+      volRow.appendChild(document.createTextNode('vol:'));
+      const volSlider = document.createElement('input');
+      volSlider.type = 'range';
+      volSlider.min = '0'; volSlider.max = '1'; volSlider.step = '0.01';
+      const initialVol = (typeof track.volume === 'number') ? track.volume : 0.5;
+      volSlider.value = String(initialVol);
+      volSlider.style.flex = '1';
+      const volLbl = document.createElement('span');
+      volLbl.textContent = initialVol.toFixed(2);
+      volLbl.style.cssText = 'min-width:36px;text-align:right;color:#9aa;';
+      volSlider.addEventListener('pointerdown', function () {
+        _pushUndo('audio-volume');
+      });
+      volSlider.addEventListener('input', function () {
+        const v = parseFloat(volSlider.value);
+        volLbl.textContent = v.toFixed(2);
+        // Live-apply to the running element so the author hears it.
+        if (_audioElements[idx]) {
+          try { _audioElements[idx].volume = v; } catch (e) {}
+        }
+      });
+      volSlider.addEventListener('change', function () {
+        const v = parseFloat(volSlider.value);
+        _updateTrack(idx, { volume: v });
+      });
+      volRow.appendChild(volSlider);
+      volRow.appendChild(volLbl);
+      card.appendChild(volRow);
+
+      // Loop + positional toggles (compact checkbox row).
+      const toggleRow = document.createElement('div');
+      toggleRow.style.cssText =
+        'display:flex;gap:10px;align-items:center;font-size:10px;';
+      // Loop toggle
+      const loopWrap = document.createElement('label');
+      loopWrap.style.cssText =
+        'display:flex;gap:4px;align-items:center;cursor:pointer;';
+      const loopCb = document.createElement('input');
+      loopCb.type = 'checkbox';
+      loopCb.checked = (track.loop !== false);
+      loopCb.addEventListener('change', function () {
+        _updateTrack(idx, { loop: loopCb.checked });
+      });
+      loopWrap.appendChild(loopCb);
+      loopWrap.appendChild(document.createTextNode('loop'));
+      toggleRow.appendChild(loopWrap);
+      // Positional toggle
+      const posWrap = document.createElement('label');
+      posWrap.style.cssText =
+        'display:flex;gap:4px;align-items:center;cursor:pointer;';
+      const posCb = document.createElement('input');
+      posCb.type = 'checkbox';
+      posCb.checked = !!track.positional;
+      posCb.addEventListener('change', function () {
+        _updateTrack(idx, { positional: posCb.checked });
+      });
+      posWrap.appendChild(posCb);
+      posWrap.appendChild(document.createTextNode('positional'));
+      posWrap.title =
+        'Schema-only in v1 (Web Audio API positional playback ' +
+        'deferred to Phase 9). Saves to cfg.audio[i].positional.';
+      toggleRow.appendChild(posWrap);
+      card.appendChild(toggleRow);
+
+      // Position vec3 (only if positional is on -- compact 3-input
+      // row). v1 is schema-only; Phase 9 wires real positional
+      // playback against these values.
+      if (track.positional && Array.isArray(track.pos) &&
+          track.pos.length === 3) {
+        const posRow = document.createElement('div');
+        posRow.style.cssText =
+          'display:flex;gap:4px;font-size:10px;color:#9aa;';
+        const px = (track.pos[0] !== undefined)
+          ? track.pos[0].toFixed(2) : '0';
+        const py = (track.pos[1] !== undefined)
+          ? track.pos[1].toFixed(2) : '0';
+        const pz = (track.pos[2] !== undefined)
+          ? track.pos[2].toFixed(2) : '0';
+        posRow.textContent = 'pos: [' + px + ', ' + py + ', ' + pz + ']';
+        card.appendChild(posRow);
+      }
+
+      return card;
+    }
+
+    // ---- The module instance ------------------------------------------
+    const audioModule = {
+      name: 'audio',
+      stateKey: 'audio',
+      defaultModes: ['author', 'user', 'embed'],
+
+      _isDirty: false,
+
+      mount: function (overlay, hud, interaction, modes) {
+        // Build HTMLAudioElement per cfg.audio entry + auto-play
+        // (replicates the legacy 08_input loader behaviour). The 08
+        // guard `if (!_audioOwnedByModule)` no-ops the legacy block
+        // when this module is registered, so audio is only built once.
+        _buildFromCfg();
+        // Capture clean baseline so getDirtyState reports false until
+        // the author makes their first edit.
+        _cleanSig = _sig(_slice());
+        // Self-attach to the Scene Settings drawer once 17b has run.
+        // setTimeout(0) lands AFTER every synchronous IIFE in the page
+        // (mirrors the 15b PanoramaModule attach pattern).
+        try { setTimeout(_attachToDrawer, 0); } catch (e) {}
+      },
+
+      unmount: function () {
+        _disposeAll();
+        _cleanSig = null;
+        _dockAttached = false;
+        _sectionEl = null;
+        _sectionBodyEl = null;
+      },
+
+      onCfgChange: function (prev, next, stateKey) {
+        // Wholesale cfg replacement (e.g. an EditHistory undo or a
+        // post-save reload) -- tear down + rebuild from the new cfg.
+        // The slice-diff catches the new state; re-render the drawer
+        // cards so the volume sliders / loop checkboxes / etc. reflect
+        // the new shape.
+        _rebuild();
+        if (_dockAttached) _renderTrackList();
+      },
+
+      getDirtyState: function () {
+        // Two-track signal: explicit _isDirty flag flipped by every
+        // gesture-end commit AND a conservative slice-signature diff
+        // for the post-undo path (where _isDirty might not have been
+        // touched). Mirrors the 15b PanoramaModule convention.
+        const sliceNow = _slice();
+        const sigNow = _sig(sliceNow);
+        const sigDiffers = (_cleanSig !== null && sigNow !== _cleanSig);
+        return {
+          isDirty: !!_isDirty || sigDiffers,
+          patchObject: sliceNow,
+        };
+      },
+
+      markClean: function () {
+        _isDirty = false;
+        _cleanSig = _sig(_slice());
+      },
+
+      // ---- Timeline lane -- contributes audio track blocks to the
+      //      Phase 2D multi-lane bottom-timeline. v1: ONE continuous
+      //      full-width block per track (audio is a background loop;
+      //      per-track t_in/t_out is deferred -- the cfg.audio schema
+      //      in PUBLIC_VIEWER_CONFIG_KEYS has no t_in/t_out fields in
+      //      v1, only file/positional/volume/loop/pos). Cycle the
+      //      colour palette so each track is visually distinct.
+      timelineLane: {
+        rows: 1,
+        label: 'audio',
+        render: function (ctx, x, y, w, h, tCur) {
+          if (!ctx || w <= 0 || h <= 0) return;
+          const tracks = _slice();
+          // Lane background (always drawn so the lane is visible even
+          // when no tracks exist -- consistent with the 15c annotations
+          // lane and the 15d cuts lane).
+          try {
+            ctx.fillStyle = 'rgba(255,255,255,0.04)';
+            ctx.fillRect(x, y, w, h);
+          } catch (e) {}
+          if (!tracks.length) return;
+          // Per-track full-width blocks, stacked vertically inside h.
+          // Each track gets its own horizontal strip; with N tracks
+          // the strip height is h/N (with a 1px gap).
+          const N = tracks.length;
+          const stripH = Math.max(2, Math.floor((h - (N - 1)) / N));
+          const colors = ['#5ac8a0', '#a05ac8', '#c8a05a',
+            '#5a8ac8', '#c85a8a', '#8ac85a'];
+          for (let i = 0; i < N; i++) {
+            const yy = y + i * (stripH + 1);
+            try {
+              ctx.fillStyle = colors[i % colors.length];
+              ctx.fillRect(x, yy, w, stripH);
+            } catch (e) {}
+          }
+        },
+      },
+
+      renderSceneSettings: function (parentEl) {
+        // Called by 17b's 'register' event listener. In the current
+        // 15f-after-17b fragment order this DOES fire (17b's listener
+        // attaches in its IIFE, then this module registers later when
+        // 15f runs -- the registry's emit('register') fans out to 17b
+        // which calls this hook). _attachToDrawer is the primary path
+        // (via setTimeout from mount); this hook is the fallback so
+        // the contract is honoured.
+        if (!parentEl) return;
+        _sectionEl = parentEl.querySelector
+          ? parentEl.querySelector('details[data-section="audio"]')
+          : null;
+        if (!_sectionEl) return;
+        _sectionBodyEl = _sectionEl.querySelector(
+          '.spcp-scene-settings-section-body');
+        if (!_sectionBodyEl) return;
+        _dockAttached = true;
+        _renderTrackList();
+      },
+
+      testSurface: {
+        // Functions (not getters) -- sidesteps the Object.assign
+        // getter-freeze pattern documented in 16_editor_timeline /
+        // 15d_cuts_module.
+        audioGet() { return audioModule; },
+        audioModuleDirty() {
+          return audioModule.getDirtyState().isDirty;
+        },
+        audioElements() { return _audioElements.slice(); },
+        audioTrackCount() { return _slice().length; },
+        audioSectionEl() { return _sectionEl; },
+        audioAddTrack(file, opts) { return _addTrack(file, opts); },
+        audioDeleteTrack(idx) { return _deleteTrack(idx); },
+        audioUpdateTrack(idx, patch) {
+          return _updateTrack(idx, patch);
+        },
+        // Render hook -- the harness can drive the drawer card
+        // population without waiting for the drawer-open event.
+        audioRender() { _renderTrackList(); },
+      },
+    };
+
+    EditorModuleRegistry.register(audioModule);
+  })();
+

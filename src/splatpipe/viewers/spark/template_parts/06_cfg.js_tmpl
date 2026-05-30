@@ -1,0 +1,72 @@
+  // ---- Viewer config ----
+  const _DEFAULTS = {
+    camera: { enabled: false, pitch_min: -89, pitch_max: 89, zoom_min: 1, zoom_max: 200,
+              ground_height: 0.3, bounds_radius: 150 },
+    splat_budget: 0,
+    annotations: [],
+    background: { type: 'color', color: '#1a1a1a' },
+    postprocessing: { tonemapping: 'neutral', exposure: 1.5 },
+    audio: [],
+    camera_paths: [],
+    default_path_id: null,
+    start_view: null,
+    // Equirectangular panorama backdrop (Phase 3 -- PanoramaModule).
+    // null = no backdrop; when set, the shape is
+    //   { image_url, rotation_y_deg, intensity, blend_mode, show_in_modes }
+    // (see 15b_panorama_module.js_tmpl). Wholesale-allow-listed in
+    // core/config_safety.PUBLIC_VIEWER_CONFIG_KEYS so it survives
+    // sanitisation in publish_scene().
+    panorama_backdrop: null,
+    spark_render: {
+      lod_splat_scale: 1.0,
+      lod_render_scale: 1.0,
+      clip_xy: 1.4,
+      move_speed_mult: 1.0,
+      foveation: { enabled: false, cone_fov0: 30, cone_fov: 90, cone_foveate: 2.0, behind_foveate: 4.0 },
+      ondemand_lod_fallback: true
+    }
+  };
+  let cfg = _DEFAULTS;
+  try {
+    // cache:'no-store' is REQUIRED: Bunny's pull zone serves this with a
+    // 30-day max-age (its default override; "Honor Origin Cache-Control"
+    // is off so .rad stays long-cached). Without no-store a browser that
+    // already opened the viewer would keep a stale config for weeks —
+    // breaking "saved for all" for start_view / any scene-config edit.
+    // The file is a few KB; always revalidating it is free.
+    const r = await fetch('viewer-config.json', { cache: 'no-store' });
+    if (r.ok) cfg = { ..._DEFAULTS, ...(await r.json()) };
+  } catch (e) { /* defaults */ }
+
+  // Effective splat asset. Bunny serves index.html with a 30-day edge
+  // cache and its purge is unreliable, so a re-deployed stable-slug URL
+  // would keep serving a STALE index.html that hardcodes an old build
+  // subfolder → 404 → blank. Fix: index.html stays build-AGNOSTIC; the
+  // current build's path lives in viewer-config.json (fetched no-store
+  // above = always fresh) as `primary_asset`. So a redeploy only updates
+  // the always-fresh config + adds an immutable new subfolder; the
+  // permanent URL never goes stale. Falls back to the baked PRIMARY_ASSET
+  // for single-file / legacy deploys that don't set cfg.primary_asset.
+  const _PRIMARY = (typeof cfg.primary_asset === 'string' && cfg.primary_asset)
+    ? cfg.primary_asset : PRIMARY_ASSET;
+
+  // Device tier (used by the renderer DPR cap below, by Spark construction
+  // further down, and by the initial splat-budget pick later). The web
+  // platform doesn't expose VRAM (privacy / fingerprinting), so we use
+  // proxies: touch capability + short screen side, plus `navigator.deviceMemory`
+  // (system RAM in GB, capped at 8 by browsers) as a coarse "is this a
+  // beefy machine" hint.
+  const _deviceProfile = (() => {
+    const isTouch = navigator.maxTouchPoints > 0;
+    const isIPadDesktop = /MacIntel/.test(navigator.platform || '') &&
+                          navigator.maxTouchPoints > 1;
+    const shortSide = Math.min(screen.width || 0, screen.height || 0);
+    let tier;
+    if (isTouch || isIPadDesktop) {
+      tier = shortSide <= 600 ? 'phone' : 'tablet';
+    } else {
+      tier = 'desktop';
+    }
+    return { tier, ramGB: navigator.deviceMemory || 4 };
+  })();
+

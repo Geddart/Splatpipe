@@ -1,0 +1,356 @@
+  // ============================================================
+  //  openContextMenu -- the ONE reusable right-click menu primitive
+  //  (R2 #2 / #156 -- "can we get right click menus finally?")
+  // ------------------------------------------------------------
+  //  A single floating [role=menu] popup the editor surfaces (the
+  //  bottom-timeline diamonds, the 3D keyframe frusta, the camera
+  //  dropdown, and the annotation / clip / title drawer rows) all
+  //  open at the cursor. Modelled BYTE-FOR-LIFECYCLE on the proven
+  //  camera kebab menu (_camMenuOpen / _camMenuClose in
+  //  10_camera_select): a [role=menu] div, [role=menuitem] buttons
+  //  styled like .quality-btn, positioned via getBoundingClientRect
+  //  / the click coords, closed by ONE capture-phase document click
+  //  + Escape keydown (BOTH removed on close), single-instance.
+  //
+  //  Declared in this early fragment (04b_, right after 04a's
+  //  EditorModuleRegistry) so it is hoisted across the one shared
+  //  <script type="module"> scope and visible to every later
+  //  fragment IIFE that wires a surface (08/10/15c/15d/15g/16/17).
+  //
+  //  CONTRACT
+  //    openContextMenu(x, y, items, opts) -> the menu element (or null)
+  //      x, y    : viewport (clientX/clientY) coords to anchor at.
+  //      items   : array of either
+  //                  { label, onSelect, disabled?, danger?, title? }
+  //                or { separator: true }.
+  //                (Submenus were considered for "Set interp"; we
+  //                 FLATTEN the interp choices into top-level items
+  //                 instead -- simpler, no nested-hover lifecycle, and
+  //                 the same one-click affordance. opts.submenu is not
+  //                 implemented; an item.submenu is ignored.)
+  //      opts    : { onClose? } optional.
+  //    _ctxCloseMenu()  -- close any open context menu (idempotent).
+  //
+  //  CLOSE ON: outside click (capture-phase document listener),
+  //  Escape, item-select, scroll, resize, blur. ALL listeners are
+  //  removed on close (the kebab teardown pattern -- no leak).
+  //  Single-instance: opening closes any prior context menu first AND
+  //  calls _closeAllEditorOverlays() so the Save / Set-start-view
+  //  cards never sit behind it.
+  //
+  //  KEYBOARD NAV: first enabled item is focused on open; ArrowUp /
+  //  ArrowDown move between enabled items (wrapping); Home/End jump;
+  //  Enter / Space activate; Escape closes + restores focus to the
+  //  element that had focus when the menu opened (the trigger).
+  //
+  //  z-index 62: above the Scene Settings drawer (50) + the interp
+  //  popover (51) + the kebab (#cam-menu-popup 60) + #controls-hint
+  //  (60), BELOW the modal full-screen cards (#gz-save-overlay /
+  //  #ss-overlay at 9999) -- a context menu is a transient affordance,
+  //  never over a modal dialog (and opening a card closes the menu via
+  //  the shared coordinator anyway).
+  // ============================================================
+  let _ctxMenuEl = null;          // the single live menu element
+  let _ctxOutsideHandler = null;  // capture-phase document click closer
+  let _ctxKeyHandler = null;      // Escape + arrow-nav keydown
+  let _ctxScrollHandler = null;   // scroll/resize/blur closer
+  let _ctxPrevFocus = null;       // element focused before open (restore)
+  let _ctxOnClose = null;         // caller's optional onClose callback
+
+  function _ctxCloseMenu() {
+    // Idempotent: safe to call when nothing is open.
+    if (_ctxOutsideHandler) {
+      try { document.removeEventListener('click', _ctxOutsideHandler, true); }
+      catch (e) {}
+      try {
+        document.removeEventListener('contextmenu', _ctxOutsideHandler, true);
+      } catch (e) {}
+      _ctxOutsideHandler = null;
+    }
+    if (_ctxKeyHandler) {
+      try { document.removeEventListener('keydown', _ctxKeyHandler, true); }
+      catch (e) {}
+      _ctxKeyHandler = null;
+    }
+    if (_ctxScrollHandler) {
+      try { window.removeEventListener('scroll', _ctxScrollHandler, true); }
+      catch (e) {}
+      try { window.removeEventListener('resize', _ctxScrollHandler); }
+      catch (e) {}
+      try { window.removeEventListener('blur', _ctxScrollHandler); }
+      catch (e) {}
+      _ctxScrollHandler = null;
+    }
+    const el = _ctxMenuEl;
+    _ctxMenuEl = null;
+    if (el && el.parentNode) {
+      try { el.parentNode.removeChild(el); } catch (e) {}
+    }
+    const cb = _ctxOnClose;
+    _ctxOnClose = null;
+    if (typeof cb === 'function') { try { cb(); } catch (e) {} }
+  }
+
+  // The enabled [role=menuitem] buttons currently in the menu (skips
+  // separators + disabled items) -- the keyboard-nav target set.
+  function _ctxEnabledItems() {
+    if (!_ctxMenuEl) return [];
+    const out = [];
+    const nodes = _ctxMenuEl.querySelectorAll('[role=menuitem]');
+    for (const n of nodes) {
+      if (n.getAttribute('aria-disabled') === 'true') continue;
+      out.push(n);
+    }
+    return out;
+  }
+  function _ctxFocusByOffset(delta) {
+    const items = _ctxEnabledItems();
+    if (!items.length) return;
+    let cur = -1;
+    const active = document.activeElement;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i] === active) { cur = i; break; }
+    }
+    let next;
+    if (cur < 0) {
+      next = delta > 0 ? 0 : items.length - 1;
+    } else {
+      // Wrap with a guaranteed-positive modulus (JS % keeps the dividend
+      // sign, so a large negative ArrowUp/End delta would go negative);
+      // the (delta % len + len) % len idiom always lands in [0, len).
+      const len = items.length;
+      next = (((cur + delta) % len) + len) % len;
+    }
+    try { items[next].focus(); } catch (e) {}
+  }
+  // Home / End jump to the first / last ENABLED item directly (not via a
+  // wrapping offset -- a huge offset would mis-wrap; see above).
+  function _ctxFocusEdge(toEnd) {
+    const items = _ctxEnabledItems();
+    if (!items.length) return;
+    try { items[toEnd ? items.length - 1 : 0].focus(); } catch (e) {}
+  }
+
+  function openContextMenu(x, y, items, opts) {
+    opts = opts || {};
+    // Single-instance + never-stack: drop any open context menu first,
+    // then close the modal editor cards (Save / Set-start-view) via the
+    // shared coordinator so the menu is never obscured behind them. The
+    // coordinator is declared in 04_js_prologue (same module scope).
+    _ctxCloseMenu();
+    try {
+      if (typeof _closeAllEditorOverlays === 'function') {
+        _closeAllEditorOverlays();
+      }
+    } catch (e) {}
+    if (!Array.isArray(items) || !items.length) return null;
+
+    // Remember the trigger focus so Escape restores it (a11y).
+    try { _ctxPrevFocus = document.activeElement; } catch (e) { _ctxPrevFocus = null; }
+    _ctxOnClose = (typeof opts.onClose === 'function') ? opts.onClose : null;
+
+    const menu = document.createElement('div');
+    menu.id = 'editor-context-menu';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('tabindex', '-1');
+    // Inline-styled (no new CSS region) -- mirrors the kebab popup's
+    // dark translucent panel. position:fixed so (x,y) are viewport
+    // coords; the clamp below keeps it on-screen.
+    menu.style.cssText =
+      'position:fixed;z-index:62;min-width:168px;max-width:280px;' +
+      'background:rgba(20,20,20,0.96);' +
+      'border:1px solid rgba(255,255,255,0.18);border-radius:7px;' +
+      'padding:4px;box-shadow:0 6px 22px rgba(0,0,0,0.55);' +
+      '-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);' +
+      'font:12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;' +
+      'color:#eee;user-select:none;outline:none;';
+
+    let _firstEnabled = null;
+    for (const it of items) {
+      if (!it) continue;
+      if (it.separator) {
+        const sep = document.createElement('div');
+        sep.setAttribute('role', 'separator');
+        sep.setAttribute('aria-hidden', 'true');
+        sep.style.cssText =
+          'height:1px;margin:4px 6px;' +
+          'background:rgba(255,255,255,0.14);';
+        menu.appendChild(sep);
+        continue;
+      }
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'quality-btn';     // reuse the existing button styling
+      b.setAttribute('role', 'menuitem');
+      b.textContent = it.label != null ? String(it.label) : '';
+      if (it.title) b.title = String(it.title);
+      const disabled = !!it.disabled;
+      // Left-aligned, full-width, block -- mirrors the kebab menuitems.
+      // danger items get a red tint; disabled items are dimmed +
+      // non-interactive (pointer-events:none + aria-disabled).
+      b.style.cssText =
+        'display:block;width:100%;text-align:left;margin:1px 0;' +
+        'padding:6px 10px;border-radius:5px;cursor:' +
+        (disabled ? 'default' : 'pointer') + ';' +
+        'background:transparent;border:0;' +
+        'font:12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;' +
+        'line-height:1.2;' +
+        (it.danger ? 'color:#ff8a8a;' : 'color:#eee;') +
+        (disabled ? 'opacity:0.4;pointer-events:none;' : '');
+      if (disabled) {
+        b.setAttribute('aria-disabled', 'true');
+        b.disabled = true;
+      } else {
+        if (!_firstEnabled) _firstEnabled = b;
+        // Hover highlight (no CSS region: toggle inline background).
+        b.addEventListener('pointerenter', () => {
+          b.style.background = 'rgba(255,255,255,0.12)';
+          try { b.focus(); } catch (e) {}
+        });
+        b.addEventListener('pointerleave', () => {
+          b.style.background = 'transparent';
+        });
+        b.addEventListener('focus', () => {
+          b.style.background = 'rgba(255,255,255,0.12)';
+        });
+        b.addEventListener('blur', () => {
+          b.style.background = 'transparent';
+        });
+        const fn = it.onSelect;
+        b.addEventListener('click', (ev) => {
+          if (ev && ev.stopPropagation) ev.stopPropagation();
+          // Close FIRST so the action runs against a clean DOM (an
+          // action that opens an alert/confirm or another menu is not
+          // obscured by this one -- mirrors the kebab Rename/Delete).
+          _ctxCloseMenu();
+          if (typeof fn === 'function') { try { fn(); } catch (e) {} }
+        });
+      }
+      menu.appendChild(b);
+    }
+
+    document.body.appendChild(menu);
+    _ctxMenuEl = menu;
+
+    // Clamp / flip so the menu never spills past the right / bottom
+    // viewport edge. Measure AFTER append so offsetWidth/Height are real.
+    const vw = window.innerWidth || document.documentElement.clientWidth;
+    const vh = window.innerHeight || document.documentElement.clientHeight;
+    const mw = menu.offsetWidth || 168;
+    const mh = menu.offsetHeight || 40;
+    let left = x;
+    let top = y;
+    if (left + mw > vw - 4) left = Math.max(4, vw - mw - 4);
+    if (left < 4) left = 4;
+    if (top + mh > vh - 4) {
+      // Flip above the cursor if there is room, else clamp to the bottom.
+      top = (y - mh >= 4) ? (y - mh) : Math.max(4, vh - mh - 4);
+    }
+    if (top < 4) top = 4;
+    menu.style.left = Math.round(left) + 'px';
+    menu.style.top = Math.round(top) + 'px';
+
+    // Focus the first enabled item (keyboard nav entry point).
+    if (_firstEnabled) { try { _firstEnabled.focus(); } catch (e) {} }
+    else { try { menu.focus(); } catch (e) {} }
+
+    // ---- Lifecycle listeners (all removed in _ctxCloseMenu) ----
+    // Outside click / outside contextmenu -> close. useCapture=true so
+    // it is seen before any bubbling handler can swallow it (the kebab
+    // pattern). A click INSIDE the menu is handled by the item's own
+    // click (which closes); a click on the menu chrome (separator /
+    // padding) is ignored here so it does not close before an intended
+    // item click lands.
+    _ctxOutsideHandler = function (e) {
+      if (!e || !e.target) { _ctxCloseMenu(); return; }
+      if (_ctxMenuEl && _ctxMenuEl.contains(e.target)) return;
+      _ctxCloseMenu();
+    };
+    document.addEventListener('click', _ctxOutsideHandler, true);
+    document.addEventListener('contextmenu', _ctxOutsideHandler, true);
+
+    _ctxKeyHandler = function (e) {
+      if (!e) return;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        const restore = _ctxPrevFocus;
+        _ctxCloseMenu();
+        if (restore && typeof restore.focus === 'function') {
+          try { restore.focus(); } catch (err) {}
+        }
+        return;
+      }
+      if (e.key === 'ArrowDown') { e.preventDefault(); _ctxFocusByOffset(1); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); _ctxFocusByOffset(-1); return; }
+      if (e.key === 'Home') { e.preventDefault(); _ctxFocusEdge(false); return; }
+      if (e.key === 'End') { e.preventDefault(); _ctxFocusEdge(true); return; }
+      if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+        const a = document.activeElement;
+        if (a && _ctxMenuEl && _ctxMenuEl.contains(a) &&
+            a.getAttribute('role') === 'menuitem' &&
+            a.getAttribute('aria-disabled') !== 'true') {
+          e.preventDefault();
+          try { a.click(); } catch (err) {}
+        }
+      }
+    };
+    document.addEventListener('keydown', _ctxKeyHandler, true);
+
+    // Scroll / resize / window-blur -> close (the menu is anchored to a
+    // fixed viewport point; a scroll would leave it stranded). Capture
+    // scroll so a scroll in any container closes it.
+    _ctxScrollHandler = function () { _ctxCloseMenu(); };
+    window.addEventListener('scroll', _ctxScrollHandler, true);
+    window.addEventListener('resize', _ctxScrollHandler);
+    window.addEventListener('blur', _ctxScrollHandler);
+
+    // Coordinate with the Save / Set-start-view modal cards: register a
+    // closer so opening one of THEM closes this menu too (idempotent;
+    // de-duped by _registerEditorOverlayCloser). Declared in 04_prologue.
+    try {
+      if (typeof _registerEditorOverlayCloser === 'function') {
+        _registerEditorOverlayCloser(_ctxCloseMenu);
+      }
+    } catch (e) {}
+
+    return menu;
+  }
+
+  // Test surface (inert without the Playwright harness; mirrors the
+  // window.__editor convention). Lets a harness assert the menu opened,
+  // read its item labels, and activate / close it deterministically.
+  try {
+    window.__ctxMenu = {
+      get isOpen() { return !!_ctxMenuEl; },
+      get el() { return _ctxMenuEl; },
+      get items() {
+        if (!_ctxMenuEl) return [];
+        const out = [];
+        const nodes = _ctxMenuEl.querySelectorAll('[role=menuitem]');
+        for (const n of nodes) {
+          out.push({
+            label: n.textContent,
+            disabled: n.getAttribute('aria-disabled') === 'true',
+          });
+        }
+        return out;
+      },
+      open: function (x, y, items, opts) {
+        return openContextMenu(x, y, items, opts);
+      },
+      close: function () { _ctxCloseMenu(); },
+      activate: function (label) {
+        if (!_ctxMenuEl) return false;
+        const nodes = _ctxMenuEl.querySelectorAll('[role=menuitem]');
+        for (const n of nodes) {
+          if (n.textContent === label &&
+              n.getAttribute('aria-disabled') !== 'true') {
+            try { n.click(); } catch (e) {}
+            return true;
+          }
+        }
+        return false;
+      },
+    };
+  } catch (e) {}
+

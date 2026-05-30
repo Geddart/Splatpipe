@@ -1,0 +1,509 @@
+
+    // ---- Playhead position (px) from the live player clock if a
+    //      path is driving the camera, else the #path-scrub slider.
+    //      EXACT same source the Task-16 overlay highlight uses --
+    //      single source of truth, no parallel clock.
+    function _tlPlayheadT() {
+      const p = _tlActivePath();
+      const effDur = _tlEffectiveDur(p);
+      // TRULY PLAYING: a live tour drives this path AND it is NOT a
+      // paused-at-scrub freeze (R4 #165). _pausedAt !== null means the
+      // scrub/pause path froze _player at a scrub frame (the UX-3 #7
+      // mechanism) -- in that state the marker must track _tlScrubSeconds
+      // (the full effective-range scrub position) NOT the player clock,
+      // which is clamped to _player.duration (= the last kf) and would
+      // re-clamp the playhead to the last keyframe the instant a scrub
+      // builds _player (the #path-scrub handler builds it on first
+      // input). Only an actually-advancing tour (_pausedAt === null) uses
+      // the player clock here -- the SAME formula tick() uses.
+      const trulyPlaying = _player && _activePathId &&
+        _trajBuiltPathId && _activePathId === _trajBuiltPathId &&
+        (typeof _pausedAt === 'undefined' || _pausedAt === null);
+      if (trulyPlaying) {
+        const sp = _player.playSpeed || 1.0;
+        let tn = ((performance.now() - _t0) / 1000) * sp;
+        if (_player.loop && tn > _player.duration)
+          tn = tn % _player.duration;
+        return Math.max(0, Math.min(tn, _player.duration));
+      }
+      // NOT PLAYING (idle OR paused-at-scrub): the playhead is
+      // _tlScrubSeconds over the EFFECTIVE range. ALWAYS valid (effDur >=
+      // 10 floor, never 0) so the marker is draggable across the full
+      // Length in every state -- a fresh 0/1-kf camera, a paused scrub,
+      // Perspective -- and never clamps to the last keyframe. The
+      // camera-SAMPLE mapping (min(t, playerDuration)) lives in
+      // _tlScrubToTime; here we report only the marker time.
+      return Math.max(0, Math.min(_tlScrubSeconds, effDur));
+    }
+    function _tlSyncPlayhead() {
+      // #164 clip editor: at SEQUENCE level the playhead is the canvas-
+      // drawn MASTER playhead (in _tlDrawSequence), NOT the per-path DOM
+      // div. Hide the DOM div + repaint the canvas when a cut is actively
+      // playing so the master playhead tracks the live cut (the per-frame
+      // _tlLayer.update() calls this). A static sequence (no cut playing,
+      // not scrubbing) does not need a per-frame canvas repaint.
+      if (_tlLevel === 'sequence' && _tlHasClips()) {
+        _tlPlayhead.style.display = 'none';
+        let cutLive = false;
+        try {
+          cutLive = (typeof _clipState !== 'undefined' && _clipState &&
+            _clipState.active && !!_player);
+        } catch (e) {}
+        // Repaint when a cut is live (master playhead tracks it) OR when
+        // the clip set changed since the last frame (an add/delete/
+        // reorder/retime via the Scene Settings cuts card, which mutates
+        // cfg.clips but does not itself repaint the strip). Cheap sig
+        // compare avoids a per-frame full repaint of a static sequence.
+        const sig = _tlClipsSig();
+        if (cutLive || sig !== _tlSeqClipSig) {
+          _tlSeqClipSig = sig;
+          _tlSyncLevelUI();
+          _tlDraw();
+        }
+        if (typeof _tlSyncPlayPauseIcon === 'function') _tlSyncPlayPauseIcon();
+        if (typeof _tlSyncUndoRedo === 'function') _tlSyncUndoRedo();
+        return;
+      }
+      // #164: a clip set may have appeared (first clip added in a scene
+      // that booted with none -> we are still at 'clip' level). Detect the
+      // transition so the breadcrumb/back button + sequence affordances
+      // come alive without a reload. Cheap sig compare (clip-level path).
+      {
+        const sig = _tlClipsSig();
+        if (sig !== _tlSeqClipSig) {
+          _tlSeqClipSig = sig;
+          _tlSyncLevelUI();
+        }
+      }
+      const t = _tlPlayheadT();
+      // R4 (#165): while a tour is TRULY PLAYING this path (advancing, NOT
+      // a paused-at-scrub freeze), mirror the live player time into
+      // _tlScrubSeconds so the moment playback stops the marker HOLDS at
+      // the last played position instead of snapping back to a stale
+      // pre-play scrub time. The SAME _pausedAt===null gate _tlPlayheadT
+      // uses -- so a paused scrub does NOT overwrite _tlScrubSeconds with
+      // the clamped player clock (which would re-clamp the playhead to the
+      // last keyframe).
+      const _trulyPlaying = _player && _activePathId &&
+        _trajBuiltPathId && _activePathId === _trajBuiltPathId &&
+        (typeof _pausedAt === 'undefined' || _pausedAt === null);
+      if (_trulyPlaying) {
+        _tlScrubSeconds = t;
+      }
+      const x = _tlT2X(t);
+      _tlPlayhead.style.left = x + 'px';
+      _tlPlayhead.style.display =
+        (x >= -2 && x <= _tlW + 2) ? 'block' : 'none';
+      // UX-Phase11-R2 L13 (2026-05-28): visual cue that playback is
+      // PAUSED-at-scrub (camera frozen at this playhead, not advancing).
+      // Tint the playhead amber when _pausedAt is set, else resting cyan.
+      // Cheap per-sync style write (no layout); same _pausedAt guard the
+      // rest of this fragment uses.
+      {
+        const _phPaused =
+          (typeof _pausedAt !== 'undefined' && _pausedAt !== null);
+        const _phCol = _phPaused ? '#ffb347' : '#35e0ff';
+        _tlPlayhead.style.background = _phCol;
+        _tlPlayhead.style.boxShadow = '0 0 4px ' + _phCol;
+      }
+      // UX-Phase11A Issue 5: keep the Play/Pause glyph in sync with the
+      // live play state every time the playhead syncs (incl. the
+      // per-frame timeline update() tick + a tour reaching its natural
+      // end -> _player goes null -> icon flips back to ▶). Defined
+      // below _tlSyncPlayPauseIcon? -> hoisted function declaration, so
+      // forward-reference is safe.
+      if (typeof _tlSyncPlayPauseIcon === 'function') _tlSyncPlayPauseIcon();
+      // UX-Phase11G WF-H3: keep the Undo/Redo buttons' enabled state in sync
+      // with the EditHistory cursor every frame (a programmatic edit, a hotkey
+      // undo, or a drawer gesture all move the cursor without touching these
+      // buttons directly).
+      if (typeof _tlSyncUndoRedo === 'function') _tlSyncUndoRedo();
+    }
+
+    // UX-Phase11G WF-H3: Undo/Redo enabled state mirrors the registry's
+    // canUndo()/canRedo(). A disabled button is dimmed + non-interactive
+    // (pointer-events:none) so it reads as unavailable. Guard the registry
+    // lookups -- the surface may not exist on a non-author boot / early frame.
+    function _tlSyncUndoRedo() {
+      let cu = false, cr = false;
+      try {
+        if (typeof EditorModuleRegistry !== 'undefined') {
+          if (typeof EditorModuleRegistry.canUndo === 'function') {
+            cu = !!EditorModuleRegistry.canUndo();
+          }
+          if (typeof EditorModuleRegistry.canRedo === 'function') {
+            cr = !!EditorModuleRegistry.canRedo();
+          }
+        }
+      } catch (e) {}
+      _tlApplyBtnEnabled(_tlUndo, cu);
+      _tlApplyBtnEnabled(_tlRedo, cr);
+    }
+    function _tlApplyBtnEnabled(btn, on) {
+      if (!btn) return;
+      btn.disabled = !on;
+      btn.style.opacity = on ? '1' : '0.35';
+      btn.style.pointerEvents = on ? 'auto' : 'none';
+      btn.style.cursor = on ? 'pointer' : 'default';
+    }
+
+    // ---- Phase 2C (#122 §3.7): effectiveScrubRange JS mirror of the
+    //      Python core/path_io.effective_scrub_range helper. When
+    //      `path.total_duration_s` is a positive number it wins;
+    //      otherwise derive from the largest kf.t with a 10.0s floor.
+    //      Used by the total-time input + auto toggle + Prev/Next
+    //      buttons -- the existing scrub/playhead math still goes
+    //      through _tlDuration (player-clock-aware accumulating hold_s);
+    //      this helper is the AUTHOR-FACING declarative range that
+    //      decouples ceiling from last-kf time.
+    function _effectiveScrubRange(p) {
+      if (!p) return [0.0, 10.0];
+      const total = p.total_duration_s;
+      if (total !== null && total !== undefined && +total > 0) {
+        return [0.0, +total];
+      }
+      const kfs = p.keyframes || [];
+      let last = 0.0;
+      for (const k of kfs) {
+        const t = +(k.t || 0);
+        if (t > last) last = t;
+      }
+      return [0.0, Math.max(last, 10.0)];
+    }
+    // UX-Phase11-R2 #5 (2026-05-21): the auto/manual concept is GONE
+    // from the UI. The Length field is a single always-editable input;
+    // refreshing it just mirrors the current effective ceiling (which
+    // is total_duration_s when set, else the kf-derived max(last, 10)).
+    function _tlRefreshTotalUI() {
+      const p = _tlActivePath();
+      const [, hi] = _effectiveScrubRange(p);
+      _tlTotalInput.value = (Math.round(hi * 100) / 100).toString();
+    }
+    // UX-Phase11-R2 #4 (2026-05-21): auto-fit the px mapping so the full
+    // 0..length range maps to the lane width. Recomputes _tlZoom from
+    // the effective scrub-range ceiling + resets the left-edge scroll
+    // to 0, then redraws so the diamonds reflow to fit. Called on a
+    // Length commit AND on initial path load / path-select so the
+    // default view always frames the whole path. Wheel-zoom still
+    // overrides afterwards (this only fits on a length/path change, not
+    // every frame). Guards a not-yet-measured lane (_tlW may be 0
+    // before the first _tlResize) + a degenerate range.
+    function _tlFitToPath() {
+      const p = _tlActivePath();
+      const [, hi] = _effectiveScrubRange(p);
+      const usable = _tlW - 2 * _TL_PAD;
+      if (usable > 1 && isFinite(hi) && hi > 1e-6) {
+        let nz = usable / hi;
+        if (nz < _TL_ZOOM_MIN) nz = _TL_ZOOM_MIN;
+        if (nz > _TL_ZOOM_MAX) nz = _TL_ZOOM_MAX;
+        _tlZoom = nz;
+      }
+      _tlScroll = 0;
+      _tlDraw();
+      _tlSyncPlayhead();
+    }
+
+    // ---- #164 clip editor: level transitions.
+    //  _tlEnterClip(clipId) -- the CLICK-A-CLIP -> LOAD-ITS-CAMERA verb.
+    //    Resolves the clip's camera_paths entry via the EXISTING two-step
+    //    _tlClipPath (NEVER camera_id===path_id), then calls the EXISTING
+    //    _camSelApply(pathId) drill primitive (10_camera_select) which does
+    //    the whole bind: mirrors selEl, rebuilds the trajectory + gizmo +
+    //    bottom-timeline diamonds (window.__editor.tlRedraw), snaps the
+    //    camera to the path's current scrub frame, and re-enables controls.
+    //    We do NOT duplicate any of that. Then drop to clip level + fit the
+    //    diamond row to the now-active camera path. NO scrub clock here.
+    function _tlEnterClip(clipId) {
+      const clip = _tlClipsLive().find(k => k && k.id === clipId);
+      if (!clip) return false;
+      const path = _tlClipPath(clip);
+      if (!path || !path.id) {
+        // Degenerate: clip references a camera with no resolvable path.
+        // Still select the clip so the breadcrumb + cuts highlight follow;
+        // the diamond row simply shows nothing (no spline) -- no crash.
+        _tlActiveClipId = clipId;
+        _tlLevel = 'clip';
+        _tlSyncLevelUI();
+        _tlDraw();
+        return true;
+      }
+      _tlActiveClipId = clipId;
+      _tlLevel = 'clip';
+      // THE drill primitive (author branch = bind + snap pose, no auto-play).
+      if (typeof _camSelApply === 'function') {
+        try { _camSelApply(path.id); } catch (e) {}
+      }
+      _tlSyncLevelUI();
+      // Fit the diamond row to the newly-bound camera path. _camSelApply
+      // already called tlRedraw() (which fits), but call it here too so the
+      // fit reflects the clip selection deterministically for the harness.
+      _tlFitToPath();
+      return true;
+    }
+    //  _tlEnterSequence() -- the BACK verb. Returns to the cuts track:
+    //    stop any path playback (reuse stopPath -- never a new mechanism),
+    //    clear the active-clip selection, and redraw with the cuts lane as
+    //    the primary band. Does NOT touch the camera dropdown selection
+    //    (the last-bound camera stays selected so the diamond row still
+    //    dims-to-context for it); the cuts track is the focus now.
+    function _tlEnterSequence() {
+      _tlLevel = 'sequence';
+      _tlActiveClipId = null;
+      try { if (typeof stopPath === 'function' && _player) stopPath(); }
+      catch (e) {}
+      _tlSyncLevelUI();
+      _tlFitToPath();
+    }
+    //  Keep the back button + breadcrumb in sync with the current level.
+    //  A scene with NO clips shows NEITHER (identical to today's transport
+    //  row); a clip scene shows the breadcrumb always + the back button
+    //  only at clip level.
+    function _tlSyncLevelUI() {
+      const hasClips = _tlHasClips();
+      // Back button: only meaningful at clip level in a clip scene.
+      const showBack = hasClips && _tlLevel === 'clip';
+      _tlSeqBack.style.display = showBack ? '' : 'none';
+      // Breadcrumb: shown whenever the scene has clips.
+      _tlCrumb.style.display = hasClips ? '' : 'none';
+      if (hasClips) {
+        if (_tlLevel === 'sequence') {
+          _tlCrumb.textContent = 'Sequence';
+          _tlCrumb.title = 'Clip sequence (click a clip to edit its camera)';
+        } else {
+          const clip = _tlActiveClip();
+          const ordered = _tlClipsLive();
+          const idx = clip
+            ? ordered.findIndex(k => k && k.id === clip.id) : -1;
+          const camName = clip ? _tlClipCamName(clip) : '?';
+          _tlCrumb.textContent = 'Sequence ▸ Clip ' +
+            (idx >= 0 ? (idx + 1) : '?') + ' · ' + camName;
+          _tlCrumb.title = 'Editing this clip’s camera keyframes';
+        }
+      }
+      // The Length field is a CAMERA-PATH ceiling (clip-level concept); at
+      // sequence level the master length is the sum of clip durations
+      // (edited per-clip in the Scene Settings cuts card), so hide the
+      // Length field + its caption/unit there to avoid implying it edits
+      // the master length.
+      const showLen = (_tlLevel === 'clip');
+      _tlTotalLabel.style.display = showLen ? '' : 'none';
+      _tlTotalInput.style.display = showLen ? '' : 'none';
+      _tlTotalUnit.style.display = showLen ? '' : 'none';
+    }
+
+    function _tlSortedKfTimes(p) {
+      if (!p || !p.keyframes) return [];
+      const out = [];
+      for (const k of p.keyframes) {
+        const t = +(k.t || 0);
+        if (isFinite(t)) out.push(t);
+      }
+      out.sort((a, b) => a - b);
+      return out;
+    }
+    function _tlSkipPrev() {
+      const p = _tlActivePath();
+      if (!p) return;
+      const cur = _tlPlayheadT();
+      const sorted = _tlSortedKfTimes(p);
+      // Strictly LESS THAN current. Walk back from the end.
+      let target = 0.0;
+      for (let i = sorted.length - 1; i >= 0; i--) {
+        if (sorted[i] < cur - 1e-4) { target = sorted[i]; break; }
+      }
+      _tlScrubToTime(Math.max(0, target));
+    }
+    function _tlSkipNext() {
+      const p = _tlActivePath();
+      if (!p) return;
+      const cur = _tlPlayheadT();
+      const sorted = _tlSortedKfTimes(p);
+      // Strictly GREATER THAN current. Walk forward from the start.
+      let target = null;
+      for (const t of sorted) {
+        if (t > cur + 1e-4) { target = t; break; }
+      }
+      if (target === null) {
+        // No kf after current -> jump to scrub-range ceiling.
+        const [, hi] = _effectiveScrubRange(p);
+        target = hi;
+      }
+      _tlScrubToTime(Math.max(0, target));
+    }
+    function _tlPushHistorySnap(label) {
+      try {
+        if (typeof EditorModuleRegistry !== 'undefined' &&
+            typeof EditorModuleRegistry.pushUndo === 'function') {
+          EditorModuleRegistry.pushUndo(label || 'tl-edit');
+        }
+      } catch (e) {}
+    }
+
+    // ---- The SINGLE source of truth for live scrub: set the
+    //      EXISTING #path-scrub slider value (0..1000 of the active
+    //      path duration) and dispatch its REAL 'input' event so the
+    //      production handler runs -- it takes `_player` over for the
+    //      selected path AND rebases `_t0`, EXACTLY like a user
+    //      grabbing the slider. This is what makes the live scrub
+    //      robust to the author-mode default-path AUTO-TOUR (which
+    //      auto-plays here): the real scrub deterministically takes
+    //      the camera over from the auto-advancing tour, same as for
+    //      a real user. We never reimplement the scrub math.
+    function _tlScrubToTime(t) {
+      const p = _tlActivePath();
+      // R4 (#165): the PLAYHEAD scrubs over the EFFECTIVE range (never
+      // clamps to the last kf, never early-returns on a 0/1-kf path).
+      // _tlScrubSeconds is the marker's single source of truth; set it
+      // FIRST + UNCONDITIONALLY so the playhead always moves, in every
+      // state (path-cam / Perspective / clip level), even when there is
+      // no spline yet to drive the camera (a fresh 0/1-kf camera). This
+      // is what makes "scrub past the last keyframe to record more" work
+      // (Record reads this effective playhead) and kills the old
+      // chicken-and-egg ("can't scrub a 1-kf camera to place kf #2").
+      const effDur = _tlEffectiveDur(p);
+      let st = +t;
+      if (!isFinite(st)) st = 0;
+      st = Math.max(0, Math.min(st, effDur));
+      _tlScrubSeconds = st;
+      // Camera SAMPLE-time mapping: the #path-scrub slider value is a
+      // fraction of the player duration (== _tlDuration(p) -- the SAME
+      // max(kfDuration, total_duration_s) buildPlayer computes; no extra
+      // buildPlayer here). Past the last knot the spline holds the last
+      // pose, so we sample min(st, playerDur) -> the camera stops at the
+      // end while the playhead keeps moving over the effective range.
+      const playerDur = _player ? _player.duration : _tlDuration(p);
+      if (scrubEl && playerDur > 0) {
+        // Bind the scrub handler to the path the timeline is editing (it
+        // reads selEl.value when _player is null). A bind, NOT a camera
+        // write -- the #path-scrub handler's R3 #6 _CAM_PERSP gate still
+        // decides whether the camera moves (Perspective => playhead only).
+        if (p && p.id && selEl && selEl.value !== p.id && !_player) {
+          try { selEl.value = p.id; } catch (e) {}
+        }
+        const f = Math.max(0, Math.min(1, Math.min(st, playerDur) / playerDur));
+        scrubEl.value = String(f * 1000);
+        try {
+          scrubEl.dispatchEvent(new Event('input', { bubbles: true }));
+        } catch (e) {}
+      }
+      _tlSyncPlayhead();
+    }
+
+    // ---- #164 clip editor: SEQUENCE-LEVEL scrub. Maps a master time to
+    //      (active clip, within-clip path time) and previews the active
+    //      clip's camera at that pose -- CUTTING to the right camera at
+    //      clip boundaries -- by REUSING the EXISTING per-clip scrub path
+    //      (NO parallel scrub clock; the camera-write still goes through
+    //      the just-fixed #path-scrub gate, which only writes when
+    //      _camSel.value !== _CAM_PERSP). The cut: when the master time
+    //      crosses into a clip whose camera differs from the currently-
+    //      bound camera, call the EXISTING _camSelApply drill primitive to
+    //      switch (the hard cut), then scrub that camera's path to
+    //      clip.in + within (expressed as a frac of the full path
+    //      duration) so the previewed pose matches the clip's window.
+    function _tlSeqScrubToMasterT(t) {
+      const total = _tlSeqTotalDur();
+      const mt = Math.max(0, Math.min(t, total));
+      _tlSeqScrubT = mt;
+      const at = _tlClipAtMasterT(mt);
+      if (!at || !at.clip) { _tlDraw(); return; }
+      const clip = at.clip;
+      const path = _tlClipPath(clip);
+      if (!path || !path.id) { _tlDraw(); return; }
+      // CUT: ensure the active clip's camera is the bound one. _camSelApply
+      // mirrors selEl + snaps the pose; only call it when the camera
+      // actually changes (a no-op rebind every scrub frame would thrash
+      // the trajectory rebuild). selEl.value is the current bound path id.
+      let needCut = true;
+      try { needCut = !(selEl && selEl.value === path.id); } catch (e) {}
+      if (needCut && typeof _camSelApply === 'function') {
+        try { _camSelApply(path.id); } catch (e) {}
+        if (clip.id !== _tlActiveClipId) {
+          _tlActiveClipId = clip.id;
+          _tlSyncLevelUI();
+        }
+      }
+      // Drive the bound camera to (clip.in + within) via the EXISTING scrub
+      // path. _tlScrubToTime scrubs to a SECONDS value along the active
+      // path's duration; the previewed pose at clip.in + within is the
+      // clip's pose. (The bound camera is now `path`, NOT Perspective, so
+      // the #path-scrub gate writes the camera -- the just-fixed R3 #6
+      // behaviour, NOT a regression.)
+      const inT = (typeof clip.in === 'number' && clip.in > 0) ? clip.in : 0;
+      _tlScrubToTime(inT + at.within);
+      _tlDraw();
+    }
+
+    // ---- In-memory temporal edit + spline rebuild. Mutates the
+    //      active path object in place (the SAME object the player +
+    //      Task-16 overlay read), then rebuilds the spline. The
+    //      Task-16 overlay's OverlayScene.update() sig check
+    //      (_trajKfSig includes (k.t||0)) rebuilds its geometry on
+    //      the next tick automatically; we ALSO null _player (if it
+    //      is driving THIS path) so the live player re-derives the
+    //      new geometry on its next grab. NO persistence -- this is
+    //      the full Task-17 mutation scope.
+    function _tlAfterEdit() {
+      const p = _tlActivePath();
+      if (!p) return;
+      // Clamp every kf.t to be finite + >= 0 (a temporal edit must
+      // never produce a NaN/negative time the spline chokes on).
+      if (p.keyframes) {
+        for (const k of p.keyframes) {
+          let t = +k.t;
+          if (!isFinite(t)) t = 0;
+          if (t < 0) t = 0;
+          k.t = t;
+        }
+      }
+      // Rebuild the spline off the mutated keyframes (reuse
+      // buildPlayer -- the single spline implementation). If this
+      // path is the one currently driving the camera, refresh
+      // _player in place + rebase _t0 to hold the current playhead
+      // so the edit does not teleport the camera.
+      if (_player && _activePathId === (p.id || _activePathId) &&
+          _trajBuiltPathId === (p.id || null)) {
+        const held = (function () {
+          const sp = _player.playSpeed || 1.0;
+          let tn = ((performance.now() - _t0) / 1000) * sp;
+          if (_player.loop && tn > _player.duration)
+            tn = tn % _player.duration;
+          return tn;
+        })();
+        const np = buildPlayer(p);
+        if (np) {
+          _player = np;
+          // UX-3 (2026-05-20): keep the paused-scrub identity
+          // discriminator alive across an in-place player rebuild.
+          // Without this the next _trajLayer.update() rebase tick
+          // sees _pausedAtPlayer !== _player (stale reference to the
+          // pre-edit player), the rebase becomes a no-op, and a kf
+          // edit while the user was scrub-paused would silently
+          // resume playback. Clamp _pausedAt to the new duration too
+          // (the edit may have shortened the path).
+          if (_pausedAt !== null) {
+            _pausedAtPlayer = np;
+            _pausedAt = Math.max(0, Math.min(_pausedAt, np.duration || 0));
+          }
+          const sp = np.playSpeed || 1.0;
+          const ht = Math.max(0, Math.min(held, np.duration));
+          _t0 = performance.now() - (ht / sp) * 1000;
+        } else {
+          // < 2 keyframes after a delete -> stop cleanly (reuse
+          // the existing stop path, never a new mechanism).
+          try { stopPath(); } catch (e) {}
+        }
+      }
+      // Force the Task-16 overlay + this timeline to re-read NOW
+      // (its layer also rebuilds on the next OverlayScene tick via
+      // the sig check; this just makes the harness deterministic).
+      try {
+        if (window.__editor && typeof window.__editor.rebuild ===
+            'function') window.__editor.rebuild();
+      } catch (e) {}
+      _tlDraw();
+      _tlSyncPlayhead();
+      // Phase 2C: keep the total-time input mirrored against
+      // last-kf-changes when auto is on.
+      _tlRefreshTotalUI();
+    }

@@ -1,0 +1,1040 @@
+  // ---- Frame loop ----
+  const cam = cfg.camera || _DEFAULTS.camera;
+  const splatCountEl = document.getElementById('splat-count');
+
+  // M8: when camera-bounds clamping is active (cfg.camera.enabled), the
+  // per-frame clamp below silently truncates recorded keyframe positions to
+  // the bounds box. Surface a one-time badge so the author knows poses are
+  // being clamped (nothing signalled this before).
+  try {
+    if (cam && cam.enabled === true) {
+      const _bb = document.getElementById('cam-bounds-badge');
+      if (_bb) _bb.style.display = '';
+    }
+  } catch (e) {}
+
+  // FPS counter — count frames over a sliding 1-second window so the number
+  // is stable. Returns 0 until the first window completes.
+  let _fpsFrames = 0, _fpsStart = performance.now(), _fpsLast = 0;
+  function _fpsTick() {
+    _fpsFrames++;
+    const now = performance.now();
+    if (now - _fpsStart >= 1000) {
+      _fpsLast = Math.round(_fpsFrames * 1000 / (now - _fpsStart));
+      _fpsFrames = 0;
+      _fpsStart = now;
+    }
+    return _fpsLast;
+  }
+
+  // ---- Static splat budget (no adaptive controller) ----
+  // We deliberately do NOT scale lodSplatScale at runtime. Research
+  // (2026-05-15) confirmed no shipping splat viewer uses an adaptive FPS
+  // loop — they ship fixed per-device budgets, and the runtime % display
+  // was confusing without buying real quality. lodSplatScale stays at its
+  // config / Spark default; the per-tier lodSplatCount picked above is the
+  // only quality lever and it is set exactly once. Bench mode, orbit
+  // prefetch and the preload bar below are unaffected.
+
+  // ---- Benchmark recorder ----
+  // Click "Bench" button → record 30 s of per-frame metrics + longtask events
+  // → download a JSON trace. Per-frame: dt, splats, pages resident, fetchers
+  // active, GPU time (if EXT_disjoint_timer_query_webgl2 is available). The
+  // trace is self-describing — it carries device + viewer config so we can
+  // compare runs across machines without extra metadata.
+  const BENCH_DURATION_MS = 30_000;
+  let _benchActive = false;
+  let _benchEndTime = 0;
+  let _benchTrace = null;
+  let _benchLastT = 0;
+  let _benchLongTaskObserver = null;
+  let _benchAutoMode = null;     // 'static' | 'path' | null
+  let _benchAutoPathId = null;   // path id when mode === 'path'
+  let _benchT0 = 0;  // monotonic recorder clock base — fixes the -Infinity/null `t`
+  // Camera-motion self-check (resilience). A bench that does not actually
+  // move the camera (controls clobber, null player, degenerate path, race)
+  // must NEVER pass silently again. Accumulated in the _player block, verdict
+  // in _benchStop → trace.cameraMoved/cameraTravel + loud console.error +
+  // window.__benchResult / 'bench:done' event for deterministic assertion.
+  const _benchCam = {
+    armed: false, samples: 0, travel: 0,
+    first: new THREE.Vector3(), firstQ: new THREE.Quaternion(),
+    prev: new THREE.Vector3(), prevQ: new THREE.Quaternion(),
+  };
+  function _benchCamArm() {
+    _benchCam.armed = true; _benchCam.samples = 0; _benchCam.travel = 0;
+    _benchCam.first.copy(camera.position); _benchCam.firstQ.copy(camera.quaternion);
+    _benchCam.prev.copy(camera.position); _benchCam.prevQ.copy(camera.quaternion);
+  }
+  function _benchCamSample() {
+    if (!_benchCam.armed) return;
+    const dp = camera.position.distanceTo(_benchCam.prev);
+    const qd = Math.abs(
+      camera.quaternion.x*_benchCam.prevQ.x + camera.quaternion.y*_benchCam.prevQ.y +
+      camera.quaternion.z*_benchCam.prevQ.z + camera.quaternion.w*_benchCam.prevQ.w);
+    _benchCam.travel += dp + 2 * Math.acos(Math.min(1, qd));
+    _benchCam.samples++;
+    _benchCam.prev.copy(camera.position); _benchCam.prevQ.copy(camera.quaternion);
+  }
+  const benchBtn = document.getElementById('bench-btn');
+  // Bench-mode dropdown: pre-select it from ?bench= so a deep-linked mode and
+  // the button stay in sync; the button then runs whatever is selected.
+  const benchModeSel = document.getElementById('bench-mode');
+  if (benchModeSel && BENCH_AUTO && BENCH_AUTO !== '1') {
+    for (const o of benchModeSel.options) { if (o.value === BENCH_AUTO) { benchModeSel.value = BENCH_AUTO; break; } }
+  }
+
+  // GPU timing: pooled EXT_disjoint_timer_query_webgl2 (4 in flight). Returns
+  // null on browsers without the extension (iOS Safari with the flag off,
+  // Brave hardened, etc.) — the rest of the trace is still useful.
+  const _gl = renderer.getContext();
+  const _gpuExt = _gl?.getExtension?.('EXT_disjoint_timer_query_webgl2');
+  const _gpuPool = _gpuExt ? Array.from({ length: 4 }, () => _gl.createQuery()) : null;
+  let _gpuFrame = 0;
+  let _gpuLastNs = 0;
+  function _gpuBeginFrame() {
+    if (!_gpuExt) return;
+    _gl.beginQuery(_gpuExt.TIME_ELAPSED_EXT, _gpuPool[_gpuFrame % 4]);
+  }
+  function _gpuEndFrame() {
+    if (!_gpuExt) return;
+    _gl.endQuery(_gpuExt.TIME_ELAPSED_EXT);
+    // Read a query that's been in flight for ~4 frames so the GPU has finished it.
+    const readQ = _gpuPool[(_gpuFrame + 1) % 4];
+    if (_gl.getQueryParameter(readQ, _gl.QUERY_RESULT_AVAILABLE)) {
+      const disjoint = _gl.getParameter(_gpuExt.GPU_DISJOINT_EXT);
+      if (!disjoint) _gpuLastNs = _gl.getQueryParameter(readQ, _gl.QUERY_RESULT);
+    }
+    _gpuFrame++;
+  }
+
+  function _benchDeviceProfile() {
+    const dbg = _gl?.getExtension?.('WEBGL_debug_renderer_info');
+    return {
+      ua: navigator.userAgent,
+      platform: navigator.platform || '',
+      cores: navigator.hardwareConcurrency ?? null,
+      memGB: navigator.deviceMemory ?? null,
+      dpr: window.devicePixelRatio,
+      maxTouchPoints: navigator.maxTouchPoints,
+      isBrave: !!navigator.brave,
+      viewport: `${window.innerWidth}x${window.innerHeight}`,
+      screen: `${screen.width}x${screen.height}`,
+      webgl: _gl ? {
+        vendor: dbg ? _gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : _gl.getParameter(_gl.VENDOR),
+        renderer: dbg ? _gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : _gl.getParameter(_gl.RENDERER),
+        maxTexSize: _gl.getParameter(_gl.MAX_TEXTURE_SIZE),
+        maxRbSize: _gl.getParameter(_gl.MAX_RENDERBUFFER_SIZE),
+        maxVarying: _gl.getParameter(_gl.MAX_VARYING_VECTORS),
+        gpuTiming: !!_gpuExt,
+      } : null,
+    };
+  }
+
+  function _benchConfigSnapshot() {
+    return {
+      project: document.querySelector('#title h1')?.textContent || '',
+      primaryAsset: _PRIMARY,
+      stock: STOCK,
+      paged: PAGED,
+      tier: _deviceProfile.tier,
+      benchAutoMode: _benchAutoMode,
+      benchAutoPathId: _benchAutoPathId,
+      adaptive: false,
+      dprCap: _dprCap,
+      shouldThrottleUploads: _shouldThrottleUploads,
+      spark: {
+        lodSplatCount: spark.lodSplatCount,
+        lodSplatScale: spark.lodSplatScale,
+        lodRenderScale: spark.lodRenderScale,
+        maxPagedSplats: spark.maxPagedSplats,
+        numLodFetchers: spark.numLodFetchers,
+        clipXY: spark.clipXY,
+        minPixelRadius: spark.minPixelRadius,
+        maxStdDev: spark.maxStdDev,
+        minSortIntervalMs: spark.minSortIntervalMs,
+      },
+      splat: {
+        maxSh: splat.maxSh,
+      },
+    };
+  }
+
+  function _benchStart(opts) {
+    if (_benchActive) return _benchStop();
+    opts = opts || {};
+    _benchActive = true;
+    _benchLastT = performance.now();
+    _benchT0 = _benchLastT;          // monotonic clock base for per-frame `t`
+    _benchCam.armed = false;          // re-arm fresh at motion start (in _player block)
+    // Path-driven benches stop when the path ends (no auto-timer).
+    _benchEndTime = opts.duration === Infinity
+      ? Infinity
+      : (_benchLastT + (opts.duration || BENCH_DURATION_MS));
+    _benchAutoMode = opts.mode || null;
+    _benchAutoPathId = opts.pathId || null;
+    _benchTrace = {
+      createdAt: new Date().toISOString(),
+      device: _benchDeviceProfile(),
+      config: _benchConfigSnapshot(),
+      durationS: BENCH_DURATION_MS / 1000,
+      frames: [],
+      longtasks: [],
+      memory: {
+        startUsedMB: performance.memory ? (performance.memory.usedJSHeapSize / 1e6) : null,
+        endUsedMB: null, peakUsedMB: null,
+      },
+    };
+    // Long-task observer: fires for any main-thread block ≥ 50 ms (the canonical
+    // jank threshold). Catches exactly the chunk-decode + upload spikes.
+    try {
+      _benchLongTaskObserver = new PerformanceObserver((list) => {
+        for (const e of list.getEntries()) {
+          _benchTrace.longtasks.push({ t: e.startTime - _benchT0, duration: e.duration, name: e.name });
+        }
+      });
+      _benchLongTaskObserver.observe({ type: 'longtask', buffered: true });
+    } catch (e) { /* Safari may throw on unknown types */ }
+    benchBtn.classList.add('recording');
+    benchBtn.textContent = 'Stop';
+    console.info('[bench] started, 30 s');
+  }
+
+  function _benchTick(now) {
+    if (!_benchActive) return;
+    const dt = now - _benchLastT;
+    _benchLastT = now;
+    const pager = spark.pager;
+    _benchTrace.frames.push({
+      t: now - _benchT0,
+      dt: dt,
+      gpuMs: _gpuExt ? _gpuLastNs / 1e6 : null,
+      splats: spark.activeSplats || 0,
+      pagesResident: pager ? (pager.maxPages - (pager.pageFreelist?.length || 0)) : 0,
+      fetchersActive: pager ? (pager.fetchers?.length || 0) : 0,
+      fetchQueue: pager ? (pager.fetchPriority?.length || 0) : 0,
+      lastTraverseMs: spark.lastTraverseTime || 0,
+    });
+    if (performance.memory) {
+      const usedMB = performance.memory.usedJSHeapSize / 1e6;
+      if (_benchTrace.memory.peakUsedMB == null || usedMB > _benchTrace.memory.peakUsedMB) _benchTrace.memory.peakUsedMB = usedMB;
+    }
+    if (now >= _benchEndTime) _benchStop();
+  }
+
+  function _benchStop() {
+    if (!_benchActive) return;
+    _benchActive = false;
+    const _hadPlayer = !!_player;
+    if (_player) stopPath();   // camera halt ⇄ recorder stop ⇄ download coincide
+    if (_benchLongTaskObserver) {
+      try { _benchLongTaskObserver.disconnect(); } catch (e) {}
+      _benchLongTaskObserver = null;
+    }
+    if (performance.memory) {
+      _benchTrace.memory.endUsedMB = performance.memory.usedJSHeapSize / 1e6;
+    }
+    // Compute a quick summary so the user (and we) see headline numbers in
+    // the console without parsing the trace.
+    const dts = _benchTrace.frames.map(f => f.dt).sort((a, b) => a - b);
+    const n = dts.length;
+    const summary = n ? {
+      frames: n,
+      fps_mean: Math.round(1000 / (dts.reduce((a, b) => a + b, 0) / n)),
+      ms_p50: dts[Math.floor(n * 0.50)],
+      ms_p95: dts[Math.floor(n * 0.95)],
+      ms_p99: dts[Math.min(n - 1, Math.floor(n * 0.99))],
+      longtasks: _benchTrace.longtasks.length,
+      splats_max: Math.max(..._benchTrace.frames.map(f => f.splats)),
+    } : { frames: 0 };
+    _benchTrace.summary = summary;
+    console.info('[bench] done', summary);
+    // ---- camera-motion self-check (resilience): never pass silently ----
+    const _moving = (_benchAutoMode === 'path' || _benchAutoMode === 'cold' || _benchAutoMode === 'probe' || _benchAutoMode === 'rotate');
+    const _net = _benchCam.samples ? camera.position.distanceTo(_benchCam.first) : 0;
+    _benchTrace.cameraMoved = _moving ? (_benchCam.travel > 0.05 && _benchCam.samples > 5) : null;
+    _benchTrace.cameraTravel = +(_benchCam.travel.toFixed(4));
+    _benchTrace.cameraNetDisplacement = +(_net.toFixed(4));
+    _benchTrace.cameraSamples = _benchCam.samples;
+    _benchTrace.durationS = +(((performance.now() - _benchT0) / 1000).toFixed(2));
+    _benchCam.armed = false;
+    if (_moving && _benchTrace.cameraMoved === false) {
+      console.error('[bench] CAMERA DID NOT MOVE — bench INVALID. travel=' +
+        _benchCam.travel.toFixed(4) + ' samples=' + _benchCam.samples + ' mode=' + _benchAutoMode +
+        ' hadPlayer=' + _hadPlayer + ' controls.enabled=' + controls.enabled);
+      try { benchBtn.classList.add('bench-error'); } catch (e) {}
+    }
+    try {
+      window.__benchResult = {
+        cameraMoved: _benchTrace.cameraMoved, cameraTravel: _benchTrace.cameraTravel,
+        cameraNetDisplacement: _benchTrace.cameraNetDisplacement,
+        frames: _benchTrace.frames.length,
+        framesValidT: _benchTrace.frames.filter(f => Number.isFinite(f.t)).length,
+        durationS: _benchTrace.durationS, mode: _benchAutoMode, fps_mean: summary.fps_mean || null,
+        probe: _benchTrace.probe || null,
+        rotate: _benchTrace.rotate || null,
+      };
+      window.dispatchEvent(new CustomEvent('bench:done', { detail: window.__benchResult }));
+    } catch (e) {}
+    // Save: download as JSON.
+    const fn = `bench-${_benchTrace.config.tier}-${Date.now()}.json`;
+    const blob = new Blob([JSON.stringify(_benchTrace, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = fn; document.body.appendChild(a); a.click();
+    setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 1000);
+    benchBtn.classList.remove('recording');
+    benchBtn.textContent = 'Bench';
+  }
+  benchBtn.addEventListener('click', _benchButtonClick);
+
+  // ---- Set start view (Option A relay) ----
+  // Capture the live camera as this scene's start view and emit a token
+  // the user pastes to Claude, who runs `splatpipe set-start-view` to
+  // write it into viewer-config.json on the CDN. No client-side secret;
+  // the token carries only a camera pose. Round-trips cleanly because
+  // the early camera block consumes start_view.pos/quat/fov/target the
+  // same way it is captured here (same world frame as camera-paths).
+  //
+  // UX-Phase11A Issue 8 (2026-05-21): the top-bar #setstart-btn was
+  // removed (it moves into the Scene Settings drawer's Start View
+  // section). The handler is now wired conditionally on #setstart-btn
+  // presence (legacy), AND exposes the open-card logic on
+  // window.__editor.openStartViewCard for the StartViewModule's
+  // "Save current as start view" button to call.
+  {
+    const _ssBtn = document.getElementById('setstart-btn');
+    const _projName = (document.querySelector('#title h1') && document.querySelector('#title h1').textContent || 'scene').trim();
+    const _slug = (_projName.replace(/[^A-Za-z0-9_-]+/g, '_').slice(0, 48)) || 'scene';
+    const _esc = s => s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    function _b64url(obj) {
+      const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(obj))));
+      return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+    const _r = n => Math.round(n * 1e5) / 1e5;
+    // UX-Phase11F H7 (2026-05-21): the Set-start-view card needs an
+    // Escape close + focus restore + to not stack with the Save card.
+    // _ssOpener remembers the focused opener; _ssEscHandler is the ONE
+    // named window keydown listener attached on open + removed on close
+    // (one-shot, no leak). _ssClose is idempotent so the cross-fragment
+    // _closeAllEditorOverlays() coordinator can call it freely.
+    let _ssOpener = null;
+    let _ssEscHandler = null;
+    function _ssClose() {
+      if (_ssEscHandler) {
+        try { window.removeEventListener('keydown', _ssEscHandler, true); }
+        catch (e) {}
+        _ssEscHandler = null;
+      }
+      const o = document.getElementById('ss-overlay');
+      if (o) { try { o.remove(); } catch (e) {} }
+      const opener = _ssOpener;
+      _ssOpener = null;
+      if (opener && typeof opener.focus === 'function' &&
+          document.contains(opener)) {
+        try { opener.focus(); } catch (e) {}
+      }
+    }
+    // Register with the cross-fragment overlay coordinator (04) so opening
+    // the Save card closes this one and vice-versa.
+    try { _registerEditorOverlayCloser(_ssClose); } catch (e) {}
+    function _openStartViewCard() {
+      // H7: remember the opener BEFORE any close (the defensive _ssClose
+      // below nulls _ssOpener), close any OTHER editor overlay first (no
+      // stacking), then re-stamp the opener for focus restore on close.
+      const _opener = document.activeElement;
+      try { _closeAllEditorOverlays(_ssClose); } catch (e) {}
+      _ssClose();
+      _ssOpener = _opener;
+      const pose = {
+        project: _projName,
+        pos: [camera.position.x, camera.position.y, camera.position.z].map(_r),
+        quat: [camera.quaternion.x, camera.quaternion.y, camera.quaternion.z, camera.quaternion.w].map(_r),
+        target: [controls.target.x, controls.target.y, controls.target.z].map(_r),
+        fov: _r(camera.fov),
+      };
+      const token = 'SPV1:' + _slug + ':' + _b64url(pose);
+      const ov = document.createElement('div');
+      ov.id = 'ss-overlay';
+      // H7: role=dialog + tabindex so focus can land on the overlay (the
+      // H6 hotkey guard blocks gizmo keys while a [role=dialog] is
+      // focused) + aria-modal for assistive tech.
+      ov.setAttribute('role', 'dialog');
+      ov.setAttribute('aria-modal', 'true');
+      ov.setAttribute('tabindex', '-1');
+      ov.style.cssText = 'position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.55);font:14px system-ui,sans-serif;';
+      const card = document.createElement('div');
+      card.style.cssText = 'background:#1f1f24;color:#eee;max-width:520px;width:90%;padding:20px 22px;border-radius:12px;box-shadow:0 8px 40px rgba(0,0,0,.5);';
+      card.innerHTML =
+        '<div style="font-weight:600;font-size:16px;margin-bottom:6px;">Save this as the start view?</div>' +
+        '<div style="opacity:.75;margin-bottom:14px;">The current camera becomes the opening shot for <b>' + _esc(_projName) +
+        '</b> for everyone, once you send the token to Claude.</div>' +
+        '<div style="display:flex;gap:10px;justify-content:flex-end;">' +
+        '<button id="ss-cancel" class="quality-btn">Cancel</button>' +
+        '<button id="ss-confirm" class="quality-btn" style="background:#2d6cdf;color:#fff;">Confirm</button></div>';
+      ov.appendChild(card);
+      document.body.appendChild(ov);
+      // H7: Escape closes the card. One named window listener (capture
+      // phase), removed in _ssClose -> no leak across re-opens.
+      _ssEscHandler = function (ev) {
+        if (ev && ev.key === 'Escape') {
+          ev.preventDefault();
+          ev.stopPropagation();
+          _ssClose();
+        }
+      };
+      try { window.addEventListener('keydown', _ssEscHandler, true); } catch (e) {}
+      // Focus the overlay so Escape + the H6 dialog-focus guard engage
+      // immediately (no auto-focused textarea on the initial confirm step).
+      try { ov.focus(); } catch (e) {}
+      ov.addEventListener('click', e => { if (e.target === ov) _ssClose(); });
+      card.querySelector('#ss-cancel').addEventListener('click', _ssClose);
+      card.querySelector('#ss-confirm').addEventListener('click', () => {
+        let copied = false;
+        try { if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(token); copied = true; } } catch (e) {}
+        card.innerHTML =
+          '<div style="font-weight:600;font-size:16px;margin-bottom:6px;">' + (copied ? 'Copied to clipboard \u2713' : 'Start-view token') + '</div>' +
+          '<div style="opacity:.75;margin-bottom:10px;">Send this token to Claude on Telegram to save it for everyone:</div>' +
+          '<textarea readonly style="width:100%;height:84px;box-sizing:border-box;background:#111;color:#9fd;border:1px solid #333;border-radius:8px;padding:8px;font:12px monospace;resize:none;"></textarea>' +
+          '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:14px;">' +
+          '<button id="ss-copy" class="quality-btn">Copy again</button>' +
+          '<button id="ss-close" class="quality-btn" style="background:#2d6cdf;color:#fff;">Done</button></div>';
+        const ta = card.querySelector('textarea');
+        ta.value = token; ta.focus(); ta.select();
+        card.querySelector('#ss-close').addEventListener('click', _ssClose);
+        card.querySelector('#ss-copy').addEventListener('click', () => {
+          ta.focus(); ta.select();
+          try { if (navigator.clipboard) navigator.clipboard.writeText(token); } catch (e) {}
+          try { document.execCommand('copy'); } catch (e) {}
+        });
+      });
+      return token;
+    }
+    // Legacy top-bar button (Phase 11A Issue 8 removes it from
+    // 03_body_chrome but keep the binding so any external embed /
+    // older bundle that still ships the button keeps working).
+    if (_ssBtn) {
+      _ssBtn.addEventListener('click', _openStartViewCard);
+    }
+    // StartViewModule entry point (Phase 11A Issue 9). The
+    // StartViewModule is loaded later in the bundle so we defer the
+    // window.__editor extension to the next tick; harmless when the
+    // module is absent (the property is just unused).
+    try {
+      if (!window.__editor) window.__editor = {};
+      window.__editor.openStartViewCard = _openStartViewCard;
+      // H7 TEST-ONLY: open-state getter + a close hook so the harness can
+      // assert Escape / no-stack behaviour deterministically.
+      Object.defineProperty(window.__editor, 'ssCardOpen', {
+        configurable: true,
+        get() { return !!document.getElementById('ss-overlay'); },
+      });
+      window.__editor.ssCloseCard = function () { _ssClose(); };
+    } catch (e) {}
+  }
+
+  function tick() {
+    requestAnimationFrame(tick);
+    // Frame-pace cap: always reschedule, but skip this frame's render work
+    // until the cap interval elapsed. -0.5 ms slack stops a 16.6 ms target
+    // collapsing to 30 fps on sub-ms jitter. Off (==0) → original behaviour.
+    // Frame-pace cap — but NEVER skip while a path/bench is driving: the
+    // player advance + camera write + recorder live below this point, so a
+    // skip would freeze the camera and drop bench samples (this is why the
+    // bench "didn't rotate" on capped Apple-Silicon).
+    if (_FRAME_MIN_MS && !_player && !_benchActive) {
+      const _tNow = performance.now();
+      if (_tNow - _lastRenderMs < _FRAME_MIN_MS - 0.5) return;
+      _lastRenderMs = _tNow;
+    }
+    _gpuBeginFrame();
+
+    // WASD movement (skipped during path playback inside applyKeyMovement)
+    applyKeyMovement();
+
+    // Benchmark per-frame sample (free when not recording).
+    const _nowMs = performance.now();
+    if (_benchActive) _benchTick(_nowMs);
+
+    // Live gaussian count + FPS. spark.activeSplats is the post-LoD,
+    // post-budget count actually rendered this frame (read-only, free).
+    // FPS uses a 1-second rolling window so the number doesn't jitter.
+    {
+      const dispM = ((spark.activeSplats || 0) / 1e6).toFixed(2);
+      const fps = _fpsTick();
+      const fpsHtml = fps > 0 ? ` <span class="fps">· ${fps} fps</span>` : '';
+      splatCountEl.innerHTML = `Splats: ${dispM}M${fpsHtml}`;
+    }
+
+    // Path playback (when active)
+    if (_player) {
+      const speed = _player.playSpeed || 1.0;
+      // R2 #7 (2026-05-21): when PAUSED (the UX-3 paused-scrub state +
+      // the Phase-11A-Issue-5 unified pause), hold at EXACTLY _pausedAt
+      // -- sample that spline time directly instead of the
+      // `(now-_t0)*speed` wall clock. The clock expression equals
+      // _pausedAt only at the single frame the pause was set; on every
+      // later frame it reads the PREVIOUS frame's _t0 (the _trajLayer
+      // .update() rebase that re-pins _t0 runs LATER this frame, in
+      // OverlayScene.update()), so the camera sampled _pausedAt + one
+      // frame's delta -- a ~16 ms sawtooth at 60 fps that BALLOONS when
+      // the frame rate dips (this scene stutters on a chunk-refetch
+      // storm). Sampling _pausedAt directly pins the paused frame
+      // dead-still regardless of frame pacing. The _trajLayer rebase is
+      // now redundant for the camera (kept inert -- it still keeps _t0
+      // consistent for _pathCurTime / a subsequent resume, and the
+      // structural marker test pins its presence). Identity-gated on
+      // _pausedAtPlayer so a bench/clip launcher that swapped _player is
+      // never affected.
+      const _isPaused = (typeof _pausedAt !== 'undefined' && _pausedAt !== null &&
+        _pausedAtPlayer === _player);
+      const tNow = _isPaused ? _pausedAt
+        : ((performance.now() - _t0) / 1000) * speed;
+      if (tNow > _player.duration && !_player.loop) {
+        stopPath();
+      } else {
+        const s = sampleAt(_player, tNow);
+        camera.position.set(s.pos[0], s.pos[1], s.pos[2]);
+        camera.quaternion.set(s.quat[0], s.quat[1], s.quat[2], s.quat[3]);
+        camera.fov = s.fov;
+        camera.updateProjectionMatrix();
+        if (_benchActive) { if (!_benchCam.armed) _benchCamArm(); _benchCamSample(); }
+        const pct = Math.min(1000, Math.max(0, (tNow / _player.duration) * 1000));
+        scrubEl.value = pct;
+        timeEl.textContent = tNow.toFixed(2) + 's';
+        const tk = _player.sortedKfs[s._kfIndex];
+        const triggerId = (tk && tk.annotation_id) || null;
+        if (triggerId !== _lastTriggeredAnnotation) {
+          markerObjs.forEach(m => m.el.querySelector('.ann-dot').classList.remove('path-active'));
+          if (triggerId) {
+            const idx = annotationsData.findIndex(a => a.id === triggerId);
+            if (idx >= 0 && markerObjs[idx]) markerObjs[idx].el.querySelector('.ann-dot').classList.add('path-active');
+          }
+          _lastTriggeredAnnotation = triggerId;
+        }
+      }
+    }
+
+    // Auto view-tracking focus + HUD (both no-ops when disabled).
+    _autoFocusTick(_nowMs);
+    _hudTick();
+
+    // Keep InteractionManager's pointer-owner in sync with `_player`
+    // for ALL camera-driving paths (the bench launchers + scrub set
+    // `_player` directly, not via startPath). `_player` stays the one
+    // live gate every `if (_player)` reads — this only mirrors the
+    // same fact into the single queryable broker (nothing reads it in
+    // T0, so behavior is byte-identical). One chokepoint instead of
+    // touching every bench function.
+    if (_player && InteractionManager.currentOwner() !== 'player') {
+      InteractionManager.requestPointer('player');
+    } else if (!_player && InteractionManager.currentOwner() === 'player') {
+      InteractionManager.releasePointer('player');
+    }
+
+    // The ONE overlay tick (Task 0). No-op in T0 (no layers); later
+    // features' per-frame overlay work fans out from here, not from
+    // bespoke hooks in this loop.
+    OverlayScene.update(_nowMs);
+
+    // Camera bounds clamp (conditional on cfg.camera.enabled)
+    if (cam && cam.enabled === true) {
+      const p = camera.position;
+      if (p.x < -cam.bounds_radius) p.x = -cam.bounds_radius;
+      else if (p.x > cam.bounds_radius) p.x = cam.bounds_radius;
+      if (p.z < -cam.bounds_radius) p.z = -cam.bounds_radius;
+      else if (p.z > cam.bounds_radius) p.z = cam.bounds_radius;
+      if (p.y < cam.ground_height) p.y = cam.ground_height;
+    }
+
+    // Path/bench owns the camera. OrbitControls.update() re-derives the
+    // camera from its internal spherical and OVERWRITES the player's
+    // per-frame write (and forces lookAt(target)); controls.enabled=false
+    // does NOT stop update() in three 0.180 (verified in the pinned
+    // source — no enabled guard). So skip it entirely while a path/bench
+    // drives; it resumes normally the moment _player is null again.
+    if (!_player) controls.update();
+    renderer.render(scene, camera);
+    if (_capReq) {
+      const _cr = _capReq; _capReq = null;
+      let _d = null;
+      try { _d = renderer.domElement.toDataURL('image/jpeg', 0.82); } catch (e) {}
+      _cr(_d);
+    }
+    css2d.render(scene, camera);
+    _gpuEndFrame();
+  }
+
+  // Hide loading once the splat is ready. The splat-count text itself
+  // is updated every frame from spark.activeSplats in tick(), so we don't
+  // overwrite it here (the previous one-shot "Streaming .rad" message
+  // would have masked the live count).
+  //
+  // Also install the chunk-upload throttle on the SparkRenderer's pager
+  // **only on phone/tablet tiers**. Spark's default `pager.processUploads()`
+  // drains EVERY ready chunk per call, so when several chunks finish
+  // decoding in the same frame all of them upload + texSubImage3D in that
+  // one frame — a visible 100-250 ms stall on weak GPUs (mobile). On a
+  // fast desktop the upload is cheap and the throttle just slows LoD
+  // refinement, making the view look "flimsy" while it catches up. So we
+  // skip the monkey-patch entirely on desktop and let Spark drain freely.
+  // Bumped 2 → 8 because user reported splats vanishing during fast iPhone
+  // navigation: with cap=2, new chunks for the freshly-rotated-into view
+  // can't reach GPU before the LoD evicts old chunks → empty screen.
+  // cap=8 means ~480 chunk-uploads per second at 60 Hz — enough to keep up
+  // with any reasonable camera motion. Trade-off: occasional bigger frame
+  // spikes on chunk-burst arrival, but rendering "something" is preferable
+  // to rendering nothing.
+  const PROCESS_UPLOADS_MAX_PER_FRAME = 8;
+  // Apple Silicon also throttles: a burst of chunks finishing decode in one
+  // frame all texSubImage that frame → the motion "stutter"/longtasks the
+  // user felt on MacBook (worst during the cold fill, fades as the pool
+  // warms — exactly a per-new-chunk-burst signature). Spreading the burst
+  // (cap 8 ≈ 480 uploads/s @60 Hz) trades a touch of LoD-refine latency for
+  // smooth pacing. Discrete desktop still drains free (it has no stutter).
+  const _shouldThrottleUploads = !STOCK &&
+    (_deviceProfile.tier === 'phone' || _deviceProfile.tier === 'tablet' || _AS);
+  // ?preload=N caps the chunks we wait for (default heuristic below).
+  // ?preload=0 disables the front-load phase entirely.
+  const PRELOAD_OFF = new URLSearchParams(location.search).get('preload') === '0';
+  // Resolved when the loading panel hides (preload phase complete). The auto
+  // bench trigger awaits this so the orbit doesn't start under an occluded
+  // canvas.
+  // ---- Centre-first load (Luma-style) ----
+  // Apply the focus override at the start-view CENTRE immediately — before
+  // splat.initialized / preload — so Spark's very first LoD traversals
+  // prioritise the chunks under the screen centre. Without this the centre
+  // (what you look at) resolves LAST. From cfg.start_view (no raycast needed
+  // — config is known now). Skipped for STOCK / bench (bench drives its own
+  // orbit prefetch). Auto-focus takes over seamlessly once _afReady.
+  if (!STOCK && !BENCH_AUTO && cfg.start_view
+      && Array.isArray(cfg.start_view.pos) && Array.isArray(cfg.start_view.target)) {
+    const _sp = cfg.start_view.pos, _st = cfg.start_view.target;
+    const _dx=_sp[0]-_st[0], _dy=_sp[1]-_st[1], _dz=_sp[2]-_st[2];
+    const _q = Array.isArray(cfg.start_view.quat) ? cfg.start_view.quat : [0,0,0,1];
+    spark.lodPosOverride  = new THREE.Vector3(
+      _st[0]+_dx*FOCUS_NEAR_FRAC, _st[1]+_dy*FOCUS_NEAR_FRAC, _st[2]+_dz*FOCUS_NEAR_FRAC);
+    spark.lodQuatOverride = new THREE.Quaternion(_q[0],_q[1],_q[2],_q[3]);
+    _afSet = true;
+    console.info('[Splatpipe] centre-first load: focus override set from frame 1');
+  }
+
+  // ---- Early reveal (Luma-style) ----
+  // Independent of `await splat.initialized` / the full preload. Show the
+  // canvas as soon as a little COARSE coverage is resident, then let the
+  // rest stream in *visibly*. Combined with centre-first ordering above,
+  // the user sees the centre appear fast and sharpen first, edges after —
+  // instead of staring at a spinner for ~15-27 s while everything loads
+  // hidden. The root-chunk guard guarantees no blank gaps. The preload
+  // IIFE below still runs (camera framing, prefetch, _afReady) behind the
+  // now-visible canvas; its later .add('hidden') is an idempotent no-op.
+  (async () => {
+    const _loadEl = document.getElementById('loading');
+    const _t0 = performance.now();
+    const REVEAL_MIN_PAGES = 6;     // a few coarse (centre-first) chunks = enough to show
+    const REVEAL_HARD_MS   = 4000;  // never later than this
+    while (true) {
+      const pgr = spark.pager;
+      const resident = pgr ? (pgr.maxPages - (pgr.pageFreelist?.length || 0)) : 0;
+      if (resident >= REVEAL_MIN_PAGES || (performance.now() - _t0) > REVEAL_HARD_MS) break;
+      await new Promise(r => setTimeout(r, 100));
+    }
+    _loadEl.classList.add('hidden');
+    console.info('[Splatpipe] early reveal at', Math.round(performance.now()), 'ms');
+  })();
+
+  let _preloadDoneResolve;
+  const _preloadDonePromise = new Promise(r => { _preloadDoneResolve = r; });
+  (async () => {
+    if (splat.initialized && typeof splat.initialized.then === 'function') {
+      try { await splat.initialized; } catch (e) { console.warn('splat init failed', e); }
+    }
+
+    // ---- Generic "outside-the-model" camera framing ----
+    // Spark paged-splat scenes do NOT expose a usable bounding box:
+    //   • THREE.Box3.setFromObject returns empty (no traversable geometry)
+    //   • splat.getBoundingBox() throws "requires PackedSplats or ExtSplats"
+    //   • raycast intersectObject returns 0 hits before chunks render
+    // Since build-lod centers splats at the origin during assembly, place
+    // the camera at a generous (0, 20, 40), looking at the origin. That's
+    // outside the model for any scene up to ~30 m radius — i.e. the
+    // typical photogrammetry capture footprint. For bigger scenes the user
+    // can fly out with WASD or pinch-zoom; for precise framing per
+    // project, author a camera path or drop an annotation and the viewer
+    // will use that instead.
+    const hasAuthoredView = (cfg.start_view && Array.isArray(cfg.start_view.pos)) ||
+      (cfg.default_path_id) ||
+      (Array.isArray(cfg.camera_paths) && cfg.camera_paths.length > 0) ||
+      (Array.isArray(cfg.annotations) && cfg.annotations.length > 0);
+    if (!hasAuthoredView) {
+      // Distance scaled with sqrt(numSplats): bigger scenes need bigger
+      // setback. Empirical mapping from observed scenes:
+      //   500 K splats → ~24 m setback (clamped to floor 40)
+      //   2 M splats   → ~47 m
+      //   10 M splats  → ~105 m
+      //   20 M splats  → ~149 m (Speicher: needed at least this far out)
+      //   30 M splats  → ~183 m (Stettiner Haff)
+      const N = splat.numSplats || splat.paged?.numSplats || 1_000_000;
+      const dist = Math.max(40, Math.sqrt(N) / 30);
+      // Eye-level-ish camera height. Y = min(12, dist × 0.08) — never goes
+      // above ~12 units high regardless of scene size, scales DOWN for
+      // smaller scenes. For building captures this lands roughly at first-
+      // floor / pedestrian eye level looking slightly down at the model.
+      const yHeight = Math.min(12, dist * 0.08);
+      camera.position.set(0, yHeight, dist);
+      camera.lookAt(0, 0, 0);
+      controls.target.set(0, 0, 0);
+      camera.far = Math.max(5000, dist * 50);
+      camera.updateProjectionMatrix();
+      controls.update();
+      _origCamPos.copy(camera.position);
+      _origCamQuat.copy(camera.quaternion);
+      _origCamFov = camera.fov;
+      _origTarget.set(0, 0, 0);
+      console.info('[Splatpipe] camera placed for', N, 'splats · dist=', dist.toFixed(0));
+    }
+
+    // Pager is lazy-allocated on the SparkRenderer when the first paged mesh
+    // is added; by the time `splat.initialized` resolves it exists.
+    const pager = spark.pager;
+    if (_shouldThrottleUploads && pager && typeof pager.processUploads === 'function' &&
+        !pager.__spThrottled) {
+      const orig = pager.processUploads.bind(pager);
+      pager.processUploads = function() {
+        const q = this.readyUploads;
+        if (!q || q.length <= PROCESS_UPLOADS_MAX_PER_FRAME) return orig();
+        const tail = q.splice(PROCESS_UPLOADS_MAX_PER_FRAME);
+        try { return orig(); }
+        finally {
+          this.readyUploads = (this.readyUploads || []).concat(tail);
+        }
+      };
+      pager.__spThrottled = true;
+    }
+
+    // ---- LoD root-chunk eviction guard (anti-disappear, no fetch throttle) ----
+    // Goal: keep coarse coverage (chunks 0..15, the top LoD levels) resident
+    // so a not-yet-streamed region never renders as a blank gap — WITHOUT the
+    // old approach of unshifting those 16 chunks to the FRONT of fetchPriority
+    // on every driveFetchers() call. That old per-frame re-prepend made the
+    // 3-4 fetch slots churn through coarse chunks before the camera-relevant
+    // fine chunks, so detail "loaded in" very slowly and LoD transitions
+    // (the "reshading") crawled visibly. New approach, two cleanly separated
+    // concerns (verified against spark/src/SplatPager.ts):
+    //   1. Queue a still-missing root chunk only ONCE, appended at the END of
+    //      fetchPriority — Spark's own camera-priority ordering (built by the
+    //      real driveFetchers) keeps full priority + all fetch slots for the
+    //      fine chunks in view; the coarse roots fill in from spare capacity.
+    //   2. After the real driveFetchers runs, drop any root-chunk page out of
+    //      `freeablePages` so allocateFreeable() can never evict it. That is
+    //      the actual anti-disappear guarantee, at zero fetch-priority cost.
+    const PINNED_ROOT_CHUNK_COUNT = 16;
+    // R2 chunk-warning side-fix (2026-05-21): a scene with FEWER than 16
+    // chunks (e.g. 12) made the loop below queue chunks 12..15, which do
+    // not exist -- Spark's PagedSplats.fetchDecodeChunk then throws
+    // "Chunk index out of range: 12 (max: 11)" repeatedly (a console
+    // warning storm + wasted fetch attempts) every driveFetchers tick.
+    // The available chunk count IS cleanly knowable: splat.paged is a
+    // PagedSplats whose radMetaPromise resolves to { meta, chunksStart }
+    // where meta.chunks.length == the real chunk count. Resolve it ONCE
+    // (the promise already exists -- the constructor kicks it off for a
+    // RAD source; this adds NO fetch + NO fork edit) and cache it; until
+    // it resolves we keep the legacy 16 (no behavior change before
+    // resolution). The loop bound then becomes min(16, chunkCount), which
+    // only ever REDUCES the number of root chunks requested -- it can
+    // never request more, so there is zero streaming risk. Stored on the
+    // pager so the closure reads the latest value each tick.
+    pager.__spRootChunkCap = (typeof pager.__spRootChunkCap === 'number')
+      ? pager.__spRootChunkCap : PINNED_ROOT_CHUNK_COUNT;
+    try {
+      const _paged = splat.paged;
+      if (_paged && _paged.radMetaPromise &&
+          typeof _paged.radMetaPromise.then === 'function') {
+        _paged.radMetaPromise.then((mc) => {
+          try {
+            const n = mc && mc.meta && Array.isArray(mc.meta.chunks)
+              ? mc.meta.chunks.length : null;
+            if (typeof n === 'number' && n > 0) {
+              pager.__spRootChunkCap = Math.min(PINNED_ROOT_CHUNK_COUNT, n);
+            }
+          } catch (e) {}
+        }).catch(() => {});
+      }
+    } catch (e) {}
+    if (pager && typeof pager.driveFetchers === 'function' && !pager.__spRootGuard) {
+      const origDrive = pager.driveFetchers.bind(pager);
+      // Effective cap is read live off the pager each tick: the legacy 16
+      // until radMetaPromise resolves the real (possibly smaller) count.
+      const _rootCap = () => {
+        const c = pager.__spRootChunkCap;
+        return (typeof c === 'number' && c > 0)
+          ? Math.min(PINNED_ROOT_CHUNK_COUNT, c) : PINNED_ROOT_CHUNK_COUNT;
+      };
+      const _isRoot = (sc) => sc && sc.splats === splat.paged && sc.chunk < _rootCap();
+      pager.driveFetchers = function() {
+        if (!this.fetchPriority) this.fetchPriority = [];
+        // (1) Ensure each not-yet-resident root chunk is queued exactly once,
+        //     at the END so it never preempts in-view fine detail. Bounded to
+        //     the REAL chunk count so a <16-chunk scene never queues a
+        //     non-existent chunk (the "out of range" warning storm).
+        const _cap = _rootCap();
+        for (let i = 0; i < _cap; i++) {
+          if (this.getSplatsChunk(splat.paged, i)) continue;  // already resident
+          const queued =
+            this.fetchPriority.some(p => p.splats === splat.paged && p.chunk === i) ||
+            (this.fetchers || []).some(f => f.splats === splat.paged && f.chunk === i) ||
+            (this.fetched || []).some(f => f.splats === splat.paged && f.chunk === i);
+          if (!queued) this.fetchPriority.push({ splats: splat.paged, chunk: i });
+        }
+        origDrive();
+        // (2) Make resident root pages non-evictable.
+        if (this.freeablePages && this.freeablePages.length) {
+          this.freeablePages = this.freeablePages.filter(
+            pg => !_isRoot(this.pageToSplatsChunk[pg])
+          );
+        }
+      };
+      pager.__spRootGuard = true;
+      console.info('[Splatpipe] root-chunk eviction guard active (no per-frame re-pin)');
+    }
+
+    // ---- Next-cut LOD pre-warm retention guard (Task 14 Step B) ----
+    // A TWIN of the root-chunk eviction guard above, scoped to the
+    // ClipPlayer's next-cut prewarm window. While _clipPrewarm.active
+    // (the clip scheduler has parked spark.lodPosOverride at the next
+    // cut's start pose -- see the ClipPlayer block), Spark's own
+    // driveFetchers enqueues that pose's chunks; this wrap RETAINS
+    // them so they cannot be evicted before the cut fires:
+    //   1. Snapshot the chunks Spark is currently fetching for the
+    //      paged splat into _clipPrewarm.chunks (the "next-cut chunk
+    //      set"), capped on phone (shallow / coarse-tier only --
+    //      mandatory mobile mitigation) so the 64-page phone pool is
+    //      never overcommitted.
+    //   2. Re-append any of that set still missing to the END of
+    //      fetchPriority (END so it never preempts the LIVE tour
+    //      camera's in-view detail -- identical policy to the root
+    //      guard) so a transient drop is re-requested.
+    //   3. After the real driveFetchers, drop those resident pages
+    //      out of freeablePages so allocateFreeable() can't evict
+    //      them before the cut.
+    // Inert whenever _clipPrewarm.active is false (released the
+    // instant the cut fires -> only ever ONE next-cut set pinned).
+    // Single chained wrap (the root guard already rebound
+    // driveFetchers; we wrap THAT) -- no second monkey-patch race.
+    if (pager && typeof pager.driveFetchers === 'function' &&
+        !pager.__spClipPrewarmGuard) {
+      const _prevDrive = pager.driveFetchers.bind(pager);
+      // Phone shallow cap: pin at most this many prewarm chunks on
+      // the phone tier (coarse coverage only) so the next-cut set
+      // can never pressure the small mobile pool. Desktop/tablet
+      // pin the full demanded set (ample pool).
+      const CLIP_PREWARM_PHONE_MAX = 16;
+      pager.driveFetchers = function() {
+        const pw = (typeof _clipPrewarm !== 'undefined') ? _clipPrewarm
+                                                          : null;
+        if (!pw || !pw.active || !splat.paged) { _prevDrive(); return; }
+        if (!this.fetchPriority) this.fetchPriority = [];
+        // (1) Snapshot the next-cut chunk set: whatever Spark is
+        //     currently fetching / has queued for the paged splat
+        //     because the override is parked at the next-cut pose.
+        const want = [];
+        const seen = {};
+        const _add = (sc) => {
+          if (!sc || sc.splats !== splat.paged) return;
+          if (seen[sc.chunk]) return;
+          seen[sc.chunk] = 1;
+          want.push({ splats: splat.paged, chunk: sc.chunk });
+        };
+        (this.fetchers || []).forEach(_add);
+        (this.fetchPriority || []).forEach(_add);
+        (this.fetched || []).forEach(_add);
+        let pinSet = want;
+        if (pw.phoneShallow && want.length > CLIP_PREWARM_PHONE_MAX) {
+          // Coarse/root-tier slice only (lowest chunk ids == top LoD
+          // levels) -> shallow traversal retained on phone.
+          pinSet = want.slice()
+            .sort((a, b) => a.chunk - b.chunk)
+            .slice(0, CLIP_PREWARM_PHONE_MAX);
+        }
+        pw.chunks = pinSet;
+        // (2) Re-append still-missing pinned chunks at the END so the
+        //     LIVE tour camera keeps full priority + all fetch slots.
+        for (let i = 0; i < pinSet.length; i++) {
+          const ch = pinSet[i].chunk;
+          if (this.getSplatsChunk &&
+              this.getSplatsChunk(splat.paged, ch)) continue;
+          const queued =
+            this.fetchPriority.some(
+              p => p.splats === splat.paged && p.chunk === ch) ||
+            (this.fetchers || []).some(
+              f => f.splats === splat.paged && f.chunk === ch) ||
+            (this.fetched || []).some(
+              f => f.splats === splat.paged && f.chunk === ch);
+          if (!queued)
+            this.fetchPriority.push({ splats: splat.paged, chunk: ch });
+        }
+        _prevDrive();
+        // (3) Make resident pinned pages non-evictable until the cut.
+        if (this.freeablePages && this.freeablePages.length &&
+            pinSet.length) {
+          const pin = {};
+          for (let i = 0; i < pinSet.length; i++)
+            pin[pinSet[i].chunk] = 1;
+          this.freeablePages = this.freeablePages.filter(pg => {
+            const sc = this.pageToSplatsChunk[pg];
+            return !(sc && sc.splats === splat.paged && pin[sc.chunk]);
+          });
+        }
+      };
+      pager.__spClipPrewarmGuard = true;
+      console.info('[Splatpipe] next-cut prewarm retention guard active');
+    }
+
+    // ---- Front-load phase (pillar V) ----
+    // Hold the canvas behind the loading panel until Spark has finished its
+    // initial chunk burst. The loading bar reflects (resident pages /
+    // target) AND (elapsed / timeout) — whichever is further along — so the
+    // user always sees forward motion even if Spark's burst stalls.
+    //
+    // Done condition: pager is idle (no in-flight fetches, no decoded-but-
+    // not-uploaded chunks) AND ≥ minPages are resident. OR a hard timeout.
+    //
+    // This removes the cold-start FPS dip and the first-paint pop-in.
+    if (!PRELOAD_OFF && pager) {
+      const fill = document.getElementById('loading-progress-fill');
+      const txt  = document.getElementById('loading-progress-text');
+      // Two-phase preload:
+      //   Phase A: passive wait for initial chunk burst (~1.5 s, 16+ pages).
+      //   Phase B (only when BENCH_AUTO === 'orbit'): walk through ORBIT_SAMPLES
+      //     poses around the orbit, setting spark.lodPosOverride for each so
+      //     Spark's LoD traversal demands chunks at those positions. Pre-warms
+      //     the cache for the entire 360° orbit — fetchers grab chunks for
+      //     positions the camera will visit, not just the start view.
+      // Total budget: 12 s. Cancels early on done.
+      const PHASE_A_TARGET_PAGES = 16;
+      const PHASE_A_MIN_MS = 1500;
+      const ORBIT_SAMPLES = 16;          // ≈ every 22.5° around the orbit
+      const ORBIT_SAMPLE_DWELL_MS = 500; // wait per pose for fetchers to grab
+      const MAX_WAIT_MS = 12000;         // orbit-prefetch (bench) budget / outer cap
+      // Normal (non-orbit) reveal: show the scene as soon as COARSE coverage
+      // is up, then let fine detail stream in visibly. The root-chunk pin
+      // guarantees chunks 0..15 stay resident so there are never blank gaps,
+      // and chunked .radc + auto-focus refine fast after reveal. Measured
+      // (2026-05-15): the old resident/24-or-12s gate held the canvas hidden
+      // ~12-15 s on a cold chunked load while it loaded ~the whole working
+      // set; revealing on coarse coverage cuts time-to-first-image to a few
+      // seconds (the dominant "feels slow" factor — user judges by when they
+      // SEE it). Trade: first frame is coarse-but-complete, sharpens over the
+      // next few seconds.
+      const REVEAL_PAGES = 12;
+      const REVEAL_MAX_MS = 3500;
+      const t0 = performance.now();
+
+      // Pre-build orbit player if needed; we'll re-sample at preload poses.
+      let orbitPlayer = null;
+      if (BENCH_AUTO === 'orbit') {
+        try { orbitPlayer = buildPlayer(_buildOrbitPath()); }
+        catch (e) { console.warn('[preload] orbit build failed', e); }
+      }
+
+      let phaseAdone = false;
+      let orbitIdx = 0;
+      let orbitNextAt = t0 + PHASE_A_MIN_MS;
+
+      while (true) {
+        const now = performance.now();
+        const elapsed = now - t0;
+        const inFlight = pager.fetchers?.length || 0;
+        const decoded  = (pager.fetched?.length || 0) +
+                         (pager.newUploads?.length || 0) +
+                         (pager.readyUploads?.length || 0);
+        const resident = pager.maxPages - (pager.pageFreelist?.length || 0);
+
+        // Phase A → B transition
+        if (!phaseAdone && elapsed >= PHASE_A_MIN_MS && resident >= PHASE_A_TARGET_PAGES) {
+          phaseAdone = true;
+          orbitNextAt = now;  // start orbit sampling immediately
+        }
+
+        // Phase B: cycle through orbit poses to populate fetchPriority for each.
+        if (orbitPlayer && phaseAdone && orbitIdx < ORBIT_SAMPLES && now >= orbitNextAt) {
+          const tOrbit = (orbitIdx / ORBIT_SAMPLES) * orbitPlayer.duration;
+          const s = sampleAt(orbitPlayer, tOrbit);
+          if (!spark.lodPosOverride) spark.lodPosOverride = new THREE.Vector3();
+          if (!spark.lodQuatOverride) spark.lodQuatOverride = new THREE.Quaternion();
+          spark.lodPosOverride.set(s.pos[0], s.pos[1], s.pos[2]);
+          spark.lodQuatOverride.set(s.quat[0], s.quat[1], s.quat[2], s.quat[3]);
+          orbitIdx++;
+          orbitNextAt = now + ORBIT_SAMPLE_DWELL_MS;
+        }
+
+        // Progress bar: based on what phase we're in.
+        let pct;
+        if (orbitPlayer) {
+          // 0-30%: phase A (resident pages or elapsed). 30-95%: phase B (orbit samples).
+          const aPct = Math.min(1, Math.max(resident / PHASE_A_TARGET_PAGES, elapsed / PHASE_A_MIN_MS));
+          const bPct = Math.min(1, orbitIdx / ORBIT_SAMPLES);
+          pct = Math.max(aPct * 0.3 + bPct * 0.65,
+                          Math.min(1, elapsed / MAX_WAIT_MS));
+        } else {
+          // Normal load: reveal on coarse coverage (≈REVEAL_PAGES pages) or
+          // a short timeout — NOT the full working set.
+          pct = Math.max(
+            Math.min(1, resident / REVEAL_PAGES),
+            Math.min(1, elapsed / REVEAL_MAX_MS),
+          );
+        }
+
+        const pctText = (pct * 100).toFixed(0) + '%';
+        if (fill) fill.style.width = pctText;
+        if (txt) {
+          if (orbitPlayer && phaseAdone) {
+            txt.textContent = `${pctText}  ·  orbit prefetch ${orbitIdx}/${ORBIT_SAMPLES}  ·  ${resident} cached`;
+          } else if (inFlight + decoded > 0) {
+            txt.textContent = `${pctText}  ·  ${resident} loaded · ${inFlight} fetching · ${decoded} decoding`;
+          } else {
+            txt.textContent = `${pctText}  ·  ${resident} chunks ready`;
+          }
+        }
+
+        // Done conditions:
+        //   Orbit mode: all samples done AND fetch/decode queues drained AND ≥1s margin
+        //   Passive mode: bar full
+        //   Always: hard timeout
+        const orbitDrained = orbitPlayer && orbitIdx >= ORBIT_SAMPLES && inFlight === 0 && decoded === 0;
+        // L10: break as soon as the bar VISUALLY reads 100% (pct rounds to
+        // "100%" at >=0.995) instead of waiting for pct to creep to exactly
+        // 1.0 -- that last sliver is the "bar stuck at 100% for 1-3s" the
+        // user saw. Reveal quality is unchanged (<=~17ms / sub-page earlier).
+        const passiveDone = !orbitPlayer && pct >= 0.995;
+        if (orbitDrained || passiveDone || elapsed > MAX_WAIT_MS) break;
+        await new Promise(r => setTimeout(r, 100));
+      }
+
+      // NOTE: do NOT clear lodPosOverride here. Centre-first load set it from
+      // frame 1 and auto-focus owns it from now on (it re-tracks the view
+      // centre every ~180 ms once _afReady). Clearing it would drop centre
+      // priority for a beat and let the camera spread detail again.
+      if (BENCH_AUTO === 'orbit') {   // only the bench orbit-walk needs its prefetch override cleared
+        spark.lodPosOverride = undefined;
+        spark.lodQuatOverride = undefined;
+      }
+      console.info('[preload] done',
+        '· resident:', pager.maxPages - (pager.pageFreelist?.length || 0),
+        '· orbit samples:', orbitIdx, '/', orbitPlayer ? ORBIT_SAMPLES : 'n/a',
+        '· elapsed:', Math.round(performance.now() - t0), 'ms');
+    }
+    document.getElementById('loading').classList.add('hidden');
+    if (typeof _preloadDoneResolve === 'function') _preloadDoneResolve();
+    _afReady = true;  // auto-focus may now own lodPosOverride (preload cleared its own)
+  })();
+
+  // Resize
+  window.addEventListener('resize', () => {
+    const w = window.innerWidth, h = window.innerHeight;
+    renderer.setSize(w, h);
+    css2d.setSize(w, h);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  });
+

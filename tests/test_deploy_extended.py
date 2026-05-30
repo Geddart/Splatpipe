@@ -4,7 +4,14 @@ from unittest.mock import patch, MagicMock
 from urllib.error import HTTPError
 
 
-from splatpipe.steps.deploy import load_bunny_env, deploy_to_bunny, upload_file
+from splatpipe.steps.deploy import (
+    load_bunny_env,
+    deploy_to_bunny,
+    upload_file,
+    _EDGE_URL_PATTERNS,
+    _EDGE_DESC,
+    _desired_edge_rules,
+)
 from splatpipe.core.events import ProgressEvent
 
 
@@ -208,3 +215,95 @@ class TestDeployToBunnyWithMock:
         # Initial event + 2 per-file events
         assert len(events) >= 3
         assert all(isinstance(e, ProgressEvent) for e in events)
+
+
+class TestEdgeRuleSlugRootCoverage:
+    """Regression lock for the recurring stale-build-after-redeploy bug.
+
+    The URL the user actually opens is the bare slug-root directory
+    (``https://splatpipe-cdn.b-cdn.net/<slug>/`` and
+    ``/<slug>/?author=1&...``). Bunny matches the edge rule against that
+    request URL, which contains neither ``index.html`` nor
+    ``viewer-config.json`` -- so the older ``*/index.html`` patterns alone
+    never matched it and it fell through to the pull zone's 30-day
+    CacheControlMaxAgeOverride. These tests assert the slug-root directory
+    patterns are present so a redeployed slug serves fresh, and that the
+    addOrUpdate Description key stays stable (a changed Description would
+    duplicate the rules instead of updating them in place).
+    """
+
+    def test_slug_root_directory_patterns_present(self):
+        """The bare slug-root dir URL (with and without a query string)
+        must be covered, alongside the existing explicit-file patterns."""
+        assert "https://splatpipe-cdn.b-cdn.net/*/" in _EDGE_URL_PATTERNS
+        assert "https://splatpipe-cdn.b-cdn.net/*/?*" in _EDGE_URL_PATTERNS
+        # The original explicit-file coverage must remain.
+        assert "https://splatpipe-cdn.b-cdn.net/*/index.html" in _EDGE_URL_PATTERNS
+        assert (
+            "https://splatpipe-cdn.b-cdn.net/*/viewer-config.json"
+            in _EDGE_URL_PATTERNS
+        )
+
+    def test_immutable_asset_patterns_not_broadened(self):
+        """The only trailing-wildcard pattern is the slug-root query-string
+        form ``/*/?*``. Its mandatory literal ``/?`` before the trailing
+        ``*`` only occurs on a slug-root directory request, never on a
+        ``.../scene.rad?v=1``-style asset URL -- so the big immutable
+        `.rad`/`.radc` assets keep their long cache."""
+        suffix_wild = [p for p in _EDGE_URL_PATTERNS if p.endswith("*")]
+        assert suffix_wild == ["https://splatpipe-cdn.b-cdn.net/*/?*"]
+
+    def test_desired_edge_rules_carry_slug_root_and_keep_description(self):
+        """Exactly the two cache-override rules, both carrying the
+        slug-root patterns (across however many triggers they are split
+        into), with the stable addOrUpdate Description key."""
+        rules = _desired_edge_rules([])
+        assert len(rules) == 2
+        assert sorted(r["ActionType"] for r in rules) == [3, 15]
+        for r in rules:
+            assert r["Enabled"] is True
+            assert str(r["Description"]).startswith(_EDGE_DESC)
+            assert r["ActionParameter1"] == "0"
+            # Union across ALL triggers (patterns are split <=5/trigger).
+            patterns = [
+                p for t in r["Triggers"] for p in t["PatternMatches"]
+            ]
+            assert "https://splatpipe-cdn.b-cdn.net/*/" in patterns
+            assert "https://splatpipe-cdn.b-cdn.net/*/?*" in patterns
+
+    def test_no_trigger_exceeds_bunny_pattern_limit(self):
+        """Regression lock: Bunny rejects (HTTP 400 edgerule.invalid) any
+        Edge Rule trigger carrying more than 5 PatternMatches. A single
+        trigger with all 6 URL patterns shipped in an earlier commit and
+        was rejected by the live API, so the slug-root hardening never
+        applied. Every trigger of every rule must hold <= 5 patterns, and
+        the union across a rule's triggers must exactly equal the full
+        pattern set (split, not dropped or duplicated)."""
+        rules = _desired_edge_rules([])
+        assert rules, "expected the two cache-override rules"
+        for r in rules:
+            triggers = r["Triggers"]
+            assert triggers, "a rule must carry at least one trigger"
+            union = []
+            for t in triggers:
+                pm = t["PatternMatches"]
+                assert len(pm) <= 5, (
+                    f"trigger has {len(pm)} PatternMatches; Bunny's hard "
+                    f"limit is 5 -> addOrUpdate would 400 and the rule "
+                    f"would never apply"
+                )
+                union.extend(pm)
+            # No pattern lost or duplicated by the chunking.
+            assert union == list(_EDGE_URL_PATTERNS)
+
+    def test_existing_rule_guids_reused_so_addorupdate_updates_in_place(self):
+        """When prior rules exist (matched by Description), their Guids are
+        reused -- addOrUpdate edits in place instead of duplicating."""
+        existing = [
+            {"Description": f"{_EDGE_DESC} [edge]", "Guid": "guid-edge"},
+            {"Description": f"{_EDGE_DESC} [browser]", "Guid": "guid-browser"},
+        ]
+        rules = _desired_edge_rules(existing)
+        guids = {r["Description"]: r["Guid"] for r in rules}
+        assert guids[f"{_EDGE_DESC} [edge]"] == "guid-edge"
+        assert guids[f"{_EDGE_DESC} [browser]"] == "guid-browser"

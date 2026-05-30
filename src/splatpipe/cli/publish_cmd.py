@@ -30,6 +30,7 @@ from rich.progress import (
 
 from ..core.constants import FOLDER_REVIEW, STEP_PUBLISH
 from ..core.project import Project
+from ..core.sh_encoding import ShEncoding
 from ..steps.deploy import load_bunny_env
 from ..steps.publish import publish_scene
 
@@ -68,6 +69,15 @@ def publish(
         None, "--crop-within",
         help="build-lod --within-dist crop 'x,y,z,radius' (drops training-"
              "outlier splats at source). Only valid with --ply."),
+    sh_encoding: ShEncoding = typer.Option(
+        ShEncoding.auto, "--sh-encoding",
+        help="SH decode-path in the Spark viewer (same choice as build-lod). "
+             "'auto' (default) inherits any per-scene paged_ext_splats -- on a "
+             "FRESH slug that resolves to the viewer's CLAMPED default, so pass "
+             "'paged' for full-SH3 captures; 'paged' forces the clamp-free "
+             "ExtSplats path (full SH3, no +/-1 rainbow); 'clamped' forces the "
+             "legacy PackedSplats path.",
+        case_sensitive=False),
     desc: str = typer.Option(
         None, "--desc", help="Share-card description - REAL user copy only, never invented."),
     prune_stale: bool = typer.Option(
@@ -170,6 +180,7 @@ def publish(
                   f"{env.get('BUNNY_CDN_URL', '').rstrip('/')}/{slug}/")
     if proj is not None:
         console.print(f"  source: {src_ply.name} (project {proj.name})")
+    console.print(f"  sh-encoding: {sh_encoding.value}")
     console.print()
 
     pub_kw = dict(
@@ -178,6 +189,7 @@ def publish(
         base_config=base_config, live_slug=live,
         clip_xy=clip_xy, move_speed_mult=move_speed_mult,
         splat_budget=splat_budget, crop_within=crop_within,
+        sh_encoding=sh_encoding,
         desc=desc, prune_stale=prune_stale, spark_repo=spark_repo,
     )
     result = None

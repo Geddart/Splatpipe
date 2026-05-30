@@ -1,0 +1,232 @@
+  // ============================================================
+  //  StartViewModule (Phase 11A Issue 9 -- editor-arc-design #122)
+  // ------------------------------------------------------------
+  //  Surfaces cfg.start_view -- the scene's opening shot -- in the
+  //  Scene Settings drawer's Start View section. Replaces the
+  //  removed top-bar #setstart-btn (Phase 11A Issue 8).
+  //  Schema (see core/scene_cuts.py + path_io.py):
+  //    cfg.start_view = { pos: [x,y,z], quat: [x,y,z,w], target: [x,y,z],
+  //                       fov: <positive number> }
+  //  Already in PUBLIC_VIEWER_CONFIG_KEYS / ALLOWED_PATCH_KEYS allow-
+  //  list since the Phase 2 prep; the SPV1 token relay is the
+  //  CANONICAL save path (no client secret; user pastes to Claude).
+  //
+  //  CONTRACT:
+  //    name='start_view', stateKey='start_view', defaultModes=['author']
+  //    mount: ATTACH to drawer + capture clean baseline
+  //    unmount: drop refs
+  //    renderSceneSettings(parentEl) populates the placeholder with:
+  //      - A "Save current as start view" button (calls
+  //        window.__editor.openStartViewCard, hoisted by 18_frame_loop
+  //        as part of the Issue 8 refactor -- the SAME SPV1 token
+  //        emission the legacy top-bar button used).
+  //      - A read-only preview of the current cfg.start_view (pos +
+  //        target + fov) so the user can verify what is committed
+  //        before generating a new token. Updated when the drawer
+  //        re-opens (`scene-settings:open` event).
+  //
+  //  WHY no in-place pos/target/fov editing UI: the start view is
+  //  captured FROM the live camera (the user must physically frame
+  //  the shot they want; manual numeric entry is error-prone for
+  //  pose data). The "Save current as start view" button is the
+  //  single authoring affordance.
+  //
+  //  TEST SURFACE on window.__editor.{startViewGet, startViewDirty,
+  //  startViewSectionEl, startViewSaveBtnEl, startViewPreviewText}.
+  // ============================================================
+  (function _svModInit() {
+    if (!_EDITOR_AUTHOR) return;
+    if (typeof EditorModuleRegistry === 'undefined') return;
+
+    function _liveCfg() {
+      try { if (typeof cfg !== 'undefined' && cfg) return cfg; }
+      catch (e) {}
+      try { if (window.cfg) return window.cfg; }
+      catch (e) {}
+      return null;
+    }
+    function _slice() {
+      const c = _liveCfg();
+      if (!c || !c.start_view || typeof c.start_view !== 'object') return null;
+      // Defensive copy so a mutation here cannot leak into the cfg.
+      const sv = c.start_view;
+      return {
+        pos: Array.isArray(sv.pos) ? sv.pos.slice() : null,
+        quat: Array.isArray(sv.quat) ? sv.quat.slice() : null,
+        target: Array.isArray(sv.target) ? sv.target.slice() : null,
+        fov: typeof sv.fov === 'number' ? sv.fov : null,
+      };
+    }
+    function _sig(o) {
+      try { return JSON.stringify(o || null); }
+      catch (e) { return ''; }
+    }
+    function _fmt3(arr) {
+      if (!Array.isArray(arr) || arr.length < 3) return '—';
+      const r = (n) => (Math.round((+n || 0) * 1000) / 1000).toFixed(3);
+      return r(arr[0]) + ', ' + r(arr[1]) + ', ' + r(arr[2]);
+    }
+    function _fmtFov(v) {
+      if (typeof v !== 'number' || !isFinite(v)) return '—';
+      return (Math.round(v * 10) / 10).toString();
+    }
+
+    let _cleanSig = null;
+    let _sectionEl = null;
+    let _sectionBodyEl = null;
+    let _saveBtn = null;
+    let _previewEl = null;
+
+    function _renderPreview() {
+      if (!_previewEl) return;
+      const s = _slice();
+      if (!s) {
+        _previewEl.innerHTML = '<i style="opacity:.6;">No start view ' +
+          'committed yet.</i>';
+        return;
+      }
+      // ASCII-only compact preview; the precision (3 dp) matches the
+      // SPV1 token's _r helper (1e-5 round, but we display only 1e-3
+      // for the human readout to keep the line short).
+      _previewEl.innerHTML =
+        '<div style="font:11px monospace;line-height:1.5;color:#9aa;">' +
+        '<div><b style="color:#ccc;">pos</b>&nbsp;[' +
+        _fmt3(s.pos) + ']</div>' +
+        '<div><b style="color:#ccc;">target</b>&nbsp;[' +
+        _fmt3(s.target) + ']</div>' +
+        '<div><b style="color:#ccc;">fov</b>&nbsp;' +
+        _fmtFov(s.fov) + '&deg;</div>' +
+        '</div>';
+    }
+    function _renderControls() {
+      if (!_sectionBodyEl) return;
+      _sectionBodyEl.innerHTML = '';
+      _sectionBodyEl.style.color = '#ddd';
+      _sectionBodyEl.style.fontSize = '11px';
+      // Helper text
+      const help = document.createElement('div');
+      help.textContent = 'The opening shot end-users see on first ' +
+        'load. Frame your camera, then click below to generate a ' +
+        'token to send to Claude.';
+      help.style.cssText = 'opacity:0.7;margin-bottom:8px;font-size:10px;' +
+        'line-height:1.4;';
+      _sectionBodyEl.appendChild(help);
+      // Save button -- triggers the same SPV1 token card the legacy
+      // top-bar #setstart-btn opened. window.__editor.openStartViewCard
+      // is exposed by 18_frame_loop's Issue 8 refactor.
+      _saveBtn = document.createElement('button');
+      _saveBtn.type = 'button';
+      _saveBtn.id = 'sv-mod-save-btn';
+      _saveBtn.textContent = 'Save current camera as start view';
+      _saveBtn.style.cssText =
+        'background:rgba(53,224,255,0.18);color:#35e0ff;' +
+        'border:1px solid rgba(53,224,255,0.40);border-radius:5px;' +
+        'font-size:11px;padding:6px 10px;cursor:pointer;' +
+        'margin-bottom:10px;width:100%;';
+      _saveBtn.addEventListener('click', () => {
+        try {
+          if (window.__editor && typeof window.__editor.openStartViewCard ===
+              'function') {
+            window.__editor.openStartViewCard();
+          } else {
+            console.warn('StartViewModule: openStartViewCard helper missing');
+          }
+        } catch (e) {
+          console.warn('StartViewModule: error opening card', e);
+        }
+      });
+      _sectionBodyEl.appendChild(_saveBtn);
+      // Preview
+      const previewLabel = document.createElement('div');
+      previewLabel.textContent = 'Current start view:';
+      previewLabel.style.cssText = 'font-size:10px;opacity:0.7;' +
+        'margin-bottom:4px;color:#ccc;';
+      _sectionBodyEl.appendChild(previewLabel);
+      _previewEl = document.createElement('div');
+      _previewEl.id = 'sv-mod-preview';
+      _previewEl.style.cssText = 'background:rgba(255,255,255,0.04);' +
+        'padding:6px 8px;border-radius:4px;' +
+        'border:1px solid rgba(255,255,255,0.08);';
+      _sectionBodyEl.appendChild(_previewEl);
+      _renderPreview();
+    }
+    function _attachToDrawer() {
+      const body = document.getElementById('scene-settings-body');
+      if (!body) return;
+      _sectionEl = body.querySelector('details[data-section="startview"]');
+      if (!_sectionEl) return;
+      _sectionBodyEl = _sectionEl.querySelector(
+        '.spcp-scene-settings-section-body');
+      if (!_sectionBodyEl) return;
+      _renderControls();
+    }
+
+    const startViewModule = {
+      name: 'start_view',
+      stateKey: 'start_view',
+      defaultModes: ['author'],
+      mount: function (overlay, hud, interaction, modes) {
+        _cleanSig = _sig(_slice());
+        setTimeout(_attachToDrawer, 0);
+      },
+      unmount: function () {
+        _cleanSig = null;
+        _sectionEl = null;
+        _sectionBodyEl = null;
+        _saveBtn = null;
+        _previewEl = null;
+      },
+      getDirtyState: function () {
+        const sliceNow = _slice();
+        const sigNow = _sig(sliceNow);
+        // start_view is committed via the SPV1 token relay (NOT via
+        // the SPCP1 patch the registry walks), so this slot reports
+        // clean except when an in-memory edit (e.g. undo) drifts it.
+        const isDirty = (_cleanSig !== null && sigNow !== _cleanSig);
+        return { isDirty: isDirty, patchObject: sliceNow };
+      },
+      markClean: function () {
+        _cleanSig = _sig(_slice());
+      },
+      onCfgChange: function (prev, next, stateKey) {
+        // Wholesale cfg replacement (undo / post-save reload).
+        // Re-render the preview off the new cfg.
+        _renderPreview();
+      },
+      renderSceneSettings: function (parentEl) {
+        if (!parentEl) return;
+        _sectionEl = parentEl.querySelector
+          ? parentEl.querySelector('details[data-section="startview"]')
+          : null;
+        if (!_sectionEl) return;
+        _sectionBodyEl = _sectionEl.querySelector(
+          '.spcp-scene-settings-section-body');
+        if (!_sectionBodyEl) return;
+        _renderControls();
+      },
+      testSurface: {
+        startViewGet() { return startViewModule; },
+        startViewDirty() {
+          return startViewModule.getDirtyState().isDirty;
+        },
+        startViewSectionEl() { return _sectionEl; },
+        startViewSaveBtnEl() { return _saveBtn; },
+        startViewPreviewText() {
+          return _previewEl ? _previewEl.textContent.trim() : null;
+        },
+        startViewSlice() { return _slice(); },
+        startViewRefreshPreview() { _renderPreview(); },
+      },
+    };
+
+    EditorModuleRegistry.register(startViewModule);
+    // Re-render preview when the drawer opens (the user may have
+    // moved the camera + saved a new start_view between opens, so
+    // the cached cfg.start_view may have changed via an undo).
+    try {
+      EditorModuleRegistry.on('scene-settings:open', () => {
+        _renderPreview();
+      });
+    } catch (e) {}
+  })();
+

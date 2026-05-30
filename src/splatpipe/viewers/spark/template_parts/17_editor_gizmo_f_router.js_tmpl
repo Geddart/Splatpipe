@@ -1,0 +1,395 @@
+
+    // ---- Pointer pick: a left click on a trajectory frustum
+    //      selects that keyframe (the Task-16 _trajFrusta meshes
+    //      are the only pickables here). Uses the EXISTING scene
+    //      _raycaster (single source of truth). A click that hits
+    //      no frustum AND is not on the gizmo deselects. We ignore
+    //      the click while the gizmo is being dragged (the gizmo
+    //      owns the pointer then) and while OrbitControls is mid-
+    //      gesture is naturally fine (a frustum hit is a discrete
+    //      click, not a drag).
+    // B2: forget the stacked-click cycle. Called on selection-cleared
+    // and whenever the candidate set / click position is no longer the
+    // same stack (so the NEXT click selects the front-most again).
+    function _gzPkResetCycle() {
+      _gzPkLastX = null;
+      _gzPkLastY = null;
+      _gzPkCands = [];
+      _gzPkIdx = 0;
+      _gzPkSig = null;
+    }
+    // B2 pick target: a FIXED SCREEN-SPACE radius (~5 px, ~10 px on
+    //   retina) centred on each keyframe's camera-icon PIVOT -- NOT a
+    //   widened raycaster Line threshold (the old code set
+    //   `_raycaster.params.Line.threshold = _trajFrHalf * 0.6`, which
+    //   is SCENE-RELATIVE METRES -> a multi-metre invisible grab
+    //   volume on a large scene that also OCCLUDED anything behind it
+    //   and made a target-behind-a-target unselectable). A pure
+    //   2D screen-distance test on the PROJECTED keyframe position is
+    //   inherently non-occluding (depth is irrelevant to the hit
+    //   test) and constant in pixels at any scene scale. When several
+    //   keyframes fall inside that radius, repeated clicks at ~the
+    //   same screen point CYCLE front -> behind -> ... -> wrap (sorted
+    //   by camera distance, nearest first). Returns the chosen
+    //   keyframe index (the path keyframes[] index == frustum
+    //   kfIndex), fed UNCHANGED to _gzAttach(idx); -1 = nothing in
+    //   range (the caller then deselects, exactly as before).
+    const _GZ_PK_V = new THREE.Vector3();
+    const _GZ_PK_SAME_PX = 6;   // "same screen point" tolerance (px)
+    function _gzPickFrustum(clientX, clientY) {
+      if (!_trajFrusta.length) { _gzPkResetCycle(); return -1; }
+      const rect = renderer.domElement.getBoundingClientRect();
+      if (!rect.width || !rect.height) return -1;
+      const radiusPx =
+        (window.devicePixelRatio && window.devicePixelRatio > 1)
+          ? 10 : 5;
+      // Project every keyframe pivot to screen px; collect the ones
+      // within radiusPx, remembering each one's camera distance for
+      // the front->back ordering. A point BEHIND the camera (NDC
+      // z > 1 after project()) is never a candidate.
+      const cands = [];
+      for (const f of _trajFrusta) {
+        if (!f.pos || f.pos.length !== 3) continue;
+        _GZ_PK_V.set(f.pos[0], f.pos[1], f.pos[2]);
+        const camDist = _GZ_PK_V.distanceTo(camera.position);
+        _GZ_PK_V.project(camera);
+        if (_GZ_PK_V.z > 1) continue;   // behind the camera
+        const sx = rect.left + (_GZ_PK_V.x * 0.5 + 0.5) * rect.width;
+        const sy = rect.top + (-_GZ_PK_V.y * 0.5 + 0.5) * rect.height;
+        const dx = sx - clientX, dy = sy - clientY;
+        if ((dx * dx + dy * dy) <= (radiusPx * radiusPx)) {
+          cands.push({ idx: f.kfIndex, camDist: camDist });
+        }
+      }
+      if (!cands.length) { _gzPkResetCycle(); return -1; }
+      // Front -> back (nearest camera distance first).
+      cands.sort((a, b) => a.camDist - b.camDist);
+      const order = cands.map((c) => c.idx);
+      // Stacked-cycle: same screen point (within _GZ_PK_SAME_PX) AND
+      // the SAME candidate stack AND the SAME frustum build -> advance
+      // one deeper (mod N, so it wraps back to the front-most);
+      // otherwise this is a fresh pick -> front-most (index 0).
+      const sig = _trajBuiltSig;
+      const samePoint =
+        _gzPkLastX !== null &&
+        Math.abs(clientX - _gzPkLastX) <= _GZ_PK_SAME_PX &&
+        Math.abs(clientY - _gzPkLastY) <= _GZ_PK_SAME_PX;
+      const sameStack =
+        _gzPkSig === sig &&
+        _gzPkCands.length === order.length &&
+        _gzPkCands.every((v, k) => v === order[k]);
+      if (samePoint && sameStack) {
+        _gzPkIdx = (_gzPkIdx + 1) % order.length;
+      } else {
+        _gzPkIdx = 0;
+      }
+      _gzPkLastX = clientX;
+      _gzPkLastY = clientY;
+      _gzPkCands = order;
+      _gzPkSig = sig;
+      return order[_gzPkIdx];
+    }
+    // Is the pointerdown (clientX/Y) over a TransformControls gizmo
+    // HANDLE? We run in CAPTURE phase, BEFORE TransformControls' own
+    // bubble-phase pointerdown listener; if we stopPropagation() a
+    // pointerdown that landed on a gizmo axis, TC's pointerDown()
+    // never fires and the gizmo can NEVER be dragged with a real
+    // mouse (it only starts a drag when this.axis !== null, and axis
+    // is set by its pointerHover raycast). So: refresh the control's
+    // hover axis from THIS pointer (the SAME NDC->raycast TC's own
+    // pointerHover does) and report whether a handle is under it.
+    // When true the caller MUST yield the event to TC untouched.
+    const _GZ_NDC = new THREE.Vector2();
+    function _gzPointerOnGizmo(clientX, clientY) {
+      if (!_gzCtl || _gzCtl.object !== _gzProxy || _gzSelKf < 0) {
+        return false;
+      }
+      if (_gzCtl.dragging) return true;   // already grabbed
+      const rect = renderer.domElement.getBoundingClientRect();
+      _GZ_NDC.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+      _GZ_NDC.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+      try {
+        // Updates _gzCtl.axis (null = not over a handle). Identical
+        // to the raycast TC.pointerHover runs on its own pointermove
+        // -- we just trigger it deterministically for THIS down.
+        _gzCtl.pointerHover(_GZ_NDC);
+      } catch (e) { return false; }
+      return _gzCtl.axis !== null && _gzCtl.axis !== undefined;
+    }
+    // ---- R5 item 6: screen-plane FREE-DRAG of the selected keyframe.
+    //   "When clicking and dragging another keyframe, you should be able
+    //   to drag him right away, not click again to get the gizmo." A
+    //   frustum click already selects + attaches the gizmo (step 4), but
+    //   TransformControls only drags when an AXIS handle is under the
+    //   pointer -- a click on the frustum BODY grabs no axis, so the
+    //   click-drag motion moved nothing (the "two-gesture" feel). This
+    //   adds a free-drag: on the frustum-pick pointerdown we ARM a drag;
+    //   the FIRST pointermove past _KF_DRAG_PX begins moving the keyframe
+    //   in the camera-facing plane through it (depth fixed), reusing the
+    //   EXISTING _gzWriteProxyToKf write path (same kf.pos write +
+    //   _gzAfterEdit rebuild the gizmo uses) + one gesture-start undo
+    //   snapshot. THRESHOLD-GATED + bounded: a pure click (no move past
+    //   the threshold) never arms the move, so the core SELECT gesture is
+    //   byte-behaviourally identical to before -- a mis-fire cannot break
+    //   selection. Axis-precise edits still use the gizmo (this only adds
+    //   body-drag). Window-level listeners are torn down on up/cancel
+    //   (wedge-safe). Author-mode only (armed only from step 4).
+    let _kfFreeIdx = -1, _kfFreeMoved = false;
+    let _kfFreeStartX = 0, _kfFreeStartY = 0, _kfFreePid = -1;
+    const _KF_DRAG_PX = 4;            // move threshold (a click stays a click)
+    const _KF_FREE_N = new THREE.Vector3();   // plane normal (camera fwd)
+    const _KF_FREE_P = new THREE.Vector3();   // plane point (kf pos)
+    const _KF_FREE_NDC = new THREE.Vector2();
+    const _KF_FREE_HIT = [0, 0, 0];
+    // Pure ray<->plane intersection (Node-testable; mirrors
+    // _raycaster.ray.intersectPlane). plane: n.(X-P)=0; ray: O+tD;
+    // t=(n.(P-O))/(n.D). Returns true + writes `out` when t>=0.
+    function _kfPlaneHit(ox, oy, oz, dx, dy, dz, nx, ny, nz, px, py, pz, out) {
+      const nd = nx * dx + ny * dy + nz * dz;
+      if (Math.abs(nd) < 1e-9) return false;
+      const t = (nx * (px - ox) + ny * (py - oy) + nz * (pz - oz)) / nd;
+      if (t < 0) return false;
+      out[0] = ox + dx * t; out[1] = oy + dy * t; out[2] = oz + dz * t;
+      return true;
+    }
+    function _kfFreeArm(ev, idx) {
+      const kf = _gzSelKfObj();
+      if (!kf || !kf.pos || kf.pos.length !== 3) return;
+      _kfFreeIdx = idx; _kfFreeMoved = false;
+      _kfFreeStartX = ev.clientX; _kfFreeStartY = ev.clientY;
+      _kfFreePid = (ev.pointerId != null) ? ev.pointerId : -1;
+      camera.getWorldDirection(_KF_FREE_N);              // camera-facing plane
+      _KF_FREE_P.set(kf.pos[0], kf.pos[1], kf.pos[2]);   // through the keyframe
+      window.addEventListener('pointermove', _kfFreeMove, true);
+      window.addEventListener('pointerup', _kfFreeUp, true);
+      window.addEventListener('pointercancel', _kfFreeUp, true);
+    }
+    function _kfFreeMove(ev) {
+      if (_kfFreeIdx < 0) return;
+      if (_kfFreePid !== -1 && ev.pointerId != null &&
+          ev.pointerId !== _kfFreePid) return;
+      if (!_kfFreeMoved) {
+        const ax = ev.clientX - _kfFreeStartX, ay = ev.clientY - _kfFreeStartY;
+        if (ax * ax + ay * ay < _KF_DRAG_PX * _KF_DRAG_PX) return;  // still a click
+        _kfFreeMoved = true;
+        try {
+          if (typeof EditorModuleRegistry !== 'undefined' &&
+              typeof EditorModuleRegistry.pushUndo === 'function') {
+            EditorModuleRegistry.pushUndo('kf-free-drag');   // gesture-start, once
+          }
+        } catch (e) {}
+        _gzStopTour();
+        InteractionManager.requestPointer('tool');
+        controls.enabled = false;
+      }
+      if (_gzSelKf !== _kfFreeIdx || !_gzProxy) return;   // rebuild changed sel
+      const rect = renderer.domElement.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      _KF_FREE_NDC.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+      _KF_FREE_NDC.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+      _raycaster.setFromCamera(_KF_FREE_NDC, camera);
+      const r = _raycaster.ray;
+      if (_kfPlaneHit(r.origin.x, r.origin.y, r.origin.z,
+            r.direction.x, r.direction.y, r.direction.z,
+            _KF_FREE_N.x, _KF_FREE_N.y, _KF_FREE_N.z,
+            _KF_FREE_P.x, _KF_FREE_P.y, _KF_FREE_P.z, _KF_FREE_HIT)) {
+        _gzProxy.position.set(_KF_FREE_HIT[0], _KF_FREE_HIT[1], _KF_FREE_HIT[2]);
+        _gzProxy.updateMatrixWorld(true);
+        _gzWriteProxyToKf();   // kf.pos write + _gzAfterEdit (rebuild) -- same as gizmo
+      }
+      if (ev.cancelable) ev.preventDefault();
+    }
+    function _kfFreeUp(ev) {
+      if (_kfFreeIdx < 0) return;
+      if (_kfFreePid !== -1 && ev && ev.type !== 'pointercancel' &&
+          ev.pointerId != null && ev.pointerId !== _kfFreePid) return;
+      window.removeEventListener('pointermove', _kfFreeMove, true);
+      window.removeEventListener('pointerup', _kfFreeUp, true);
+      window.removeEventListener('pointercancel', _kfFreeUp, true);
+      const wasMoving = _kfFreeMoved;
+      _kfFreeIdx = -1; _kfFreeMoved = false; _kfFreePid = -1;
+      if (wasMoving) {
+        InteractionManager.releasePointer('tool');
+        if (!InteractionManager.isCameraOwned()) controls.enabled = true;
+        try { _gzApplySpace(); } catch (e) {}   // resync gizmo proxy + handles
+      }
+    }
+    function _gzOnCanvasDown(ev) {
+      if (!ModeManager.is('author')) return;
+      if (ev.button !== undefined && ev.button !== 0) return;
+      // B1 -- NAVIGATION SUPREMACY: Alt+Left ALWAYS orbits the
+      //   camera, overriding gizmo / tangent-handle / frustum
+      //   selection no matter what is under the pointer. Return at
+      //   the VERY TOP (before the tangent retarget + every pick) so
+      //   this capture handler never stopPropagation()s -> the event
+      //   bubbles to OrbitControls' own (bubble-phase) pointerdown,
+      //   which maps plain LEFT -> ROTATE. The TransformControls
+      //   instances are ALSO neutralised for the gesture by the
+      //   window-level Alt guard registered below (a capture-phase
+      //   return alone cannot stop TC's own bubble pointerdown -- the
+      //   inverse of the _gzPointerOnGizmo problem). _gzAltOrbiting
+      //   stays true until the matching pointerup/cancel so TC is
+      //   disabled for the whole drag.
+      if (ev.altKey) return;
+      if (_gzAltOrbiting) return;   // mid Alt-orbit (TC neutralised)
+      if (_gzDragging || _tanDragging) return;   // a gizmo owns it
+      // 1. The TANGENT handles are visually TOPMOST. FIRST re-point
+      //    the live handle TC onto whichever handle SQUARE the
+      //    pointer is over (one-gesture grab: the TC is already
+      //    attached+live from _tanShow; this just switches it to the
+      //    correct in/out proxy and parks it under the pointer). THEN
+      //    the yield check below sees a handle under the pointer and
+      //    returns -- TC's own bubble-phase pointerDown drives the
+      //    drag on THIS SAME pointerdown (the proven keyframe-gizmo
+      //    no-starvation pattern; capture-phase stopPropagation here
+      //    would starve it).
+      _tanRetargetForPointer(ev.clientX, ev.clientY);
+      if (_tanPointerOnGizmo(ev.clientX, ev.clientY)) return;
+      // 2. If the keyframe gizmo's own axes were hit, TransformControls
+      //    handles it (it has its own bubble-phase pointer listeners).
+      //    We MUST NOT pick a frustum NOR stopPropagation() here --
+      //    doing so starves TC's pointerDown() and the gizmo becomes
+      //    undraggable by a real mouse (the long-standing reason a
+      //    real handle drag "did not move the keyframe" -- only the
+      //    programmatic test API ever moved it). Yield it untouched.
+      if (_gzPointerOnGizmo(ev.clientX, ev.clientY)) return;
+      // 3. FALLBACK ONLY: a click on a tangent-handle SQUARE when the
+      //    TC was not yet live (the lazy-import race on the very first
+      //    click after a fresh page load -- step 1's retarget needs
+      //    _tanCtl to exist). Attach the handle TC so the NEXT real
+      //    drag works (one gesture thereafter). The normal path is
+      //    step 1 (retarget) + the yield, which drags in ONE gesture;
+      //    this branch only catches the cold-start race so the click
+      //    is not wasted. Wins over the frustum pick (the handles
+      //    belong to the already-selected keyframe, on top of it).
+      const side = _tanPickBox(ev.clientX, ev.clientY);
+      if (side) {
+        _tanAttachSide(side);
+        ev.stopPropagation();
+        return;
+      }
+      // 4. Otherwise: a click on a trajectory frustum selects that
+      //    keyframe (and shows its tangent handles if it is bezier).
+      const idx = _gzPickFrustum(ev.clientX, ev.clientY);
+      if (idx >= 0) {
+        _gzAttach(idx);
+        // A frustum pick is an editing gesture, not an orbit: stop
+        // the event so OrbitControls does not also start a drag
+        // from the same pointerdown.
+        ev.stopPropagation();
+        // R5 item 6: ARM the screen-plane free-drag so the SAME
+        // pointerdown's drag moves this keyframe in one gesture (no
+        // second click to grab a gizmo axis). Threshold-gated: a pure
+        // click never arms the move -> select-only behaviour unchanged.
+        // _gzAttach set _gzSelKf=idx + parked _gzProxy synchronously, so
+        // the proxy is ready for the free-drag immediately.
+        _kfFreeArm(ev, idx);
+        return;
+      }
+      // 5. R2 #8 (2026-05-21): EMPTY-SPACE drag while PAUSED takes over.
+      //    A paused tour keeps _player NON-null (the pause is a freeze,
+      //    not a stop -- Phase-11A-Issue-5), and the scrub/pause path
+      //    set controls.enabled=false, so tick()'s
+      //    `if (!_player) controls.update()` is skipped -> OrbitControls
+      //    is inert and the user CANNOT grab the camera out of a pause
+      //    (the reported "can't Alt-rotate / drag out of a paused
+      //    camera"). There is no separate author left-drag binding: a
+      //    left-drag on empty canvas goes straight to OrbitControls'
+      //    own (bubble-phase) canvas listener. So here -- a plain-left
+      //    pointerdown on EMPTY space (no gizmo/handle/frustum was hit
+      //    above; not mid gizmo drag) while paused -- we stopPath()
+      //    (which, after R2 #9, re-syncs OrbitControls to the live held
+      //    pose + re-enables it WITHOUT a snap) and DO NOT
+      //    stopPropagation, so this SAME pointerdown bubbles to
+      //    OrbitControls and the orbit begins from where the camera
+      //    sits. Alt+left is handled in _gzAltDown (it returns early
+      //    above on ev.altKey). Gated to author mode (the handler's top
+      //    guard) + paused state, so a normal author click on empty
+      //    space when NOT paused is byte-behaviourally unchanged.
+      if (typeof _pathPlayState === 'function' &&
+          _pathPlayState() === 'paused') {
+        try { stopPath(); } catch (e) {}
+      }
+    }
+    // ---- B1 Alt-orbit TransformControls neutraliser. _gzOnCanvasDown
+    //   already returns early on ev.altKey (so it never
+    //   stopPropagation()s and the event reaches OrbitControls). But
+    //   each TransformControls instance (_gzCtl, _tanCtl) has its OWN
+    //   bubble-phase pointerdown that starts a drag whenever its hover
+    //   axis is set -- a capture-phase return cannot stop that (the
+    //   inverse of _gzPointerOnGizmo's problem). So on an Alt+Left
+    //   pointerdown, disable BOTH controls for the duration of the
+    //   gesture and restore them EXACTLY to their prior enabled state
+    //   on the matching pointerup/cancel (they may legitimately be
+    //   disabled already). OrbitControls is NOT gated here (the
+    //   auto-tour is already suppressed in author mode and the left-
+    //   orbit path has no _player block) -> Alt+Left = clean orbit.
+    //   Registered in CAPTURE phase on window so it runs before TC's
+    //   domElement-level bubble pointerdown.
+    function _gzAltDown(ev) {
+      if (!ModeManager.is('author')) return;
+      if (ev.button !== undefined && ev.button !== 0) return;
+      if (!ev.altKey) return;
+      if (_gzAltOrbiting) return;        // already neutralised
+      _gzAltOrbiting = true;
+      _gzAltPid = (ev.pointerId != null) ? ev.pointerId : -1;
+      if (_gzCtl) {
+        _gzAltPrevGz = _gzCtl.enabled;
+        _gzCtl.enabled = false;
+      }
+      if (_tanCtl) {
+        _gzAltPrevTan = _tanCtl.enabled;
+        _tanCtl.enabled = false;
+      }
+      // R2 #8 (2026-05-21): Alt+left while PAUSED takes over the camera.
+      // The pause keeps _player non-null + controls.enabled=false, so
+      // OrbitControls is inert (tick() skips controls.update() while
+      // _player). Alt+left is the documented "rotate out of a paused
+      // camera" gesture; this handler already neutralises TC and lets
+      // the event bubble to OrbitControls (it never stopPropagation()s
+      // and _gzOnCanvasDown returns early on ev.altKey). So stopPath()
+      // here (after R2 #9, a clean re-sync + re-enable WITHOUT a snap)
+      // frees the camera, and this SAME Alt+left pointerdown bubbles to
+      // OrbitControls -- which maps LEFT->ROTATE (controls.mouseButtons)
+      // regardless of Alt -- so the orbit begins from the held pose.
+      // Identity-checked via _pathPlayState so a non-paused Alt-orbit
+      // (the existing gizmo navigation-supremacy gesture) is unchanged.
+      try {
+        if (typeof _pathPlayState === 'function' &&
+            _pathPlayState() === 'paused') {
+          stopPath();
+        }
+      } catch (e) {}
+    }
+    function _gzAltRestore(ev) {
+      if (!_gzAltOrbiting) return;
+      // Only IGNORE a pointerup whose pointerId is present AND differs
+      // from the initiating pointer's (a foreign second touch/pen must
+      // not re-enable TC mid Alt-orbit). A pointercancel, or any event
+      // with no usable pointerId, ALWAYS tears down -- wedge-safety:
+      // it must be impossible to end stuck-orbiting / TC-disabled.
+      if (ev && ev.type !== 'pointercancel' &&
+          ev.pointerId != null && ev.pointerId !== _gzAltPid) return;
+      _gzAltOrbiting = false;
+      _gzAltPid = -1;
+      if (_gzCtl && _gzAltPrevGz !== null) {
+        _gzCtl.enabled = _gzAltPrevGz;
+      }
+      if (_tanCtl && _gzAltPrevTan !== null) {
+        _tanCtl.enabled = _gzAltPrevTan;
+      }
+      _gzAltPrevGz = null;
+      _gzAltPrevTan = null;
+    }
+    window.addEventListener('pointerdown', _gzAltDown, true);
+    window.addEventListener('pointerup', _gzAltRestore);
+    window.addEventListener('pointercancel', _gzAltRestore);
+
+    // Capture phase so we see the pointerdown before OrbitControls'
+    // own canvas listener (it is attached without capture); only
+    // when we actually consume a frustum hit do we stopPropagation.
+    // A pointerdown on a gizmo handle is yielded untouched (above)
+    // so TransformControls' own bubble-phase listener drives the
+    // drag -- capture-phase stopPropagation would otherwise kill it.
+    renderer.domElement.addEventListener(
+      'pointerdown', _gzOnCanvasDown, true);

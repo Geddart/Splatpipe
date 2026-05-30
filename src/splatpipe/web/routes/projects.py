@@ -15,6 +15,7 @@ from ...core.constants import (
     STEP_CLEAN, STEP_TRAIN, STEP_REVIEW, STEP_ASSEMBLE, STEP_EXPORT,
     FOLDER_COLMAP_SOURCE, FOLDER_COLMAP_CLEAN, FOLDER_TRAINING, FOLDER_REVIEW, FOLDER_OUTPUT,
 )
+from ...core.path_safety import PathContainmentError, ensure_contained
 from ...core.project import Project
 from ..runner import get_runner
 
@@ -992,7 +993,20 @@ async def set_default_path(request: Request, project_path: str):
 
 @router.post("/{project_path:path}/add-keyframe/{path_id}")
 async def add_keyframe(request: Request, project_path: str, path_id: str):
-    """Append a keyframe to a path. Body: {t?, pos, quat?, look_at?, fov, ...}."""
+    """Append a keyframe to a path.
+
+    Body: {t?, record_elapsed_s?, pos, quat?, look_at?, fov, ...}
+
+    ``record_elapsed_s`` (optional float): client-measured recording elapsed
+    seconds from the start of the recording session.  When present and
+    numeric the stored keyframe ``t`` is set to exactly
+    ``float(record_elapsed_s)`` so that the real flown pacing is preserved
+    (including 0.0 for the first keyframe — ``None``-check, NOT truthiness).
+    When absent or malformed (non-numeric value) the legacy
+    ``last_t + 2.0`` gap is used, which keeps the manual "+ Record kf" path
+    (no live recording session) unchanged and matches the silent-fallback
+    idiom used by other optional numeric fields in this file.
+    """
     body = await request.json()
     proj = Project(Path(project_path))
     from ...core.path_io import mutate_paths
@@ -1001,9 +1015,22 @@ async def add_keyframe(request: Request, project_path: str, path_id: str):
         for p in paths:
             if p.get("id") == path_id:
                 kfs = p.setdefault("keyframes", [])
-                # Default t = last_t + 2.0 if not provided
+                # Resolve t: prefer client-supplied recording elapsed time
+                # (record_elapsed_s) so the real flown pacing is preserved.
+                # Fall back to last_t + 2.0 for the manual "+ Record kf" path,
+                # or if record_elapsed_s is present but malformed (non-numeric)
+                # — consistent with the silent-fallback idiom for optional
+                # numeric fields elsewhere in this file (lines ~800-803,
+                # ~820-823, ~853-856, ~1094).
                 if "t" not in body:
-                    body["t"] = (kfs[-1]["t"] + 2.0) if kfs else 0.0
+                    record_elapsed_s = body.get("record_elapsed_s")
+                    if record_elapsed_s is not None:
+                        try:
+                            body["t"] = float(record_elapsed_s)
+                        except (TypeError, ValueError):
+                            body["t"] = (kfs[-1]["t"] + 2.0) if kfs else 0.0
+                    else:
+                        body["t"] = (kfs[-1]["t"] + 2.0) if kfs else 0.0
                 body.setdefault("easing_out", "easeInOutCubic")
                 body.setdefault("hold_s", 0.0)
                 body.setdefault("annotation_id", None)
@@ -1190,20 +1217,305 @@ async def delete_audio(request: Request, project_path: str, index: int):
     return JSONResponse({"ok": True, "audio": saved})
 
 
+# Allow-listed audio extensions for the upload-audio route.
+# Matched case-insensitively against ``Path(name).suffix``.
+# Bug-audit #7 (2026-05-19): keep this tight; favour deny-by-default.
+_AUDIO_UPLOAD_ALLOWED_EXTS = {
+    ".mp3", ".wav", ".ogg", ".opus", ".m4a", ".aac", ".flac", ".webm",
+}
+# Defense-in-depth size cap for audio uploads. 50 MiB is well above any
+# normal scene-audio loop and far below any reasonable abuse vector.
+# (No project-wide audio size cap exists in config/defaults.toml; if one is
+# ever added, route this through it instead. The path-safety half of this
+# helper was extracted into ``core/path_safety.py`` -- the size-limit half
+# is still local to this route and can be moved alongside it later.)
+_AUDIO_UPLOAD_MAX_BYTES = 50 * 1024 * 1024
+
+
 @router.post("/{project_path:path}/upload-audio")
 async def upload_audio(request: Request, project_path: str):
-    """Upload an audio file to the project's assets/audio/ folder."""
+    """Upload an audio file to the project's assets/audio/ folder.
+
+    Hardened against path traversal per bug-audit-2026-05-19 #7:
+
+    * Strip path components via ``Path(name).name`` and reject any change.
+    * Reject empty / ``.`` / ``..`` / dotfile names.
+    * Allow-list audio extensions (case-insensitive).
+    * Cap the upload at 50 MB (Content-Length pre-check + streaming guard).
+    * Defense-in-depth: resolve the destination and confirm it lives inside
+      the project's ``assets/audio`` directory via ``Path.relative_to``.
+    * Collision policy: reject existing names with 409 (safer than silently
+      overwriting; user can rename + retry).
+    """
     form = await request.form()
     upload = form.get("file")
     if not upload or not hasattr(upload, "filename"):
-        return _toast("No file uploaded", "error")
+        return JSONResponse({"ok": False, "error": "No file uploaded"}, status_code=400)
+
+    raw_name = upload.filename or ""
+
+    # --- Filename sanitisation ----------------------------------------------
+    # Path(name).name on Windows still resolves backslashes as separators,
+    # but not on POSIX; normalise both first so the rejection is OS-uniform.
+    if "/" in raw_name or "\\" in raw_name:
+        return JSONResponse(
+            {"ok": False, "error": "Filename must not contain path separators"},
+            status_code=400,
+        )
+    # Drive-letter prefix like ``C:foo`` -- Path.name keeps only ``foo`` on
+    # POSIX but the COLON itself is a hard-no for a destination filename on
+    # Windows; reject it everywhere for parity.
+    if ":" in raw_name:
+        return JSONResponse(
+            {"ok": False, "error": "Filename must not contain path separators"},
+            status_code=400,
+        )
+    safe_name = Path(raw_name).name
+    if safe_name != raw_name:
+        # ``Path(name).name`` removed something -- a separator, a drive
+        # prefix, etc. Per the audit, reject rather than try to recover.
+        return JSONResponse(
+            {"ok": False, "error": "Filename was rewritten by sanitiser"},
+            status_code=400,
+        )
+    if not safe_name or safe_name in (".", "..") or safe_name.startswith("."):
+        return JSONResponse(
+            {"ok": False, "error": "Filename must not be empty or a dotfile"},
+            status_code=400,
+        )
+
+    # --- Extension allow-list -----------------------------------------------
+    if Path(safe_name).suffix.lower() not in _AUDIO_UPLOAD_ALLOWED_EXTS:
+        return JSONResponse(
+            {"ok": False, "error": "Unsupported audio file extension"},
+            status_code=400,
+        )
+
+    # --- Size cap (upfront) -------------------------------------------------
+    cl_header = request.headers.get("content-length")
+    if cl_header is not None:
+        try:
+            if int(cl_header) > _AUDIO_UPLOAD_MAX_BYTES:
+                return JSONResponse(
+                    {"ok": False, "error": "Audio file is too large"},
+                    status_code=413,
+                )
+        except ValueError:
+            # Malformed Content-Length -- fall through to the streaming guard.
+            pass
+
     proj = Project(Path(project_path))
     audio_dir = proj.root / "assets" / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
-    dest = audio_dir / upload.filename
-    content = await upload.read()
-    dest.write_bytes(content)
-    return JSONResponse({"ok": True, "path": f"assets/audio/{upload.filename}"})
+    dest = audio_dir / safe_name
+
+    # --- Defense-in-depth containment check ---------------------------------
+    # Require ``dest`` to live INSIDE ``audio_dir`` after resolution. Uses
+    # the shared ``ensure_contained`` helper (audit #6) so the sibling-prefix
+    # attack vector is closed identically here and in every other containment
+    # callsite in the project. The earlier filename sanitiser already
+    # rejects path separators; this is the defense-in-depth second line.
+    try:
+        ensure_contained(dest, audio_dir)
+    except PathContainmentError:
+        return JSONResponse(
+            {"ok": False, "error": "Resolved destination is outside the audio directory"},
+            status_code=400,
+        )
+
+    # --- Collision handling --------------------------------------------------
+    if dest.exists():
+        return JSONResponse(
+            {"ok": False, "error": f"File already exists: {safe_name}"},
+            status_code=409,
+        )
+
+    # --- Streaming read with size guard --------------------------------------
+    # Defensive against a missing/lying Content-Length: read in chunks and
+    # abort if the total exceeds the cap, without ever fully materialising
+    # the body in memory beyond the cap.
+    written = 0
+    try:
+        with open(dest, "wb") as fh:
+            while True:
+                chunk = await upload.read(64 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > _AUDIO_UPLOAD_MAX_BYTES:
+                    fh.close()
+                    try:
+                        dest.unlink()
+                    except OSError:
+                        pass
+                    return JSONResponse(
+                        {"ok": False, "error": "Audio file is too large"},
+                        status_code=413,
+                    )
+                fh.write(chunk)
+    except Exception:
+        # Best-effort cleanup of any partial write.
+        try:
+            if dest.exists():
+                dest.unlink()
+        except OSError:
+            pass
+        raise
+
+    return JSONResponse({"ok": True, "path": f"assets/audio/{safe_name}"})
+
+
+# Allow-listed image extensions for the upload-image route.
+# Matched case-insensitively against ``Path(name).suffix``.
+# Panorama backdrop assets (Phase 3 prep for the camera-keyframe editor's
+# PanoramaModule): only common web-deliverable LDR formats. ``.hdr`` /
+# ``.exr`` (HDR) and ``.webp`` are deliberately excluded per R7's 4K
+# equirectangular JPG size guidance -- favour deny-by-default.
+_IMAGE_UPLOAD_ALLOWED_EXTS = {".jpg", ".jpeg", ".png"}
+# Defense-in-depth size cap for image uploads. 5 MiB is well above any
+# realistic 4K equirectangular JPG (typically 2-4 MB) and bounds mobile
+# load to a reasonable budget.
+_IMAGE_UPLOAD_MAX_BYTES = 5 * 1024 * 1024
+
+
+@router.post("/{project_path:path}/upload-image")
+async def upload_image(request: Request, project_path: str):
+    """Upload a panorama backdrop image to the project's assets/panorama/ folder.
+
+    Hardened mirror of the #107 ``/upload-audio`` route:
+
+    * Strip path components via ``Path(name).name`` and reject any change.
+    * Reject empty / ``.`` / ``..`` / dotfile names.
+    * Allow-list image extensions (``.jpg`` / ``.jpeg`` / ``.png``,
+      case-insensitive). HDR formats (``.hdr`` / ``.exr``) and ``.webp``
+      are excluded per R7.
+    * Cap the upload at 5 MiB (Content-Length pre-check + streaming
+      guard so a lying header cannot bypass it).
+    * Defense-in-depth: resolve the destination and confirm it lives
+      inside the project's ``assets/panorama`` directory via the shared
+      ``core/path_safety.ensure_contained`` helper (audit #6 chokepoint).
+    * Collision policy: reject existing names with 409. Panorama is
+      one-per-scene; re-upload must be explicit.
+    """
+    form = await request.form()
+    upload = form.get("file")
+    if not upload or not hasattr(upload, "filename"):
+        return JSONResponse({"ok": False, "error": "No file uploaded"}, status_code=400)
+
+    raw_name = upload.filename or ""
+
+    # --- Filename sanitisation ----------------------------------------------
+    # Path(name).name on Windows still resolves backslashes as separators,
+    # but not on POSIX; normalise both first so the rejection is OS-uniform.
+    if "/" in raw_name or "\\" in raw_name:
+        return JSONResponse(
+            {"ok": False, "error": "Filename must not contain path separators"},
+            status_code=400,
+        )
+    # Drive-letter prefix like ``C:foo`` -- Path.name keeps only ``foo`` on
+    # POSIX but the COLON itself is a hard-no for a destination filename on
+    # Windows; reject it everywhere for parity.
+    if ":" in raw_name:
+        return JSONResponse(
+            {"ok": False, "error": "Filename must not contain path separators"},
+            status_code=400,
+        )
+    safe_name = Path(raw_name).name
+    if safe_name != raw_name:
+        # ``Path(name).name`` removed something -- a separator, a drive
+        # prefix, etc. Per the audit, reject rather than try to recover.
+        return JSONResponse(
+            {"ok": False, "error": "Filename was rewritten by sanitiser"},
+            status_code=400,
+        )
+    if not safe_name or safe_name in (".", "..") or safe_name.startswith("."):
+        return JSONResponse(
+            {"ok": False, "error": "Filename must not be empty or a dotfile"},
+            status_code=400,
+        )
+
+    # --- Extension allow-list -----------------------------------------------
+    if Path(safe_name).suffix.lower() not in _IMAGE_UPLOAD_ALLOWED_EXTS:
+        return JSONResponse(
+            {"ok": False, "error": "Unsupported image file extension"},
+            status_code=400,
+        )
+
+    # --- Size cap (upfront) -------------------------------------------------
+    cl_header = request.headers.get("content-length")
+    if cl_header is not None:
+        try:
+            if int(cl_header) > _IMAGE_UPLOAD_MAX_BYTES:
+                return JSONResponse(
+                    {"ok": False, "error": "Image file is too large"},
+                    status_code=413,
+                )
+        except ValueError:
+            # Malformed Content-Length -- fall through to the streaming guard.
+            pass
+
+    proj = Project(Path(project_path))
+    panorama_dir = proj.root / "assets" / "panorama"
+    panorama_dir.mkdir(parents=True, exist_ok=True)
+    dest = panorama_dir / safe_name
+
+    # --- Defense-in-depth containment check ---------------------------------
+    # Require ``dest`` to live INSIDE ``panorama_dir`` after resolution.
+    # Uses the shared ``ensure_contained`` helper (audit #6) so the
+    # sibling-prefix attack vector is closed identically here and in every
+    # other containment callsite in the project. The earlier filename
+    # sanitiser already rejects path separators; this is the second line.
+    try:
+        ensure_contained(dest, panorama_dir)
+    except PathContainmentError:
+        return JSONResponse(
+            {"ok": False, "error": "Resolved destination is outside the panorama directory"},
+            status_code=400,
+        )
+
+    # --- Collision handling --------------------------------------------------
+    # Panorama is one-per-scene; reject re-upload of the same name with 409
+    # so a user must explicitly delete + re-upload rather than silently
+    # clobbering a deliberate backdrop.
+    if dest.exists():
+        return JSONResponse(
+            {"ok": False, "error": f"File already exists: {safe_name}"},
+            status_code=409,
+        )
+
+    # --- Streaming read with size guard --------------------------------------
+    # Defensive against a missing/lying Content-Length: read in chunks and
+    # abort if the total exceeds the cap, without ever fully materialising
+    # the body in memory beyond the cap.
+    written = 0
+    try:
+        with open(dest, "wb") as fh:
+            while True:
+                chunk = await upload.read(64 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > _IMAGE_UPLOAD_MAX_BYTES:
+                    fh.close()
+                    try:
+                        dest.unlink()
+                    except OSError:
+                        pass
+                    return JSONResponse(
+                        {"ok": False, "error": "Image file is too large"},
+                        status_code=413,
+                    )
+                fh.write(chunk)
+    except Exception:
+        # Best-effort cleanup of any partial write.
+        try:
+            if dest.exists():
+                dest.unlink()
+        except OSError:
+            pass
+        raise
+
+    return JSONResponse({"ok": True, "path": f"assets/panorama/{safe_name}"})
 
 
 # --- Export settings ---
@@ -1266,9 +1578,13 @@ async def preview_file(project_path: str, file_path: str):
     """Serve output files for local PlayCanvas viewer preview."""
     proj = Project(Path(project_path))
     output_dir = proj.get_folder(FOLDER_OUTPUT)
-    full = (output_dir / file_path).resolve()
-    # Security: ensure file is inside output_dir
-    if not str(full).startswith(str(output_dir.resolve())):
+    # Audit #6: the old ``str(p).startswith(str(root))`` containment check
+    # was vulnerable to a sibling-prefix attack (``05_output_evil`` literally
+    # starts with ``05_output``). ``ensure_contained`` uses
+    # ``Path.resolve().relative_to()`` so only a real sub-path is accepted.
+    try:
+        full = ensure_contained(output_dir / file_path, output_dir)
+    except PathContainmentError:
         return HTMLResponse("Forbidden", status_code=403)
     if not full.is_file():
         return HTMLResponse("Not found", status_code=404)

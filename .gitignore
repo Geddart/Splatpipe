@@ -43,3 +43,11 @@ imgui.ini
 # DCC bridge distribution archives — re-build via `python tools/dcc-bridge/build.py`
 tools/dcc-bridge/splatpipe_bridge.zip
 tools/dcc-bridge/splatpipe_bridge.mzp
+
+# Generated viewer-under-test for the Playwright harness -- all the
+# _gen_harness_viewer fixture dirs (_viewer, _viewer_path, _viewer_lin,
+# _viewer_nolin, _viewer_step, _viewer_intro, _viewer_intronone, plus any
+# future task adds). The glob is dir-anchored (trailing /) so it never
+# matches tracked files like tests/manual/keyframe-editor.html.
+# (re-build via `python -m splatpipe.viewers.spark._gen_harness_viewer`)
+tests/manual/_viewer*/

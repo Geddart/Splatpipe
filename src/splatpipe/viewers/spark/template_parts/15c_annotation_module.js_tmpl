@@ -1,0 +1,1355 @@
+  // ============================================================
+  //  AnnotationModule (Phase 5 -- editor-arc-design #122 §4.2 + §11.6)
+  // ------------------------------------------------------------
+  //  Per user-locked Q6 (2026-05-20 17:38 voice) -- annotations are
+  //  BOTH timeline-animatable AND distance-based interactive:
+  //
+  //    1. A small dot is ALWAYS visible in 3D world space at `pos`
+  //       while `playhead.time in [t_in, t_out]` (fading in/out
+  //       across `fade_ms`).
+  //    2. When `camera.distance(pos) < unfold_radius_m`, the dot
+  //       unfolds into a full title + text + (optional) media panel.
+  //    3. Clicking the dot manually toggles the unfold (overrides
+  //       distance check until camera moves away again).
+  //    4. Outside the `[t_in, t_out]` window the annotation is fully
+  //       hidden (no dot, no panel) -- cinematic appear/disappear.
+  //
+  //  The expanded AnnotationDict schema (kind / unfold_radius_m /
+  //  t_in / t_out / fade_ms / media_url / billboard / id) was
+  //  shipped in 9fa1405 (core/path_io.py + ANNOTATION_DEFAULTS).
+  //  This JS module is the canonical renderer + editor.
+  //
+  //  CONTRACT (per spec §4.2 + the Phase-2A EditorModule shape):
+  //    stateKey         'annotations'
+  //    defaultModes     ['author', 'user', 'embed']   (visible everywhere
+  //                                                    -- author also edits)
+  //    mount/unmount    builds + tears down the dot DOM, registers an
+  //                     OverlayScene tick layer (active in all modes)
+  //    getDirtyState    {isDirty, patchObject} -- conservative; dirty
+  //                     when the current cfg.annotations slice differs
+  //                     from the last clean baseline
+  //    markClean        snapshots the current slice as the new clean
+  //                     baseline (called by the Save dispatcher)
+  //    onCfgChange      wholesale cfg replacement (an EditHistory undo)
+  //                     -- rebuilds DOM if the annotations slice changed
+  //    timelineLane     {rows:1, label:'ann', render(ctx, x, y, w, h, t)}
+  //                     -- contributes annotation [t_in..t_out] bars to
+  //                     the Phase-2D multi-lane bottom-timeline
+  //    renderSceneSettings(parentEl)  -- appends the Annotations section
+  //                                      into the Scene Settings drawer
+  //
+  //  LEGACY-OWN-OUT: the legacy CSS2DObject construction in 08_input
+  //  builds `markerObjs[]` from `cfg.annotations` BEFORE this module
+  //  mounts (fragment-order 08 < 15c). On mount this module tears
+  //  down every entry in `markerObjs` and clears the array so the
+  //  module is the SOLE owner of annotation DOM thereafter. Existing
+  //  consumers of `markerObjs` (10_camera_select line ~800,
+  //  18_frame_loop line ~398) walk the empty array -- no-op, safe.
+  //  The path-active highlight (the `.ann-dot.path-active` class
+  //  toggling those consumers do) is handled by this module's own
+  //  per-frame tick reading `_lastTriggeredAnnotation` -- so the
+  //  cinematic "active annotation glow" behaviour is preserved.
+  //
+  //  TEST SURFACE: window.__editor.annotations exposes:
+  //    { count, ids(), get(id), dotEl(id), panelEl(id),
+  //      isUnfolded(id), toggleUnfold(id), forceTick(time?),
+  //      timelineLane (the raw object), settingsEl (the section
+  //      <details>), addAt(pos) (places at vec3) }
+  // ============================================================
+  (function _annInit() {
+    if (typeof EditorModuleRegistry === 'undefined') return;
+    if (typeof THREE === 'undefined') return;
+
+    // ---- Live cfg + slice helpers (mirror 15a's pattern). The module
+    //      owns `cfg.annotations`; never read another module's slot.
+    function _liveCfg() {
+      try { if (typeof cfg !== 'undefined' && cfg) return cfg; }
+      catch (e) {}
+      try { if (window.cfg) return window.cfg; }
+      catch (e) {}
+      return null;
+    }
+    function _slice() {
+      const c = _liveCfg();
+      if (!c) return [];
+      return Array.isArray(c.annotations) ? c.annotations : [];
+    }
+    function _sig(slice) {
+      try { return JSON.stringify(slice || []); }
+      catch (e) { return ''; }
+    }
+
+    // ---- JS mirror of core/path_io.ANNOTATION_DEFAULTS (the source of
+    //      truth lives in 9fa1405 -- keep these in lockstep when the
+    //      Python defaults change).
+    const ANNOTATION_DEFAULTS = {
+      kind: 'dot_unfold',
+      unfold_radius_m: 5.0,
+      t_in: 0.0,
+      t_out: 999.0,
+      fade_ms: 300,
+      media_url: null,
+      billboard: true,
+    };
+    // ---- JS mirror of core/path_io._new_annotation_id() -- the Python
+    //      helper uses secrets.token_hex(4); browsers expose
+    //      crypto.getRandomValues for the same 32-bit space (4 bytes ->
+    //      8 lowercase hex chars). The Phase-5 editor uses this for any
+    //      NEW annotation created via the "+ Add annotation" button.
+    function _newAnnotationId() {
+      try {
+        const a = new Uint8Array(4);
+        (window.crypto || window.msCrypto).getRandomValues(a);
+        let s = '';
+        for (let i = 0; i < a.length; i++) {
+          const h = a[i].toString(16);
+          s += (h.length < 2) ? ('0' + h) : h;
+        }
+        return 'ann_' + s;
+      } catch (e) {
+        // Fallback: Math.random based -- non-crypto, still good enough
+        // for collision avoidance in a single authoring session.
+        const r = Math.floor(Math.random() * 0xffffffff).toString(16);
+        return 'ann_' + ('00000000' + r).slice(-8);
+      }
+    }
+    // ---- JS mirror of core/path_io.upgrade_annotation() -- legacy
+    //      4-field entries (`{label, title, text, pos}`) get every Q6
+    //      field defaulted at READ time. The input is never mutated.
+    function _upgradeAnnotation(ann) {
+      // UX-Phase11G WF-M (#145): upgrade IN PLACE (mutate + return the SAME
+      // object) instead of returning an Object.assign copy. _buildFromCfg
+      // calls this over the LIVE cfg.annotations slice and stores the result
+      // as the card's `s.ann`; if it were a copy, every drawer-card edit
+      // (title/text -- AND the pre-existing kind/radius/t_in/t_out/fade_ms
+      // handlers) would mutate the COPY while cfg.annotations[i] kept the old
+      // value, so the edit was LOST on the next _rebuild() (the panel rebuilt
+      // from the stale cfg entry -> empty) AND on save (collectPatch reads
+      // cfg.annotations). Mutating in place keeps s.ann === cfg.annotations[i]
+      // so an edit persists to cfg + survives a rebuild. Idempotent: it only
+      // fills MISSING default keys + assigns a missing id (defaults never
+      // overwrite an existing value), so re-upgrading an already-upgraded
+      // entry is a no-op.
+      const out = ann || {};
+      if (typeof out.id !== 'string' || !out.id) out.id = _newAnnotationId();
+      for (const k in ANNOTATION_DEFAULTS) {
+        if (!Object.prototype.hasOwnProperty.call(out, k) ||
+            out[k] === undefined) {
+          out[k] = ANNOTATION_DEFAULTS[k];
+        }
+      }
+      return out;
+    }
+
+    // ---- Per-frame playhead time. The master playhead is owned by
+    //      09_playback_spline's `_player` + `_t0`; we read them via
+    //      closure (same-block scope). When no playback is active,
+    //      time defaults to 0 -- which is inside the default
+    //      [0..999] window so an always-on annotation stays visible
+    //      when the user has not started a tour. (A scrub-paused
+    //      preview holds the camera; the playhead is still pinned to
+    //      _pausedAt via the 09 helpers.)
+    function _playheadTime() {
+      try {
+        if (typeof _player !== 'undefined' && _player) {
+          const sp = _player.playSpeed || 1.0;
+          let tn = ((performance.now() - _t0) / 1000) * sp;
+          if (_player.loop && _player.duration > 0 &&
+              tn > _player.duration) {
+            tn = tn % _player.duration;
+          }
+          return Math.max(0, tn);
+        }
+      } catch (e) {}
+      return 0;
+    }
+
+    // ---- Timeline opacity at a given playhead time. Linear fade
+    //      in/out per spec §4.2:
+    //        opacity = smoothstep(t_in, t_in + fade_s, t)
+    //                 - smoothstep(t_out - fade_s, t_out, t)
+    //      where fade_s = max(fade_ms, 0) / 1000. Outside the window
+    //      opacity = 0 (annotation fully hidden).
+    function _smoothstep(a, b, x) {
+      if (b <= a) return x >= b ? 1 : 0;
+      const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
+      return t * t * (3 - 2 * t);
+    }
+    function _timelineOpacity(ann, tNow, cinematic) {
+      // #170: `cinematic` = is a real cinematic tour driving the playhead
+      // right now? When it is NOT (the scene is idle, or our OWN
+      // annotation-fly / idle-orbit drives the camera), an annotation with
+      // the DEFAULT always-on window ([t_in~0, t_out>=998]) is a navigable
+      // point-of-interest and is shown at FULL opacity -- instead of being
+      // faded out by the t=0 fade-in (with no advancing playhead,
+      // _playheadTime() is pinned at 0, which the fade would otherwise
+      // render permanently invisible). Timed annotations keep their window
+      // behaviour; during a real tour EVERYONE evaluates the window so the
+      // cinematic appear/disappear is preserved. Back-compat: an ABSENT
+      // `cinematic` arg (the legacy test-surface callers) is treated as
+      // `true`, so the window logic runs byte-for-byte as before.
+      if (cinematic === undefined) cinematic = true;
+      const tIn = (typeof ann.t_in === 'number') ? ann.t_in : 0.0;
+      const tOut = (typeof ann.t_out === 'number') ? ann.t_out : 999.0;
+      if (!cinematic && tIn <= 1e-3 && tOut >= 998) return 1;
+      const fadeS = Math.max(0, ann.fade_ms || 0) / 1000;
+      if (tNow < tIn - 1e-6 || tNow > tOut + 1e-6) return 0;
+      const fadeInEnd = Math.min(tIn + fadeS, (tIn + tOut) * 0.5);
+      const fadeOutStart = Math.max(tOut - fadeS, (tIn + tOut) * 0.5);
+      const rise = (fadeS > 0)
+        ? _smoothstep(tIn, fadeInEnd, tNow) : (tNow >= tIn ? 1 : 0);
+      const fall = (fadeS > 0)
+        ? _smoothstep(fadeOutStart, tOut, tNow) : (tNow >= tOut ? 1 : 0);
+      return Math.max(0, Math.min(1, rise - fall));
+    }
+
+    // ============================================================
+    //  #170 annotation navigation (points-of-interest)
+    // ------------------------------------------------------------
+    //  Study of the SuperSplat viewer control schema (MIT;
+    //  camera-manager.ts `annotation.activate`): activating an
+    //  annotation runs an EASE-OUT reposition between two full camera
+    //  poses (their fixed ~1 s `transitionTimer` + `easeOut`). We adopt
+    //  the schema but improve two things the user asked for:
+    //    * SPEED-DEPENDENT duration (a tiny hop is quick, a long jump
+    //      unhurried) instead of a fixed 1 s, and
+    //    * reuse OUR ONE camera driver -- a 2-keyframe Hermite path fed
+    //      to the EXISTING buildPlayer/_player so the render loop (18)
+    //      drives + self-terminates it, never a 2nd rAF or bespoke lerp.
+    //  SuperSplat annotations store a full {position,target,fov}; OURS
+    //  store only a world `pos`, so we COMPUTE a framing pose: dolly
+    //  along the current camera->pos ray to a distance inside the
+    //  unfold radius (panel opens on arrival) and look at the point.
+    // ------------------------------------------------------------
+    const ANN_FLY_SPEED_MPS = 6.0;   // metres/sec the dolly aims for
+    const ANN_FLY_MIN_S = 0.5;       // floor (a pure reorient stays smooth)
+    const ANN_FLY_MAX_S = 2.4;       // ceiling (never a tedious crawl)
+    const ANN_FRAME_FRAC = 0.6;      // end distance = frac * unfold_radius
+    const ANN_FRAME_MIN_M = 0.5;     // never end exactly ON the point
+    // Pure: travel distance (m) -> fly duration (s). Clamped so the move
+    // is speed-dependent but bounded. Node-tested (test_annotation_nav).
+    function _annFlyDuration(distM) {
+      const d = (typeof distM === 'number' && isFinite(distM) && distM > 0) ? distM : 0;
+      const dur = d / ANN_FLY_SPEED_MPS;
+      return Math.max(ANN_FLY_MIN_S, Math.min(ANN_FLY_MAX_S, dur));
+    }
+    // Pure: current cam->annotation distance + the annotation's unfold
+    // radius -> the END distance the dolly stops at. Never dollies OUTWARD
+    // past the framing distance (min with current), never ends on the
+    // point (ANN_FRAME_MIN_M floor), and is always <= frac*radius so
+    // arrival is INSIDE the unfold radius (the panel opens). Node-tested.
+    function _annEndDist(curDist, radius) {
+      const r = (typeof radius === 'number' && isFinite(radius) && radius > 0) ? radius : 5.0;
+      const frame = r * ANN_FRAME_FRAC;
+      const cur = (typeof curDist === 'number' && isFinite(curDist) && curDist > 0) ? curDist : frame;
+      return Math.max(ANN_FRAME_MIN_M, Math.min(frame, cur));
+    }
+    // ---- Is a real CINEMATIC tour driving the playhead right now? Our
+    //      own annotation-fly + the idle-orbit + a bench are NOT cinematic
+    //      content playheads, and a null _player is no playhead at all.
+    //      Drives the _timelineOpacity POI override above so navigable
+    //      points-of-interest stay visible when nothing is touring.
+    function _hasCinematicPlayhead() {
+      try {
+        if (typeof _player === 'undefined' || !_player) return false;
+        if (typeof _benchActive !== 'undefined' && _benchActive) return false;
+        if (typeof _activePathId !== 'undefined' &&
+            (_activePathId === 'ann-fly' || _activePathId === 'idle-orbit' ||
+             _activePathId === 'orbit')) return false;
+        return true;
+      } catch (e) { return false; }
+    }
+    // ---- True when the camera is OUTSIDE an annotation's unfold radius
+    //      (so its panel cannot meaningfully be read in place). Used to
+    //      decide click-a-dot-flies-to-it vs toggle-in-place.
+    function _annCamOutsideRadius(state) {
+      try {
+        const ann = state && state.ann;
+        if (!ann || !Array.isArray(ann.pos) || ann.pos.length < 3) return false;
+        if (typeof camera === 'undefined' || !camera || !camera.position) return false;
+        const dx = camera.position.x - ann.pos[0];
+        const dy = camera.position.y - ann.pos[1];
+        const dz = camera.position.z - ann.pos[2];
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        return dist >= (ann.unfold_radius_m || 5.0);
+      } catch (e) { return false; }
+    }
+
+    // ---- Per-annotation render-state record. One per upgraded entry.
+    //      `manual` is the explicit "user clicked the dot" override --
+    //      true = always unfolded, false = always folded, null = let
+    //      distance decide (the default). The manual flag clears when
+    //      the camera moves AWAY past the radius (see _annTick).
+    const _annStates = [];   // [{ann, dotEl, dotMarker, panelEl,
+                             //   panelMarker, isUnfolded, manual,
+                             //   wasInRadius, lastOpacity}]
+    let _annContainer = null; // CSS2D container (parents the dotMarker
+                              // CSS2DObjects so disposeAll detaches in
+                              // one parent removal).
+
+    // ---- Build a single dot DOM element. Class names mirror the
+    //      legacy `.ann-dot` so the existing CSS in 02a_styles_main
+    //      (the orange dot + `.path-active` glow) styles us unchanged.
+    function _buildDotEl(ann) {
+      const wrap = document.createElement('div');
+      wrap.className = 'ann-marker';
+      wrap.dataset.annId = ann.id;
+      // Inline-style cursor so click affordance is obvious even if
+      // .ann-marker CSS is missing on a future fork.
+      wrap.style.cursor = 'pointer';
+      const dot = document.createElement('div');
+      dot.className = 'ann-dot';
+      const lbl = (ann.label || '?').toString();
+      // Plain textContent -- no HTML injection from user-authored labels.
+      dot.textContent = lbl;
+      wrap.appendChild(dot);
+      return wrap;
+    }
+    // ---- Build a single unfolded-panel DOM element. Hidden by
+    //      default (display:none); the per-frame tick toggles based
+    //      on distance + manual override + timeline opacity.
+    function _buildPanelEl(ann) {
+      const panel = document.createElement('div');
+      panel.className = 'ann-panel';
+      panel.dataset.annId = ann.id;
+      // Lean visual styling inline so it works even without an
+      // editor-css-tmpl entry. Designed to be small + readable.
+      panel.style.cssText =
+        'position:absolute;left:50%;bottom:calc(100% + 10px);' +
+        'transform:translateX(-50%);min-width:160px;max-width:280px;' +
+        'background:rgba(0,0,0,0.92);color:#fff;padding:10px 12px;' +
+        'border-radius:8px;font:12px -apple-system,BlinkMacSystemFont,' +
+        'Segoe UI,sans-serif;line-height:1.4;display:none;' +
+        'pointer-events:auto;z-index:25;box-shadow:0 4px 14px ' +
+        'rgba(0,0,0,0.6);border:1px solid rgba(255,255,255,0.12);';
+      // Title (bold) + body text + optional media (img). All
+      // textContent / src-assigned (no innerHTML for the user copy).
+      const ann_title = (ann.title || '').toString();
+      const ann_text = (ann.text || '').toString();
+      if (ann_title) {
+        const h = document.createElement('div');
+        h.style.cssText = 'font-weight:600;margin:0 0 4px 0;' +
+          'font-size:13px;letter-spacing:0.01em;';
+        h.textContent = ann_title;
+        panel.appendChild(h);
+      }
+      if (ann_text) {
+        const p = document.createElement('div');
+        p.style.cssText = 'margin:0;opacity:0.9;white-space:normal;';
+        p.textContent = ann_text;
+        panel.appendChild(p);
+      }
+      if (typeof ann.media_url === 'string' && ann.media_url) {
+        const img = document.createElement('img');
+        img.src = ann.media_url;
+        img.alt = ann_title || ann_text || 'Annotation media';
+        img.style.cssText = 'display:block;max-width:100%;' +
+          'margin-top:8px;border-radius:4px;';
+        // Failure to load = silent hide; never throw + never log spam.
+        img.onerror = () => { try { img.style.display = 'none'; } catch (e) {} };
+        panel.appendChild(img);
+      }
+      return panel;
+    }
+
+    // ---- Tear down a single state record.
+    function _disposeState(s) {
+      if (!s) return;
+      try {
+        if (s.dotMarker && s.dotMarker.parent) {
+          s.dotMarker.parent.remove(s.dotMarker);
+        }
+      } catch (e) {}
+      try {
+        if (s.dotEl && s.dotEl.parentNode) {
+          s.dotEl.parentNode.removeChild(s.dotEl);
+        }
+      } catch (e) {}
+      try {
+        if (s.panelEl && s.panelEl.parentNode) {
+          s.panelEl.parentNode.removeChild(s.panelEl);
+        }
+      } catch (e) {}
+    }
+    function _disposeAll() {
+      while (_annStates.length) {
+        _disposeState(_annStates.pop());
+      }
+    }
+
+    // ---- Tear down the legacy `markerObjs` from 08_input.js_tmpl.
+    //      Required because 08 runs BEFORE this fragment and has
+    //      already created CSS2DObjects + DOM. Walks the array (which
+    //      is closure-scoped in 08 -- accessible here via the shared
+    //      async-block scope) and removes each element from the scene
+    //      + DOM. The array itself stays bound (its consumers in
+    //      10_camera_select + 18_frame_loop are length-tolerant) but
+    //      is empty after this -- they walk zero items, no-op.
+    function _teardownLegacy() {
+      try {
+        if (typeof markerObjs !== 'undefined' && Array.isArray(markerObjs)) {
+          for (const m of markerObjs) {
+            try {
+              if (m && m.obj && m.obj.parent) m.obj.parent.remove(m.obj);
+            } catch (e) {}
+            try {
+              if (m && m.el && m.el.parentNode) {
+                m.el.parentNode.removeChild(m.el);
+              }
+            } catch (e) {}
+          }
+          markerObjs.length = 0;
+        }
+      } catch (e) {}
+    }
+
+    // ---- Build all annotations from the live cfg. Reuses
+    //      CSS2DObject (imported in 04_js_prologue) for the dot and
+    //      a sibling panel positioned via CSS at the same screen
+    //      space. The panel is a sibling DIV inside the same wrap so
+    //      it inherits the dot's position via CSS rather than needing
+    //      its own CSS2DObject (which would double-anchor through
+    //      worldToScreen each frame).
+    function _buildFromCfg() {
+      const raw = _slice();
+      for (const a of raw) {
+        const ann = _upgradeAnnotation(a);
+        const dotEl = _buildDotEl(ann);
+        const panelEl = _buildPanelEl(ann);
+        dotEl.appendChild(panelEl);   // panel positions off the dot wrap
+        // CSS2DObject available in module scope (04_js_prologue ES
+        // import). Reuses the `scene` reference (07_setup_three_spark).
+        let dotMarker = null;
+        try {
+          dotMarker = new CSS2DObject(dotEl);
+          if (Array.isArray(ann.pos) && ann.pos.length >= 3) {
+            dotMarker.position.fromArray(ann.pos);
+          }
+          if (typeof scene !== 'undefined' && scene) scene.add(dotMarker);
+        } catch (e) {}
+        const state = {
+          ann: ann,
+          dotEl: dotEl,
+          dotMarker: dotMarker,
+          panelEl: panelEl,
+          isUnfolded: false,
+          manual: null,           // null = follow distance; true/false = override
+          wasInRadius: false,     // for clearing manual on camera-leaves-radius
+          lastOpacity: 1,
+        };
+        _annStates.push(state);
+        // Click handler -- toggle manual unfold. The state record is
+        // captured by closure so the same dotEl always toggles the
+        // same annotation. Pointer-down on the panel itself does NOT
+        // bubble back to the dot (pointer-events:auto on panel, we
+        // stopPropagation if a click target is inside the panel).
+        try {
+          dotEl.addEventListener('click', (ev) => {
+            // Clicks inside the panel = keep open (don't toggle).
+            if (panelEl.contains(ev.target) && ev.target !== panelEl) {
+              ev.stopPropagation();
+              return;
+            }
+            ev.stopPropagation();
+            // #170 SuperSplat-parity: clicking a dot you are FAR from (the
+            // camera is outside its unfold radius, so the panel cannot be
+            // read in place) flies the camera there and unfolds on arrival.
+            // A close-up click just toggles the panel in place. Author mode
+            // always toggles -- the author is positioning, not touring.
+            const authoring = (typeof ModeManager !== 'undefined' &&
+              ModeManager.is && ModeManager.is('author'));
+            if (!authoring && _annCamOutsideRadius(state)) {
+              _annNavToId(ann.id);
+              return;
+            }
+            // Toggle manual override -- if currently unfolded, fold;
+            // else unfold (regardless of distance). The wasInRadius
+            // bookkeeping clears manual once the camera moves away.
+            state.manual = !state.isUnfolded;
+          });
+        } catch (e) {}
+      }
+    }
+
+    // ---- Per-frame tick. ONE Euclidean distance per annotation +
+    //      one timeline-opacity lookup. With <=16 annotations per
+    //      scene this is sub-microsecond per frame -- negligible.
+    //      Outside the [t_in, t_out] window the dot + panel are
+    //      fully hidden (opacity=0 -> dot display:none + panel
+    //      display:none) so the cinematic "appear/disappear at
+    //      keyframe" effect is exact.
+    function _annTick(_t) {
+      const c = _liveCfg();
+      const camOK = (typeof camera !== 'undefined') && camera && camera.position;
+      const tNow = _playheadTime();
+      const cinematic = _hasCinematicPlayhead();   // #170 POI-visibility gate
+      // Read the legacy `_lastTriggeredAnnotation` (from 09) so the
+      // path-active glow class still toggles even after the module
+      // takes over rendering. Falls back to null when 09 hasn't run.
+      let triggered = null;
+      try {
+        if (typeof _lastTriggeredAnnotation !== 'undefined') {
+          triggered = _lastTriggeredAnnotation;
+        }
+      } catch (e) {}
+      for (const s of _annStates) {
+        const ann = s.ann;
+        let opacity = _timelineOpacity(ann, tNow, cinematic);
+        // #170 review: a manually-forced annotation (clicked open, or flown-to
+        // via the nav -- _annFlyTo sets state.manual=true) stays visible at
+        // idle even if its timeline window is closed; otherwise navigating to
+        // a TIMED point-of-interest would frame an INVISIBLE dot. During a
+        // real cinematic tour the window still wins (the !cinematic guard).
+        if (opacity <= 0 && s.manual === true && !cinematic) opacity = 1;
+        s.lastOpacity = opacity;
+        // Apply opacity to the wrap. opacity=0 -> visibility:hidden +
+        // pointer-events:none so the click hit-target also goes away
+        // (matches the "fully hidden outside window" contract).
+        s.dotEl.style.opacity = String(opacity);
+        if (opacity <= 0) {
+          s.dotEl.style.visibility = 'hidden';
+          s.dotEl.style.pointerEvents = 'none';
+          // Force-fold the panel if hidden -- a manual unfold from
+          // BEFORE the window starts does not persist through a
+          // hidden interval.
+          if (s.panelEl) s.panelEl.style.display = 'none';
+          s.isUnfolded = false;
+          continue;
+        }
+        s.dotEl.style.visibility = '';
+        s.dotEl.style.pointerEvents = 'auto';
+
+        // Path-active glow class (preserves the cinematic highlight
+        // behaviour the legacy markerObjs in 10/18 used to toggle).
+        const dot = s.dotEl.querySelector('.ann-dot');
+        if (dot) {
+          if (triggered && ann.id === triggered) {
+            dot.classList.add('path-active');
+          } else {
+            dot.classList.remove('path-active');
+          }
+        }
+
+        // Distance gate. kind=title3d_overlay = always unfolded (it
+        // is a persistent 3D label, not an interactive dot).
+        let shouldUnfold;
+        if (ann.kind === 'title3d_overlay') {
+          shouldUnfold = true;
+        } else if (camOK && Array.isArray(ann.pos) && ann.pos.length >= 3) {
+          const dx = camera.position.x - ann.pos[0];
+          const dy = camera.position.y - ann.pos[1];
+          const dz = camera.position.z - ann.pos[2];
+          const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+          const inRadius = dist < (ann.unfold_radius_m || 5.0);
+          // Clear manual override when camera EXITS the radius --
+          // matches the "click overrides distance UNTIL camera moves
+          // away" contract.
+          if (s.wasInRadius && !inRadius) s.manual = null;
+          s.wasInRadius = inRadius;
+          if (s.manual === true) shouldUnfold = true;
+          else if (s.manual === false) shouldUnfold = false;
+          else shouldUnfold = inRadius;
+        } else {
+          shouldUnfold = (s.manual === true);
+        }
+
+        if (shouldUnfold !== s.isUnfolded) {
+          s.isUnfolded = shouldUnfold;
+          if (s.panelEl) {
+            s.panelEl.style.display = shouldUnfold ? 'block' : 'none';
+          }
+        }
+      }
+    }
+
+    // ---- Conservative dirty tracking (mirrors 15a). The save
+    //      dispatcher reads getDirtyState; the patchObject is the
+    //      raw cfg.annotations slice (a registered slot WINS over
+    //      the legacy _PATCH_KEYS walk in 17_editor_gizmo per the
+    //      Phase 2B contract).
+    let _cleanSig = null;
+
+    // ---- Scene Settings drawer section. The drawer (17b) emits
+    //      `scene-settings:open` whenever the user toggles it; we
+    //      lazy-render the per-annotation rows then so newly-added
+    //      annotations show up without a separate refresh hook.
+    let _ssSection = null;
+    let _ssListEl = null;
+    function _ssRenderList() {
+      if (!_ssListEl) return;
+      _ssListEl.innerHTML = '';
+      const states = _annStates.slice();
+      if (states.length === 0) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'color:#888;font-style:italic;' +
+          'padding:8px 0;';
+        empty.textContent = 'No annotations. Use "+ Add annotation" ' +
+          'to place one at the camera target.';
+        _ssListEl.appendChild(empty);
+        return;
+      }
+      for (let i = 0; i < states.length; i++) {
+        const s = states[i];
+        const ann = s.ann;
+        const row = document.createElement('details');
+        row.className = 'spcp-ann-row';
+        row.style.cssText = 'background:rgba(255,255,255,0.04);' +
+          'border-radius:5px;padding:5px 8px;margin-bottom:4px;' +
+          'border:1px solid rgba(255,255,255,0.06);';
+        const sm = document.createElement('summary');
+        const lblText = (ann.label || '?') + '  ' + (ann.title || '(untitled)');
+        sm.textContent = (i + 1) + '. ' + lblText;
+        sm.style.cssText = 'cursor:pointer;color:#ddd;font-size:11px;' +
+          'list-style:none;';
+        row.appendChild(sm);
+        const body = document.createElement('div');
+        body.style.cssText = 'padding:6px 0 4px 0;font-size:10px;' +
+          'color:#aaa;display:flex;flex-direction:column;gap:6px;';
+        // L6 (#141): EDITABLE position. Was a read-only "pos: [x,y,z]"
+        // summary; now three numeric x/y/z inputs that write ann.pos and
+        // re-place the 3D dot (_rebuild re-reads ann.pos when building the
+        // marker). Commit on change (gesture-end -- ONE EditHistory snapshot
+        // per gesture, mirroring the title / t_in inputs).
+        const posRow = document.createElement('div');
+        posRow.style.cssText = 'display:flex;gap:6px;';
+        const _commitPos = function () {
+          _pushUndo('ann-pos');
+          if (!Array.isArray(ann.pos) || ann.pos.length < 3) ann.pos = [0, 0, 0];
+          ann.pos[0] = parseFloat(pxIn.value) || 0;
+          ann.pos[1] = parseFloat(pyIn.value) || 0;
+          ann.pos[2] = parseFloat(pzIn.value) || 0;
+          _writeBack();
+          _rebuild();
+        };
+        const _p0 = (ann.pos && ann.pos[0] !== undefined) ? ann.pos[0] : 0;
+        const _p1 = (ann.pos && ann.pos[1] !== undefined) ? ann.pos[1] : 0;
+        const _p2 = (ann.pos && ann.pos[2] !== undefined) ? ann.pos[2] : 0;
+        const pxIn = _ssNumInput('x', _p0, -100000, 100000, 0.1, _commitPos);
+        const pyIn = _ssNumInput('y', _p1, -100000, 100000, 0.1, _commitPos);
+        const pzIn = _ssNumInput('z', _p2, -100000, 100000, 0.1, _commitPos);
+        posRow.appendChild(pxIn.wrap);
+        posRow.appendChild(pyIn.wrap);
+        posRow.appendChild(pzIn.wrap);
+        body.appendChild(posRow);
+        // UX-Phase11G WF-M (#145): editable Title + Text. The dot's unfold
+        // panel (_buildPanelEl) renders BOTH ann.title (bold heading) and
+        // ann.text (body), and the summary shows ann.title -- but there was
+        // NO input for either, so every annotation was stuck "(untitled)"
+        // with an empty panel. Commit on change/Enter (gesture-end -- ONE
+        // EditHistory snapshot per gesture per R8 §4.2, NEVER per keystroke;
+        // mirrors 15g_titles_module's text input). A _rebuild() after the
+        // commit re-creates the panel DOM so the new title/text shows (the
+        // panel only builds the h/p elements when the field is non-empty AT
+        // BUILD TIME, so a live textContent poke is insufficient for a
+        // first-time fill).
+        const titleWrap = document.createElement('label');
+        titleWrap.style.cssText = 'display:flex;flex-direction:column;gap:2px;';
+        const titleLbl = document.createElement('span');
+        titleLbl.textContent = 'title';
+        titleLbl.style.cssText = 'font-size:9px;color:#888;';
+        titleWrap.appendChild(titleLbl);
+        const titleIn = document.createElement('input');
+        titleIn.type = 'text';
+        titleIn.value = ann.title || '';
+        titleIn.dataset.field = 'title';
+        titleIn.placeholder = 'Heading (bold)';
+        titleIn.style.cssText = 'background:#222;color:#ddd;border:1px ' +
+          'solid #444;font-size:11px;padding:3px 5px;width:100%;' +
+          'box-sizing:border-box;';
+        titleIn.addEventListener('change', () => {
+          _pushUndo('ann-title');
+          ann.title = titleIn.value;
+          _writeBack();
+          _rebuild();
+          // Keep the drawer-row summary in sync (matches the build-time
+          // format) -- _rebuild only touches the 3D dots/panels, not the
+          // drawer list, so refresh this row's heading directly.
+          sm.textContent = (i + 1) + '. ' +
+            ((ann.label || '?') + '  ' + (ann.title || '(untitled)'));
+        });
+        titleIn.addEventListener('keydown', (ev) => {
+          if (ev.key === 'Enter') { ev.preventDefault(); titleIn.blur(); }
+        });
+        titleWrap.appendChild(titleIn);
+        body.appendChild(titleWrap);
+        const textWrap = document.createElement('label');
+        textWrap.style.cssText = 'display:flex;flex-direction:column;gap:2px;';
+        const textLbl = document.createElement('span');
+        textLbl.textContent = 'text';
+        textLbl.style.cssText = 'font-size:9px;color:#888;';
+        textWrap.appendChild(textLbl);
+        const textIn = document.createElement('textarea');
+        textIn.value = ann.text || '';
+        textIn.dataset.field = 'text';
+        textIn.rows = 2;
+        textIn.placeholder = 'Body text';
+        textIn.style.cssText = 'background:#222;color:#ddd;border:1px ' +
+          'solid #444;font-size:11px;padding:3px 5px;width:100%;' +
+          'box-sizing:border-box;resize:vertical;font-family:inherit;';
+        textIn.addEventListener('change', () => {
+          _pushUndo('ann-text');
+          ann.text = textIn.value;
+          _writeBack();
+          _rebuild();
+        });
+        textWrap.appendChild(textIn);
+        body.appendChild(textWrap);
+        // Kind dropdown.
+        const kindWrap = document.createElement('label');
+        kindWrap.style.cssText = 'display:flex;gap:6px;' +
+          'align-items:center;';
+        kindWrap.appendChild(document.createTextNode('kind:'));
+        const kindSel = document.createElement('select');
+        kindSel.dataset.field = 'kind';
+        var _KIND_LABELS = {
+          dot_unfold: 'Distance dot',
+          title3d_overlay: 'Always-visible 3D label',
+        };
+        for (const opt of ['dot_unfold', 'title3d_overlay']) {
+          const o = document.createElement('option');
+          o.value = opt; o.textContent = _KIND_LABELS[opt] || opt;
+          if (ann.kind === opt) o.selected = true;
+          kindSel.appendChild(o);
+        }
+        kindSel.style.cssText = 'flex:1;background:#222;color:#ddd;' +
+          'border:1px solid #444;font-size:10px;padding:2px 4px;';
+        kindSel.addEventListener('change', () => {
+          _pushUndo('ann-set-kind');
+          ann.kind = kindSel.value;
+          _writeBack();
+        });
+        kindWrap.appendChild(kindSel);
+        body.appendChild(kindWrap);
+        // unfold_radius_m slider.
+        const radWrap = document.createElement('label');
+        radWrap.style.cssText = 'display:flex;gap:6px;' +
+          'align-items:center;';
+        radWrap.appendChild(document.createTextNode('radius:'));
+        const radIn = document.createElement('input');
+        radIn.type = 'range';
+        radIn.min = '0.5'; radIn.max = '50'; radIn.step = '0.5';
+        radIn.value = String(ann.unfold_radius_m || 5.0);
+        radIn.dataset.field = 'unfold_radius_m';
+        radIn.style.flex = '1';
+        const radLbl = document.createElement('span');
+        radLbl.textContent = radIn.value + ' m';
+        radLbl.style.cssText = 'min-width:42px;text-align:right;';
+        // Gesture start = pointerdown; commit on change. NEVER per-input.
+        radIn.addEventListener('pointerdown', () => {
+          _pushUndo('ann-radius');
+        });
+        radIn.addEventListener('input', () => {
+          radLbl.textContent = parseFloat(radIn.value).toFixed(1) + ' m';
+        });
+        radIn.addEventListener('change', () => {
+          ann.unfold_radius_m = parseFloat(radIn.value) || 5.0;
+          _writeBack();
+        });
+        radWrap.appendChild(radIn);
+        radWrap.appendChild(radLbl);
+        body.appendChild(radWrap);
+        // t_in / t_out / fade_ms inputs (compact row).
+        const timeRow = document.createElement('div');
+        timeRow.style.cssText = 'display:flex;gap:6px;';
+        const tInIn = _ssNumInput('t_in', ann.t_in || 0.0, 0, 9999, 0.5, () => {
+          _pushUndo('ann-t-in'); ann.t_in = parseFloat(tInIn.value) || 0;
+          _writeBack();
+        });
+        const tOutIn = _ssNumInput('t_out', ann.t_out || 999.0, 0, 9999, 0.5, () => {
+          _pushUndo('ann-t-out'); ann.t_out = parseFloat(tOutIn.value) || 999;
+          _writeBack();
+        });
+        const fadeIn = _ssNumInput('fade_ms', ann.fade_ms || 300, 0, 5000, 50, () => {
+          _pushUndo('ann-fade-ms');
+          ann.fade_ms = parseInt(fadeIn.value, 10) || 300;
+          _writeBack();
+        });
+        timeRow.appendChild(tInIn.wrap);
+        timeRow.appendChild(tOutIn.wrap);
+        timeRow.appendChild(fadeIn.wrap);
+        body.appendChild(timeRow);
+        // Delete button.
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.textContent = 'Delete annotation';
+        delBtn.className = 'sp-del-btn';   // L11: shared delete look
+        delBtn.style.marginTop = '4px';
+        delBtn.addEventListener('click', () => {
+          _pushUndo('ann-delete');
+          const c = _liveCfg(); if (!c) return;
+          const arr = Array.isArray(c.annotations) ? c.annotations : [];
+          // Delete by id (NOT index -- the live cfg index may have
+          // drifted vs the rendered list if another module mutated
+          // it between renders).
+          const idx = arr.findIndex(x => (x && x.id === ann.id)
+            || (x && x === s.ann));
+          if (idx >= 0) arr.splice(idx, 1);
+          _writeBack();
+          _rebuild();
+          _ssRenderList();
+        });
+        body.appendChild(delBtn);
+        row.appendChild(body);
+        // R2 #2 (#156): right-click an annotation row -> the ONE
+        // openContextMenu primitive (04b) with Edit / Delete / Go to.
+        // Edit expands the <details> (where the title/text/kind/radius
+        // fields live); Delete reuses the SAME delete handler (delBtn);
+        // Go to flies the orbit pivot to the annotation's pos so the
+        // author can see it. Author-only (the drawer is author chrome);
+        // preventDefault so no browser menu. The closures capture this
+        // row's `s`/`ann`/`row`/`delBtn` so the menu always targets the
+        // right annotation.
+        row.addEventListener('contextmenu', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const items = [
+            {
+              label: 'Edit',
+              title: 'Expand this annotation’s fields',
+              onSelect: () => {
+                try { row.open = true; } catch (e) {}
+                try { row.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+              },
+            },
+            {
+              label: 'Go to',
+              title: 'Move the orbit pivot to this annotation',
+              onSelect: () => { _ssGoToAnnotation(ann); },
+            },
+            { separator: true },
+            {
+              label: 'Delete',
+              danger: true,
+              title: 'Delete this annotation',
+              onSelect: () => { try { delBtn.click(); } catch (e) {} },
+            },
+          ];
+          try { openContextMenu(ev.clientX, ev.clientY, items); } catch (e) {}
+        });
+        _ssListEl.appendChild(row);
+      }
+    }
+    // R2 #2 (#156): fly the orbit pivot (+ a gentle camera nudge) to an
+    // annotation's world pos so "Go to" gives visible feedback. Reuses
+    // the live `controls` / `camera` (07/08 scope). Sets controls.target
+    // to the annotation pos and pulls the camera to a sensible distance
+    // along its current view direction if it is very far; never throws.
+    function _ssGoToAnnotation(ann) {
+      try {
+        if (!ann || !Array.isArray(ann.pos) || ann.pos.length < 3) return;
+        if (typeof controls === 'undefined' || !controls ||
+            !controls.target) return;
+        controls.target.set(ann.pos[0], ann.pos[1], ann.pos[2]);
+        // If the camera is implausibly far from the new pivot, draw it in
+        // along its current forward so the annotation is in frame.
+        if (typeof camera !== 'undefined' && camera && camera.position) {
+          const d = camera.position.distanceTo(controls.target);
+          if (isFinite(d) && d > 30) {
+            const fwd = new THREE.Vector3(0, 0, -1)
+              .applyQuaternion(camera.quaternion);
+            camera.position.copy(controls.target).addScaledVector(fwd, -8);
+          }
+        }
+        controls.update();
+      } catch (e) {}
+    }
+    // Small numeric-input factory (reused for t_in / t_out / fade_ms).
+    function _ssNumInput(label, val, min, max, step, onCommit) {
+      const wrap = document.createElement('label');
+      wrap.style.cssText = 'display:flex;flex-direction:column;' +
+        'flex:1;gap:2px;';
+      const lbl = document.createElement('span');
+      lbl.textContent = label;
+      lbl.style.cssText = 'font-size:9px;color:#888;';
+      wrap.appendChild(lbl);
+      const inp = document.createElement('input');
+      inp.type = 'number';
+      inp.min = String(min); inp.max = String(max); inp.step = String(step);
+      inp.value = String(val);
+      inp.style.cssText = 'background:#222;color:#ddd;border:1px ' +
+        'solid #444;font-size:10px;padding:2px 4px;width:100%;' +
+        'box-sizing:border-box;';
+      inp.addEventListener('change', onCommit);
+      inp.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') { ev.preventDefault(); onCommit(); }
+      });
+      wrap.appendChild(inp);
+      return { wrap: wrap, value: () => inp.value, el: inp };
+    }
+    function _pushUndo(label) {
+      // UX-Phase11D H2 (2026-05-21): pass the BARE string label, NOT an
+      // object. EditHistory.push (17a) stores `label || ''` and re-emits
+      // it as a string in history:undo / history:redo + _broadcastCfgChange;
+      // a `{label}` object is truthy so it was stored verbatim and
+      // stringified to "[object Object]". Every OTHER module passes a bare
+      // string -- match them.
+      try { EditorModuleRegistry.pushUndo(label); }
+      catch (e) {}
+    }
+    function _writeBack() {
+      // After mutating cfg.annotations in place, the dirty signature
+      // updates next getDirtyState(); we also re-tick to refresh the
+      // panels immediately (e.g. radius slider change should re-test
+      // distance for that annotation right now).
+      _annTick(0);
+    }
+    function _rebuild() {
+      _disposeAll();
+      _buildFromCfg();
+      _annNavRefresh();   // #170: keep the nav bar's count/label/visibility live
+    }
+
+    // ---- "+ Add annotation" -- places a new annotation at the
+    //      OrbitControls target (the orbit pivot). The default
+    //      `kind` is dot_unfold (the Q6 default); label defaults to
+    //      the next sequential index (1-based).
+    function _addAtTarget() {
+      const c = _liveCfg(); if (!c) return;
+      let pos = [0, 0, 0];
+      try {
+        if (typeof controls !== 'undefined' && controls && controls.target) {
+          pos = [controls.target.x, controls.target.y, controls.target.z];
+        } else if (typeof camera !== 'undefined' && camera && camera.position) {
+          // No controls (mobile-no-orbit case): place at the camera
+          // looking forward 1 m (purely a fallback; the author then
+          // drags in 3D in Phase 9).
+          const fwd = new THREE.Vector3(0, 0, -1)
+            .applyQuaternion(camera.quaternion);
+          pos = [
+            camera.position.x + fwd.x,
+            camera.position.y + fwd.y,
+            camera.position.z + fwd.z,
+          ];
+        }
+      } catch (e) {}
+      const arr = Array.isArray(c.annotations) ? c.annotations : [];
+      const newAnn = {
+        id: _newAnnotationId(),
+        label: String(arr.length + 1),
+        title: '',
+        text: '',
+        pos: pos,
+        kind: ANNOTATION_DEFAULTS.kind,
+        unfold_radius_m: ANNOTATION_DEFAULTS.unfold_radius_m,
+        t_in: ANNOTATION_DEFAULTS.t_in,
+        t_out: ANNOTATION_DEFAULTS.t_out,
+        fade_ms: ANNOTATION_DEFAULTS.fade_ms,
+        media_url: ANNOTATION_DEFAULTS.media_url,
+        billboard: ANNOTATION_DEFAULTS.billboard,
+      };
+      _pushUndo('ann-add');
+      if (!Array.isArray(c.annotations)) c.annotations = [];
+      c.annotations.push(newAnn);
+      _rebuild();
+      _ssRenderList();
+      return newAnn;
+    }
+
+    // ============================================================
+    //  #170 fly-to + prev/next navigation + the minimal bottom bar
+    // ============================================================
+    let _annNavIdx = -1;
+    let _annNavEl = null, _annNavPrevEl = null,
+        _annNavNextEl = null, _annNavLabelEl = null;
+
+    // Fly the camera to FRAME annotation `state.ann` with a smooth,
+    // speed-dependent ease. Builds a 2-keyframe path [current pose ->
+    // framing pose] and plays it through the EXISTING buildPlayer/_player
+    // so the render loop (18) drives it AND self-terminates it
+    // (`tNow>duration && !loop -> stopPath()`). stopPath's
+    // _syncControlsToCamera then lands the orbit pivot exactly on the
+    // annotation (we pre-point controls.target at it, and the camera ends
+    // looking at it from `endDist`, so fwd*endDist == pos). The arrival
+    // distance is inside the unfold radius -> the panel opens.
+    function _annFlyTo(state) {
+      try {
+        if (!state || !state.ann) return false;
+        const ann = state.ann;
+        if (!Array.isArray(ann.pos) || ann.pos.length < 3) return false;
+        if (typeof camera === 'undefined' || !camera || !camera.position) return false;
+        if (typeof buildPlayer !== 'function') return false;
+        const posV = new THREE.Vector3(ann.pos[0], ann.pos[1], ann.pos[2]);
+        const camV = camera.position.clone();
+        let dir = camV.clone().sub(posV);            // annotation -> camera
+        let curDist = dir.length();
+        if (!(curDist > 1e-4)) {
+          // Camera sits on the point: back off along its current backward.
+          dir = new THREE.Vector3(0, 0, 1).applyQuaternion(camera.quaternion);
+          curDist = 0;
+        }
+        dir.normalize();
+        // #170 review: avoid an ill-conditioned lookAt basis when the dolly
+        // line is near-vertical (annotation directly above/below). THREE's
+        // Matrix4.lookAt only special-cases an EXACTLY parallel up/forward;
+        // a near-parallel case yields arbitrary camera roll. Nudge a hair
+        // off the pole so the basis is well-conditioned + the end pose level.
+        if (Math.abs(dir.y) > 0.9998) { dir.x += 0.02; dir.normalize(); }
+        const radius = (typeof ann.unfold_radius_m === 'number') ? ann.unfold_radius_m : 5.0;
+        const endDist = _annEndDist(curDist, radius);
+        const endPos = posV.clone().addScaledVector(dir, endDist);
+        // End orientation: look from endPos toward the annotation point.
+        const m = new THREE.Matrix4().lookAt(endPos, posV, new THREE.Vector3(0, 1, 0));
+        const eq = new THREE.Quaternion().setFromRotationMatrix(m);
+        const cq = camera.quaternion;
+        const fov = (typeof camera.fov === 'number') ? camera.fov : 60;
+        const dur = _annFlyDuration(camV.distanceTo(endPos));
+        const path = {
+          id: 'ann-fly', name: 'Annotation', loop: false,
+          smoothness: 1.0, play_speed: 1.0,
+          keyframes: [
+            { t: 0, pos: [camV.x, camV.y, camV.z], quat: [cq.x, cq.y, cq.z, cq.w], fov: fov },
+            { t: dur, pos: [endPos.x, endPos.y, endPos.z], quat: [eq.x, eq.y, eq.z, eq.w], fov: fov },
+          ],
+        };
+        const pl = buildPlayer(path);
+        if (!pl) return false;
+        // Stop any current playback cleanly first so players never stack.
+        // #170 review (HIGH): in a CLIP-mode (multi-camera cut) scene a bare
+        // stopPath() leaves _clipState.active=true + _clipUserStopped=false,
+        // so when this ann-fly self-terminates (frame loop stopPath) the clip
+        // layer reads it as a natural clip-end and HARD-CUTS to the next cut
+        // -- yanking the camera off the annotation. Route a live clip tour
+        // through the EXISTING clip-aware _stopTour() (12) instead, which sets
+        // _clipUserStopped + _clipFinish (stands the clip layer down) AND
+        // reveals the Resume-tour affordance. Any other live player (a single
+        // path tour, or an in-flight ann-fly) is a plain stopPath.
+        try {
+          if (typeof _clipMode !== 'undefined' && _clipMode &&
+              typeof _clipState !== 'undefined' && _clipState && _clipState.active &&
+              typeof _stopTour === 'function') {
+            _stopTour({ byUser: true });
+          } else if (typeof _player !== 'undefined' && _player &&
+                     typeof stopPath === 'function') {
+            stopPath();
+          }
+        } catch (e) {}
+        _player = pl;
+        _t0 = performance.now();
+        _activePathId = 'ann-fly';
+        try { if (typeof controls !== 'undefined' && controls && controls.target) controls.target.copy(posV); } catch (e) {}
+        try { if (typeof controls !== 'undefined' && controls) controls.enabled = false; } catch (e) {}
+        try { if (typeof InteractionManager !== 'undefined') InteractionManager.requestPointer('player'); } catch (e) {}
+        try { if (typeof _pathIconSync === 'function') _pathIconSync(); } catch (e) {}
+        // Force the panel open on arrival (and through the fly) regardless
+        // of distance jitter. Cleared when the camera later leaves radius.
+        state.manual = true;
+        return true;
+      } catch (e) { return false; }
+    }
+
+    // prev/next stepping through annotations in authored order (the same
+    // order the drawer numbers them). Wraps (a carousel of POIs). The
+    // first press from "no selection" picks the first (next) / last (prev).
+    function _annNavGo(dir) {
+      const list = _annStates;
+      const n = list.length;
+      if (n === 0) return;
+      let i = _annNavIdx;
+      if (i < 0) i = (dir < 0) ? n - 1 : 0;
+      else i = (((i + dir) % n) + n) % n;
+      _annNavIdx = i;
+      _annFlyTo(list[i]);
+      _annNavRefresh();
+    }
+    function _annNavToId(id) {
+      const list = _annStates;
+      const i = list.findIndex(s => s.ann && s.ann.id === id);
+      if (i < 0) return;
+      _annNavIdx = i;
+      _annFlyTo(list[i]);
+      _annNavRefresh();
+    }
+    function _annNavLabel() {
+      const list = _annStates;
+      const n = list.length;
+      if (n === 0) return '';
+      const i = (_annNavIdx >= 0 && _annNavIdx < n) ? _annNavIdx : 0;
+      const ann = list[i].ann;
+      const title = (ann && ann.title) ? String(ann.title) : '';
+      const base = (i + 1) + ' / ' + n;
+      return title ? (base + '  ·  ' + title) : base;
+    }
+    // Keep the bar's visibility + label live. Shown only in user mode when
+    // >=1 annotation exists (author uses the drawer; embed strips chrome).
+    // Bumped above #path-mini when the camera-path transport is also shown.
+    function _annNavRefresh() {
+      if (!_annNavEl) return;
+      const n = _annStates.length;
+      if (_annNavIdx >= n) _annNavIdx = n - 1;
+      const userMode = (typeof ModeManager === 'undefined') ||
+        (ModeManager.is && ModeManager.is('user'));
+      const show = n > 0 && !!userMode;
+      _annNavEl.classList.toggle('shown', show);
+      // #170: the bar lives at TOP-centre (SuperSplat parity), so it no
+      // longer collides with the bottom #path-mini -- no overlap bump.
+      if (_annNavLabelEl) _annNavLabelEl.textContent = _annNavLabel();
+    }
+    function _annNavWire() {
+      _annNavEl = document.getElementById('ann-nav');
+      if (!_annNavEl) return;
+      _annNavPrevEl = document.getElementById('ann-nav-prev');
+      _annNavNextEl = document.getElementById('ann-nav-next');
+      _annNavLabelEl = document.getElementById('ann-nav-label');
+      if (_annNavPrevEl) {
+        _annNavPrevEl.addEventListener('click', (e) => {
+          e.preventDefault(); e.stopPropagation(); _annNavGo(-1);
+        });
+      }
+      if (_annNavNextEl) {
+        _annNavNextEl.addEventListener('click', (e) => {
+          e.preventDefault(); e.stopPropagation(); _annNavGo(1);
+        });
+      }
+      _annNavRefresh();
+    }
+
+    // ---- The EditorModule instance.
+    const annotationModule = {
+      name: 'annotations',
+      stateKey: 'annotations',
+      defaultModes: ['author', 'user', 'embed'],
+
+      mount: function (overlay, hud, interaction, modes) {
+        // Tear down the legacy 08_input renderer first -- this is the
+        // first opportunity to do so (mount fires after _bootMount in
+        // 05_framework, which runs after 08 has constructed the DOM).
+        _teardownLegacy();
+        _buildFromCfg();
+        // #170: wire + show the minimal annotation navigator bottom bar
+        // (user mode + >=1 annotation). Safe in author/embed -- it just
+        // stays hidden (author uses the drawer; embed strips chrome).
+        _annNavWire();
+        // Capture the current cfg.annotations slice as the clean
+        // baseline; subsequent edits flip getDirtyState() true.
+        _cleanSig = _sig(_slice());
+        // Register an OverlayScene tick layer -- runs in all modes
+        // (defaultModes are 'author','user','embed'). The DOM
+        // (CSS2DObjects) is z-ordered by the css2d-root container; no
+        // 3D node is parented under OverlayScene.group so the layer's
+        // `node:undefined` means visibility-toggling is a no-op for
+        // us (and OverlayScene's _applyVisibility never calls a node
+        // toggle -- it gates `update()` instead). update() runs every
+        // frame from the ONE OverlayScene tick (Phase-0 contract).
+        if (overlay && typeof overlay.register === 'function') {
+          overlay.register({
+            id: 'annotations-tick',
+            modes: ['author', 'user', 'embed'],
+            update: (t) => _annTick(t),
+          });
+        }
+      },
+
+      unmount: function () {
+        _disposeAll();
+        _cleanSig = null;
+        // Note: OverlayScene's `unregister` would be the right hook
+        // here but the layer object reference is held inside the
+        // register() call; for now we rely on _disposeAll keeping
+        // _annStates empty so the tick is cheap.
+      },
+
+      getDirtyState: function () {
+        const sliceNow = _slice();
+        const sigNow = _sig(sliceNow);
+        const isDirty = (_cleanSig !== null && sigNow !== _cleanSig);
+        return { isDirty: isDirty, patchObject: sliceNow };
+      },
+
+      markClean: function () {
+        _cleanSig = _sig(_slice());
+      },
+
+      onCfgChange: function (prev, next, stateKey) {
+        // Wholesale cfg replacement (e.g. an EditHistory undo): if
+        // the annotations slice changed, rebuild. The sig-diff is
+        // cheap (two JSON.stringify calls on a small list).
+        const sliceNow = _slice();
+        const sigNow = _sig(sliceNow);
+        if (sigNow !== _sig(_annStates.map(s => s.ann))) {
+          _rebuild();
+          if (_ssListEl) _ssRenderList();
+        }
+      },
+
+      // ---- Timeline lane -- contributes annotation [t_in..t_out]
+      //      bars to the Phase 2D multi-lane bottom-timeline. The
+      //      registry walks `timelineLane.render(ctx, x, y, w, h, t)`
+      //      where (x,y,w,h) is the lane's pixel rect and t is the
+      //      master playhead time. We draw ONE horizontal bar per
+      //      annotation, coloured by annotation index (cyclic).
+      timelineLane: {
+        rows: 1,
+        label: 'ann',
+        render: function (ctx, x, y, w, h, tCur) {
+          if (!ctx || w <= 0 || h <= 0) return;
+          const states = _annStates;
+          if (!states.length) return;
+          // Find the playhead's path total to map time -> x. Without
+          // a tour active there is nothing to render. The multi-lane
+          // renderer passes (x,y,w,h) keyed to the path duration via
+          // the registry; we do not duplicate that math here.
+          const colors = ['#35e0ff', '#ff35a0', '#a0ff35',
+            '#ff9035', '#9035ff', '#35ff90'];
+          const barH = Math.max(3, Math.floor(h * 0.5));
+          const yMid = y + Math.floor((h - barH) / 2);
+          let dur = 1;
+          try {
+            if (typeof _player !== 'undefined' && _player &&
+                _player.duration > 0) dur = _player.duration;
+          } catch (e) {}
+          for (let i = 0; i < states.length; i++) {
+            const ann = states[i].ann;
+            const tIn = Math.max(0, ann.t_in || 0);
+            const tOut = Math.min(dur, ann.t_out || dur);
+            if (tOut <= tIn) continue;
+            const x0 = x + (tIn / dur) * w;
+            const x1 = x + (tOut / dur) * w;
+            ctx.fillStyle = colors[i % colors.length];
+            ctx.fillRect(x0, yMid, Math.max(2, x1 - x0), barH);
+          }
+        },
+      },
+
+      // ---- Scene Settings drawer section. Per spec §12.2 the
+      //      Annotations section sits between Post-FX and Audio in
+      //      registration order. v1 emits a labelled <details>
+      //      section with per-annotation accordion rows + a
+      //      "+ Add annotation" button.
+      renderSceneSettings: function (parentEl) {
+        if (!parentEl) return;
+        // Replace any pre-existing placeholder section with the same
+        // data-section id so the drawer's spec §12.2 order holds.
+        const existing = parentEl.querySelector(
+          'details[data-section="annotations"]');
+        if (existing) {
+          try { parentEl.removeChild(existing); } catch (e) {}
+        }
+        _ssSection = document.createElement('details');
+        _ssSection.className = 'spcp-scene-settings-section';
+        _ssSection.dataset.section = 'annotations';
+        _ssSection.style.cssText =
+          'background:rgba(255,255,255,0.04);border-radius:6px;' +
+          'padding:6px 10px;border:1px solid rgba(255,255,255,0.06);';
+        const sm = document.createElement('summary');
+        sm.textContent = 'Annotations';
+        sm.style.cssText =
+          'cursor:pointer;color:#fff;font-weight:600;font-size:12px;' +
+          'padding:4px 0;list-style:none;';
+        _ssSection.appendChild(sm);
+        const body = document.createElement('div');
+        body.style.cssText = 'padding:6px 0 4px 0;color:#9aa;' +
+          'font-size:11px;';
+        // The "+ Add annotation" button at the TOP so it is always
+        // reachable even with a long list.
+        const addBtn = document.createElement('button');
+        addBtn.type = 'button';
+        addBtn.textContent = '+ Add annotation';
+        addBtn.style.cssText =
+          'background:rgba(53,224,255,0.18);color:#35e0ff;' +
+          'border:1px solid rgba(53,224,255,0.40);border-radius:5px;' +
+          'font-size:11px;padding:5px 10px;cursor:pointer;' +
+          'margin-bottom:8px;width:100%;';
+        addBtn.addEventListener('click', () => {
+          _addAtTarget();
+        });
+        body.appendChild(addBtn);
+        _ssListEl = document.createElement('div');
+        _ssListEl.className = 'spcp-ann-list';
+        body.appendChild(_ssListEl);
+        _ssSection.appendChild(body);
+        parentEl.appendChild(_ssSection);
+        _ssRenderList();
+        // Re-render when the drawer re-opens (so a click-placed
+        // annotation appears without an explicit refresh).
+        try {
+          EditorModuleRegistry.on('scene-settings:open', () => {
+            _ssRenderList();
+          });
+        } catch (e) {}
+      },
+
+      testSurface: {
+        get annotations() {
+          return {
+            count: _annStates.length,
+            ids: () => _annStates.map(s => s.ann.id),
+            get: (id) => {
+              const s = _annStates.find(s => s.ann.id === id);
+              return s ? s.ann : null;
+            },
+            dotEl: (id) => {
+              const s = _annStates.find(s => s.ann.id === id);
+              return s ? s.dotEl : null;
+            },
+            panelEl: (id) => {
+              const s = _annStates.find(s => s.ann.id === id);
+              return s ? s.panelEl : null;
+            },
+            isUnfolded: (id) => {
+              const s = _annStates.find(s => s.ann.id === id);
+              return s ? s.isUnfolded : false;
+            },
+            toggleUnfold: (id) => {
+              const s = _annStates.find(s => s.ann.id === id);
+              if (!s) return false;
+              s.manual = !s.isUnfolded;
+              _annTick(0);
+              return s.isUnfolded;
+            },
+            forceTick: (t) => { _annTick(t || 0); },
+            // #170 navigation test/extension surface.
+            get navIndex() { return _annNavIdx; },
+            navNext: () => { _annNavGo(1); return _annNavIdx; },
+            navPrev: () => { _annNavGo(-1); return _annNavIdx; },
+            navTo: (i) => {
+              if (typeof i === 'number' && i >= 0 && i < _annStates.length) {
+                _annNavIdx = i; _annFlyTo(_annStates[i]); _annNavRefresh();
+              }
+              return _annNavIdx;
+            },
+            flyToId: (id) => { _annNavToId(id); return _annNavIdx; },
+            navLabel: () => _annNavLabel(),
+            navEl: () => _annNavEl,
+            navShown: () => !!(_annNavEl &&
+              _annNavEl.classList.contains('shown')),
+            timelineLane: annotationModule.timelineLane,
+            get settingsEl() { return _ssSection; },
+            addAt: (pos) => {
+              const c = _liveCfg(); if (!c) return null;
+              if (!Array.isArray(pos) || pos.length < 3) return null;
+              const arr = Array.isArray(c.annotations) ?
+                c.annotations : [];
+              const newAnn = {
+                id: _newAnnotationId(),
+                label: String(arr.length + 1),
+                title: '',
+                text: '',
+                pos: [pos[0], pos[1], pos[2]],
+                kind: ANNOTATION_DEFAULTS.kind,
+                unfold_radius_m: ANNOTATION_DEFAULTS.unfold_radius_m,
+                t_in: ANNOTATION_DEFAULTS.t_in,
+                t_out: ANNOTATION_DEFAULTS.t_out,
+                fade_ms: ANNOTATION_DEFAULTS.fade_ms,
+                media_url: ANNOTATION_DEFAULTS.media_url,
+                billboard: ANNOTATION_DEFAULTS.billboard,
+              };
+              if (!Array.isArray(c.annotations)) c.annotations = [];
+              c.annotations.push(newAnn);
+              _rebuild();
+              if (_ssListEl) _ssRenderList();
+              return newAnn;
+            },
+            // Internal helpers exposed for harness assertions.
+            _upgradeAnnotation: _upgradeAnnotation,
+            _timelineOpacity: _timelineOpacity,
+            _annFlyDuration: _annFlyDuration,
+            _annEndDist: _annEndDist,
+            _hasCinematicPlayhead: _hasCinematicPlayhead,
+            _ANNOTATION_DEFAULTS: ANNOTATION_DEFAULTS,
+          };
+        },
+      },
+    };
+    EditorModuleRegistry.register(annotationModule);
+  })();
+

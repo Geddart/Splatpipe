@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- three loads cross-origin from jsdelivr and blocks first paint (the
+       app can't boot until it arrives). Kicking off the DNS+TLS handshake
+       here, before the importmap is discovered, saves ~1 RTT on the
+       critical path. The patched @sparkjsdev/spark fork + scene.rad/.radc
+       are same-origin as this HTML so that connection is already warm —
+       no preconnect there would be redundant. -->
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+  <link rel="dns-prefetch" href="https://cdn.jsdelivr.net">
+  <title>@@PROJECT_NAME@@ — Splatpipe Viewer (Spark)</title>
+  @@SHARE_META@@

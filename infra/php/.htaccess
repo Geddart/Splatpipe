@@ -1,0 +1,80 @@
+# Generic Apache rules for the save_backend="php" reference adapter.
+# Drop this next to save-camera.php + upload-asset.php and the
+# scenes/<slug>/ tree on any Apache + mod_php / php-fpm host. Host-agnostic
+# — no geddart.de/Strato specifics. (Nginx/Caddy users: replicate the
+# intents below — deny the secret/scratch files, no-cache the two mutable
+# text files, and forward the Authorization header to PHP.)
+
+# Suppress PHP error output from these auth endpoints regardless of host defaults.
+# (php_flag requires mod_php; for php-fpm set display_errors=Off in the pool's php.ini.)
+<IfModule mod_php.c>
+    php_flag display_errors Off
+    php_flag log_errors On
+</IfModule>
+<IfModule mod_php7.c>
+    php_flag display_errors Off
+    php_flag log_errors On
+</IfModule>
+<IfModule mod_php8.c>
+    php_flag display_errors Off
+    php_flag log_errors On
+</IfModule>
+
+# 1. Deny web access to per-scene secrets and write scratch files. The
+#    .author-token store, the .bak snapshot and any in-flight .tmp must
+#    never be fetchable. Covers scenes/<slug>/.author-token etc.
+<FilesMatch "(^\.author-token$|\.author-token$|\.bak$|\.tmp$|^\.save\.lock$|\.save\.lock$)">
+    Require all denied
+</FilesMatch>
+
+# Belt-and-braces: also hide dotfiles generally (Apache 2.4 default already
+# blocks .ht*, this extends it to .author-token / .save.lock).
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>
+
+# 2. Author Saves must be visible on the very next reload, so the two
+#    mutable text files are served revalidated (no stale viewer-config /
+#    shell). The heavy immutable .rad/.radc chunks live on the CDN and are
+#    unaffected by this file.
+<FilesMatch "(viewer-config\.json|index\.html)$">
+    <IfModule mod_headers.c>
+        Header set Cache-Control "no-cache, must-revalidate"
+        Header set Pragma "no-cache"
+    </IfModule>
+    <IfModule mod_expires.c>
+        ExpiresActive On
+        ExpiresDefault "access plus 0 seconds"
+    </IfModule>
+</FilesMatch>
+
+# 3. Forward the Authorization header to PHP. Many shared hosts (Strato,
+#    several cPanel setups, ...) STRIP the Authorization header before
+#    handing the request to mod_php/php-fpm, which would break the
+#    Bearer-token auth in BOTH save-camera.php and upload-asset.php. Re-
+#    inject it via the rewrite engine. Scoped to the two endpoints only;
+#    no other request is affected.
+#
+#    IMPORTANT — REDIRECT_ prefix: a `RewriteRule ... [E=VAR:...]` that runs
+#    in a per-directory (.htaccess) context has its env var exposed to PHP
+#    as $_SERVER['REDIRECT_<VAR>'], NOT $_SERVER['<VAR>'] (Apache prefixes
+#    env vars set by a per-dir rewrite with REDIRECT_). On Strato that means
+#    the token arrives as REDIRECT_HTTP_AUTHORIZATION. We therefore (a) set
+#    the env var below AND (b) the PHP reads BOTH forms (HTTP_AUTHORIZATION
+#    ?? REDIRECT_HTTP_AUTHORIZATION ?? apache_request_headers()). Setting one
+#    E= var only ever yields the REDIRECT_ form here; the PHP-side fallback
+#    is the reliable, host-independent path.
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteCond %{HTTP:Authorization} ^(.+)$
+    RewriteRule ^(save-camera|upload-asset)\.php$ - [E=HTTP_AUTHORIZATION:%1,L]
+</IfModule>
+
+# 3b. SetEnvIf belt-and-braces: also expose the Authorization header as a
+#     CGI-style env var. Unlike the per-dir RewriteRule above, SetEnvIf
+#     sets the var WITHOUT the REDIRECT_ prefix, so on hosts where mod_php
+#     reads the un-prefixed form this provides HTTP_AUTHORIZATION directly.
+#     (mod_setenvif is enabled on virtually every Apache; harmless if not.)
+<IfModule mod_setenvif.c>
+    SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1
+</IfModule>

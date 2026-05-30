@@ -30,8 +30,6 @@ Coord-system contract: see ``docs/dcc-bridge.md`` in the Splatpipe repo.
 from __future__ import annotations
 
 import json
-import math
-import os
 import tempfile
 import urllib.request
 import urllib.parse

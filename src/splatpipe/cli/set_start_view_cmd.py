@@ -21,6 +21,7 @@ from urllib.request import Request, urlopen
 import typer
 from rich.console import Console
 
+from ..core.config_merge import merge_camera_scope
 from ..core.project import Project
 from ..steps.deploy import load_bunny_env, purge_bunny_cache, upload_file
 
@@ -134,8 +135,13 @@ def set_start_view(
         )
         raise typer.Exit(1)
 
-    cfg = _fetch_remote_config(zone, password, remote_dir)
-    cfg["start_view"] = start_view
+    # Read → merge (force-keep primary_asset) via the shared core, so this
+    # relay and every future HTTP save adapter agree byte-for-byte. The
+    # fetch / PUT / purge below stay here (the merge core is pure).
+    cfg = merge_camera_scope(
+        _fetch_remote_config(zone, password, remote_dir),
+        {"start_view": start_view},
+    )
 
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td) / "viewer-config.json"

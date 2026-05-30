@@ -1,0 +1,258 @@
+  // ============================================================
+  //  IntroModule (Phase 11A Issue 9 -- editor-arc-design #122)
+  // ------------------------------------------------------------
+  //  Surfaces cfg.intro -- the cinematic loading-blur + intro fade
+  //  config -- in the Scene Settings drawer's Intro section.
+  //  Schema (see core/scene_cuts.py::DEFAULT_INTRO):
+  //    cfg.intro = { type: 'fade' | 'none', ms: <positive number> }
+  //  Default = { type: 'fade', ms: 900 }. Already in the
+  //  PUBLIC_VIEWER_CONFIG_KEYS / ALLOWED_PATCH_KEYS allow-list since
+  //  Phase 2 prep; the SPCP1 patch carries it as a top-level key
+  //  (whole-replace semantics; no per-field merge).
+  //
+  //  Mirrors the 15a / 15b / 15f module shape:
+  //    name='intro', stateKey='intro', defaultModes=['author']
+  //    (the runtime intro renderer in 19_intro_controller is mode-
+  //     agnostic; this module just edits the cfg slot).
+  //    mount/unmount = no-op (the controller in 19 owns the runtime;
+  //    we ONLY edit the cfg, the SPCP1 patch carries it on save).
+  //    getDirtyState / markClean -- conservative JSON-sig diff.
+  //    renderSceneSettings(parentEl) replaces the placeholder
+  //    section with a type-dropdown + ms-input pair. ONE
+  //    EditHistory snapshot per gesture commit (R8 §4.2).
+  //
+  //  TEST SURFACE on window.__editor.{introGet, introModuleDirty,
+  //  introSectionEl, introSetType, introSetMs} -- functions (NOT
+  //  getters; sidesteps the registry Object.assign getter-freeze
+  //  pattern that 16/15d/15f document).
+  // ============================================================
+  (function _introModInit() {
+    if (!_EDITOR_AUTHOR) return;
+    if (typeof EditorModuleRegistry === 'undefined') return;
+
+    function _liveCfg() {
+      try { if (typeof cfg !== 'undefined' && cfg) return cfg; }
+      catch (e) {}
+      try { if (window.cfg) return window.cfg; }
+      catch (e) {}
+      return null;
+    }
+    // The IntroDict shape (mirrors core/scene_cuts.DEFAULT_INTRO).
+    const _INTRO_DEFAULTS = { type: 'fade', ms: 900 };
+    function _slice() {
+      const c = _liveCfg();
+      if (!c) return Object.assign({}, _INTRO_DEFAULTS);
+      const raw = (c.intro && typeof c.intro === 'object') ? c.intro : {};
+      const out = Object.assign({}, _INTRO_DEFAULTS, raw);
+      // Coerce type to a valid option.
+      if (out.type !== 'fade' && out.type !== 'none') out.type = 'fade';
+      // Coerce ms to a positive finite number.
+      const v = +out.ms;
+      out.ms = (isFinite(v) && v > 0) ? v : _INTRO_DEFAULTS.ms;
+      return out;
+    }
+    function _sig(o) {
+      try { return JSON.stringify(o || {}); }
+      catch (e) { return ''; }
+    }
+    let _cleanSig = null;
+    let _sectionEl = null;
+    let _sectionBodyEl = null;
+    let _typeSel = null;
+    let _msInput = null;
+    let _isDirty = false;
+    function _pushSnap(label) {
+      try {
+        if (typeof EditorModuleRegistry !== 'undefined' &&
+            typeof EditorModuleRegistry.pushUndo === 'function') {
+          EditorModuleRegistry.pushUndo(label || 'intro-edit');
+        }
+      } catch (e) {}
+    }
+    function _writeType(next) {
+      const c = _liveCfg(); if (!c) return false;
+      if (next !== 'fade' && next !== 'none') return false;
+      const cur = _slice();
+      if (cur.type === next) return false;
+      _pushSnap('intro-type');
+      if (!c.intro || typeof c.intro !== 'object') {
+        c.intro = Object.assign({}, _INTRO_DEFAULTS);
+      }
+      c.intro.type = next;
+      _isDirty = true;
+      _refreshUi();
+      return true;
+    }
+    function _writeMs(next) {
+      const c = _liveCfg(); if (!c) return false;
+      const v = +next;
+      if (!isFinite(v) || v <= 0) return false;
+      const cur = _slice();
+      if (cur.ms === v) return false;
+      _pushSnap('intro-ms');
+      if (!c.intro || typeof c.intro !== 'object') {
+        c.intro = Object.assign({}, _INTRO_DEFAULTS);
+      }
+      c.intro.ms = v;
+      _isDirty = true;
+      _refreshUi();
+      return true;
+    }
+    function _refreshUi() {
+      const s = _slice();
+      if (_typeSel && _typeSel.value !== s.type) _typeSel.value = s.type;
+      if (_msInput) {
+        const cur = String(s.ms);
+        if (_msInput.value !== cur) _msInput.value = cur;
+        // ms is meaningless for type 'none' -- gray the input.
+        _msInput.disabled = (s.type === 'none');
+        _msInput.style.opacity = (s.type === 'none') ? '0.55' : '1';
+      }
+    }
+    function _renderControls() {
+      if (!_sectionBodyEl) return;
+      _sectionBodyEl.innerHTML = '';
+      _sectionBodyEl.style.color = '#ddd';
+      _sectionBodyEl.style.fontSize = '11px';
+      const s = _slice();
+      // Helper text
+      const help = document.createElement('div');
+      help.textContent = 'Opening fade played to end-users on first load. ' +
+        'Type "fade" cross-fades black -> scene over "ms"; "none" shows ' +
+        'the scene immediately.';
+      help.style.cssText = 'opacity:0.7;margin-bottom:8px;font-size:10px;' +
+        'line-height:1.4;';
+      _sectionBodyEl.appendChild(help);
+      // Row: type dropdown
+      const row1 = document.createElement('div');
+      row1.style.cssText = 'display:flex;gap:6px;align-items:center;' +
+        'margin-bottom:6px;';
+      const lab1 = document.createElement('span');
+      lab1.textContent = 'Type';
+      lab1.style.cssText = 'min-width:50px;font-size:11px;color:#ccc;';
+      _typeSel = document.createElement('select');
+      _typeSel.style.cssText = 'background:rgba(255,255,255,0.10);' +
+        'color:#eee;border:0;border-radius:5px;padding:3px 6px;' +
+        'font:12px monospace;line-height:1;flex:1;';
+      ['fade', 'none'].forEach((v) => {
+        const o = document.createElement('option');
+        o.value = v; o.textContent = v;
+        _typeSel.appendChild(o);
+      });
+      _typeSel.value = s.type;
+      _typeSel.addEventListener('change', () => {
+        _writeType(_typeSel.value);
+      });
+      row1.appendChild(lab1);
+      row1.appendChild(_typeSel);
+      _sectionBodyEl.appendChild(row1);
+      // Row: ms input
+      const row2 = document.createElement('div');
+      row2.style.cssText = 'display:flex;gap:6px;align-items:center;';
+      const lab2 = document.createElement('span');
+      lab2.textContent = 'Duration';
+      lab2.style.cssText = 'min-width:50px;font-size:11px;color:#ccc;';
+      _msInput = document.createElement('input');
+      _msInput.type = 'number';
+      _msInput.min = '1';
+      _msInput.step = '50';
+      _msInput.value = String(s.ms);
+      _msInput.style.cssText = 'background:rgba(255,255,255,0.10);' +
+        'color:#eee;border:0;border-radius:5px;padding:3px 6px;' +
+        'font:12px monospace;line-height:1;width:80px;';
+      _msInput.disabled = (s.type === 'none');
+      _msInput.style.opacity = (s.type === 'none') ? '0.55' : '1';
+      function _commit() {
+        const v = parseFloat(_msInput.value);
+        if (isFinite(v) && v > 0) _writeMs(v);
+        else _refreshUi();
+      }
+      _msInput.addEventListener('change', _commit);
+      _msInput.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') {
+          ev.preventDefault();
+          try { _msInput.blur(); } catch (e) {}
+          _commit();
+        }
+      });
+      const unit = document.createElement('span');
+      unit.textContent = 'ms';
+      unit.style.cssText = 'color:#9aa;font:11px monospace;';
+      row2.appendChild(lab2);
+      row2.appendChild(_msInput);
+      row2.appendChild(unit);
+      _sectionBodyEl.appendChild(row2);
+    }
+    function _attachToDrawer() {
+      // Look up the placeholder section in 17b's drawer and replace
+      // its body with our controls. Mirrors the 15b PanoramaModule
+      // pattern (setTimeout 0 from mount() so 17b's IIFE has wired
+      // its listener; replace the placeholder body cleanly).
+      const body = document.getElementById('scene-settings-body');
+      if (!body) return;
+      _sectionEl = body.querySelector('details[data-section="intro"]');
+      if (!_sectionEl) return;
+      _sectionBodyEl = _sectionEl.querySelector(
+        '.spcp-scene-settings-section-body');
+      if (!_sectionBodyEl) return;
+      _renderControls();
+    }
+
+    const introModule = {
+      name: 'intro',
+      stateKey: 'intro',
+      defaultModes: ['author'],
+      mount: function (overlay, hud, interaction, modes) {
+        _cleanSig = _sig(_slice());
+        _isDirty = false;
+        setTimeout(_attachToDrawer, 0);
+      },
+      unmount: function () {
+        _cleanSig = null;
+        _sectionEl = null;
+        _sectionBodyEl = null;
+        _typeSel = null;
+        _msInput = null;
+      },
+      getDirtyState: function () {
+        const sliceNow = _slice();
+        const sigNow = _sig(sliceNow);
+        const isDirty = _isDirty ||
+          (_cleanSig !== null && sigNow !== _cleanSig);
+        return { isDirty: isDirty, patchObject: sliceNow };
+      },
+      markClean: function () {
+        _cleanSig = _sig(_slice());
+        _isDirty = false;
+      },
+      onCfgChange: function (prev, next, stateKey) {
+        // Wholesale cfg replacement (e.g. EditHistory undo). Refresh
+        // the UI off the new cfg.
+        _refreshUi();
+      },
+      renderSceneSettings: function (parentEl) {
+        if (!parentEl) return;
+        _sectionEl = parentEl.querySelector
+          ? parentEl.querySelector('details[data-section="intro"]')
+          : null;
+        if (!_sectionEl) return;
+        _sectionBodyEl = _sectionEl.querySelector(
+          '.spcp-scene-settings-section-body');
+        if (!_sectionBodyEl) return;
+        _renderControls();
+      },
+      testSurface: {
+        introGet() { return introModule; },
+        introModuleDirty() {
+          return introModule.getDirtyState().isDirty;
+        },
+        introSectionEl() { return _sectionEl; },
+        introSetType(v) { return _writeType(v); },
+        introSetMs(v) { return _writeMs(v); },
+        introSlice() { return _slice(); },
+      },
+    };
+
+    EditorModuleRegistry.register(introModule);
+  })();
+

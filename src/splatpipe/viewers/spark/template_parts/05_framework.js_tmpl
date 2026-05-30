@@ -1,0 +1,260 @@
+  // ============================================================
+  //  Unified SceneView framework (Task 0 — FOUNDATION)
+  // ------------------------------------------------------------
+  //  ONE place that owns: which mode we're in, the single 3D
+  //  overlay group, who owns the pointer/camera right now, and
+  //  the 2D panel layout. Every current and future editor /
+  //  cinematic feature (trajectory, frustums, gizmo, 3D titles,
+  //  annotation anchors, ghost cam, cut-LOD-prefetch, …) plugs
+  //  into THESE four objects — never its own ad-hoc DOM/handlers.
+  //  User directive (msg 6477): "structure the 3D View from the
+  //  top and unify — avoid similar-but-different solutions."
+  //
+  //  Task 0 is a PURE REFACTOR: no feature is added. The existing
+  //  ?embed=1 body-class, the OrbitControls / _player / _looking
+  //  pointer guards and the HUD / controls-hint are routed THROUGH
+  //  these objects with byte-identical behavior. window.__sceneview
+  //  is the test surface every later Playwright task asserts on.
+  // ============================================================
+
+  // ---- ModeManager: single source of truth for the view mode ----
+  // Resolves user|author|embed from the URL ONCE. ?embed=1 wins
+  // (clean iframe embed), then ?author=1 (the editor), else 'user'
+  // (the default cinematic/end-user view). One <body> class switch
+  // so every UI element can declare the modes it appears in via
+  // CSS instead of scattering per-feature `if (author)` in JS.
+  const ModeManager = (() => {
+    const _qs = new URLSearchParams(location.search);
+    const _mode = (_qs.get('embed') === '1') ? 'embed'
+                : (_qs.get('author') === '1') ? 'author'
+                : 'user';
+    const _subs = [];
+    // ONE class switch. `mode-<x>` is the generic, declarative hook
+    // for current+future CSS gating. The legacy `embed` class is
+    // ALSO kept for embed mode so the existing `body.embed …` rules
+    // (unchanged) keep hiding chrome byte-identically — pure-additive,
+    // zero behavior change. (Task 8 layers usermode/authormode +
+    // chrome gating on top of this; T0 only lands the resolver.)
+    document.body.classList.add('mode-' + _mode);
+    // Task 12 dual-UI gate, driven off THIS single resolved `_mode`
+    // (NO second ?author parse -- A4-unify: ModeManager is the only
+    // mode source). `authormode` only when ?author=1 won the ternary
+    // above (=> _mode==='author'); every other case (default user,
+    // and embed -- whose strip hides both dual-UI roots anyway) is
+    // `usermode`. CSS-GATED, NOT JS-toggled: the #author-root /
+    // #user-transport DOM is always present and shown/hidden purely
+    // by this body class (same approach as `embed`) so there is no
+    // add/remove layout flash. A future editor MUST keep this a
+    // class switch -- do not "fix" it to JS branching.
+    document.body.classList.add(
+      _mode === 'author' ? 'authormode' : 'usermode');
+    if (_mode === 'embed') {
+      document.body.classList.add('embed');
+      console.info('[Splatpipe] EMBED mode (chrome hidden for iframe)');
+    }
+    return {
+      get mode() { return _mode; },
+      is(m) { return _mode === m; },
+      // modes==undefined/empty → visible in ALL modes (today's default).
+      matches(modes) {
+        return !modes || modes.length === 0 || modes.indexOf(_mode) !== -1;
+      },
+      onChange(fn) { if (typeof fn === 'function') _subs.push(fn); },
+      // Mode is resolved once from the URL and never mutates in T0.
+      // The change fan-out to `_subs` (used by OverlayScene/HudLayer
+      // via onChange) stays internal — it is intentionally NOT exposed
+      // on the public `window.__sceneview` surface; a future in-viewer
+      // mode toggle wires its own internal path to it.
+    };
+  })();
+  // Back-compat alias — `EMBED` was the old gate; some call sites and
+  // future diffs read it. Derived from ModeManager so there's still
+  // exactly one source of truth.
+  const EMBED = ModeManager.is('embed');
+
+  // ---- OverlayScene: the ONE 3D overlay group ----
+  // A single THREE.Group added to the scene that holds ALL editor /
+  // cinematic 3D overlays. Features call register(layer)/unregister
+  // — they never add a parallel scene/group. One update(t) tick fans
+  // out to layers; one show/hide registry keyed by ModeManager; one
+  // depth/scale policy in one place. In Task 0 it has zero layers
+  // (pure framework); Tasks 12/14/etc. add the trajectory, frustums,
+  // gizmo, 3D titles, ghost cam, … as layers here.
+  //
+  //   layer = { id?, modes?:string[], node?:THREE.Object3D,
+  //             update?(t), onShow?(), onHide?() }
+  // `node` (if given) is parented under the overlay group; `modes`
+  // (if given) restricts the layer to those modes (absent = all).
+  const OverlayScene = (() => {
+    const group = new THREE.Group();
+    group.name = 'sceneview-overlay';
+    // One depth/scale policy lives HERE so no feature re-decides it:
+    // overlays draw on top of the splat (renderOrder) and are NOT
+    // raycast by the scene-content raycaster (InteractionManager owns
+    // overlay picking later). Identity transform — overlays author in
+    // world space. Centralised so Tasks 12/14 don't each reinvent it.
+    group.renderOrder = 10;
+    const _layers = [];
+    function _applyVisibility(layer) {
+      const vis = ModeManager.matches(layer.modes);
+      const wasVis = layer._lastVis;
+      layer._lastVis = vis;
+      if (layer.node) layer.node.visible = vis;
+      // Fire onShow/onHide ONLY on a real transition. _lastVis starts
+      // undefined, so: first register-while-visible fires onShow once
+      // (undefined !== true), first register-while-hidden fires NOTHING
+      // (undefined === true is false), a true shown->hidden fires onHide,
+      // hidden->shown fires onShow, same-state never fires, and a mode
+      // round-trip never double-fires onShow.
+      if (vis && wasVis !== true && typeof layer.onShow === 'function') { try { layer.onShow(); } catch (e) {} }
+      if (!vis && wasVis === true && typeof layer.onHide === 'function') { try { layer.onHide(); } catch (e) {} }
+    }
+    ModeManager.onChange(() => { for (const l of _layers) _applyVisibility(l); });
+    return {
+      group,
+      register(layer) {
+        if (!layer || _layers.indexOf(layer) !== -1) return layer;
+        _layers.push(layer);
+        if (layer.node && layer.node.parent !== group) group.add(layer.node);
+        _applyVisibility(layer);
+        return layer;
+      },
+      unregister(layer) {
+        const i = _layers.indexOf(layer);
+        if (i === -1) return;
+        _layers.splice(i, 1);
+        if (layer.node && layer.node.parent === group) group.remove(layer.node);
+      },
+      // ONE tick — called once per frame from the render loop; fans
+      // out to every registered, mode-visible layer.
+      update(t) {
+        for (const l of _layers) {
+          if (typeof l.update === 'function' && ModeManager.matches(l.modes)) {
+            try { l.update(t); } catch (e) {}
+          }
+        }
+      },
+      layers() { return _layers.slice(); },
+    };
+  })();
+
+  // ---- InteractionManager: ONE pointer/camera arbitration layer ----
+  // Brokers WHO owns the canvas pointer + camera right now. Today
+  // that ownership is scattered across OrbitControls-vs-`_player`-vs-
+  // `_looking`-vs-touch-zoom guards. Task 0 centralises the *query*:
+  // path playback / bench acquire 'player'; the existing `_player` /
+  // `_looking` variables remain the actual per-handler gates (so
+  // behavior is byte-identical), but the manager mirrors them and is
+  // the single point future tools (TransformControls, annotation
+  // place, click-interrupt) ask "can I take the pointer?". Priority:
+  // the path/bench owner ('player') is exclusive — it wins over
+  // free-look/orbit, exactly as the existing `if (_player) return`
+  // guards already enforce.
+  const InteractionManager = (() => {
+    let _owner = null;          // null = free (OrbitControls/look/zoom)
+    const EXCLUSIVE = { player: true };  // owners that lock out others
+    return {
+      // Returns true if granted. While an *exclusive* owner (path/
+      // bench 'player') holds it, any other owner is refused — mirrors
+      // today's hard rule that nothing preempts an active path/bench
+      // (the `if (_player) return` guards). A non-exclusive owner
+      // (look/orbit/future tools) freely takes it when nothing
+      // exclusive is active. NOTE: in T0 nothing READS this — the live
+      // gates are still `_player`/`_looking` — so this arbitration is
+      // inert for behavior; it defines the contract later tasks query.
+      requestPointer(owner) {
+        if (!owner) return false;
+        if (_owner && _owner !== owner && EXCLUSIVE[_owner]) {
+          return false;
+        }
+        _owner = owner;
+        return true;
+      },
+      releasePointer(owner) {
+        if (_owner === owner || owner == null) _owner = null;
+      },
+      currentOwner() { return _owner; },
+      // Convenience the ported guards use instead of bare `_player`:
+      // "is some exclusive owner (path/bench) driving the camera?"
+      isCameraOwned() { return !!(_owner && EXCLUSIVE[_owner]); },
+    };
+  })();
+
+  // ---- HudLayer: ONE declarative 2D panel container ----
+  // Registered 2D panels (HUDs, transports, popovers, hints). The
+  // layer tracks them and applies ModeManager visibility; panels
+  // keep their own CSS positioning for now (migrating the existing
+  // settings-HUD + controls-hint changes nothing visually — they
+  // register with no `modes` so they show in every mode exactly as
+  // today). Tasks 11/13/14 register the user transport + timeline +
+  // popovers HERE rather than each doing bespoke DOM/positioning.
+  //
+  //   panel = { id?, el:HTMLElement, modes?:string[] }
+  const HudLayer = (() => {
+    const _panels = [];
+    function _apply(p) {
+      if (!p.el) return;
+      // T0: panels register with no `modes` → matches() is true in
+      // every mode → we never touch their display, so the existing
+      // HUD/controls-hint render byte-identically. A future moded
+      // panel gets show/hidden here, in ONE place.
+      if (p.modes && p.modes.length) {
+        p.el.style.display = ModeManager.matches(p.modes) ? '' : 'none';
+      }
+    }
+    ModeManager.onChange(() => { for (const p of _panels) _apply(p); });
+    return {
+      register(panel) {
+        if (!panel || !panel.el || _panels.indexOf(panel) !== -1) return panel;
+        _panels.push(panel);
+        _apply(panel);
+        return panel;
+      },
+      unregister(panel) {
+        const i = _panels.indexOf(panel);
+        if (i !== -1) _panels.splice(i, 1);
+      },
+      panels() { return _panels.slice(); },
+    };
+  })();
+
+  // ---- window.__sceneview: the test/extension surface ----
+  // Every later Playwright task asserts on this; later feature code
+  // also reaches the four managers through it. Mirrors the existing
+  // window.__sp / window._spDebug convention. Harmless, always on.
+  //
+  // Phase 2 (#122): also exposes the EditorModuleRegistry (defined in
+  // the 04a_editor_module_registry fragment that runs BEFORE this one)
+  // at .modules so editor modules + the Save dispatcher route through
+  // ONE coordinator. .history is filled in by 17a_edit_history later
+  // (it self-publishes onto window.__sceneview.history without us
+  // needing to know it here).
+  try {
+    window.__sceneview = {
+      get mode() { return ModeManager.mode; },
+      modes: ModeManager,
+      overlay: OverlayScene,
+      interaction: InteractionManager,
+      hud: HudLayer,
+      modules: (typeof EditorModuleRegistry !== 'undefined')
+        ? EditorModuleRegistry : null,
+    };
+    // EditorModuleRegistry mounts every module that registered before
+    // this point + flips its _booted gate so any later registration
+    // mounts on the spot. Safe to call even if no module registered yet.
+    if (typeof EditorModuleRegistry !== 'undefined' &&
+        typeof EditorModuleRegistry._bootMount === 'function') {
+      EditorModuleRegistry._bootMount();
+    }
+  } catch (e) {}
+
+  // ?bench=<value> auto-triggers a benchmark recording.
+  //   ?bench=1               → 30 s static recording (user drives the camera or
+  //                            sits still — whatever they want measured)
+  //   ?bench=<path-id>       → wait for splat init, snap to the path's first
+  //                            keyframe, warm-load that view's pages, then play
+  //                            the named camera path while recording. Stops
+  //                            recording when the path ends. Reproducible
+  //                            cross-device comparison.
+  const BENCH_AUTO = new URLSearchParams(location.search).get('bench');
+

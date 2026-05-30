@@ -1,0 +1,863 @@
+
+    // ---- Pointer interaction on the lane. One pointerdown router:
+    //      a diamond hit => temporal drag; an edge-handle hit (2+
+    //      selected) => span scale; the ruler band => live scrub;
+    //      empty lane => box-select marquee. pointermove/up are on
+    //      window so a drag that leaves the strip still tracks.
+    function _tlLaneXY(ev) {
+      const r = _tlLane.getBoundingClientRect();
+      return { x: ev.clientX - r.left, y: ev.clientY - r.top };
+    }
+    function _tlHitEdge(x, y) {
+      // Returns 'left'|'right'|'' for the selection-span edge grips
+      // (only when 2+ selected; the grip is the small rect below
+      // the diamond row at the min/max selected kf.t).
+      const p = _tlActivePath();
+      if (!p || _tlSel.size < 2) return '';
+      let lo = Infinity, hi = -Infinity, kLo = -1, kHi = -1;
+      _tlSel.forEach((i) => {
+        const k = p.keyframes[i]; if (!k) return;
+        const t = k.t || 0;
+        if (t < lo) { lo = t; kLo = i; }
+        if (t > hi) { hi = t; kHi = i; }
+      });
+      if (kLo < 0 || kHi < 0 || lo === hi) return '';
+      const cy = _tlDiamRowY();
+      if (y < cy + _TL_DIAM + 1 || y > cy + _TL_DIAM + 13) return '';
+      if (Math.abs(x - _tlT2X(lo)) <= 6) return 'left';
+      if (Math.abs(x - _tlT2X(hi)) <= 6) return 'right';
+      return '';
+    }
+    // ---- #164 clip editor: SEQUENCE-LEVEL hit-test. Returns the clip id
+    //      whose block (in the primary cuts band, 0..Σdur fit to width)
+    //      contains the lane (x,y); null = miss / above the ruler. Reuses
+    //      the SAME start/Σdur*w math the cuts lane render uses.
+    function _tlHitClip(x, y) {
+      if (y <= _TL_RULER_H) return null;       // ruler band -> scrub, not select
+      if (y > _tlLaneBandTop()) return null;    // below the primary band
+      const total = _tlSeqTotalDur();
+      if (total <= 0) return null;
+      const usableW = _tlSeqUsableW();
+      const ordered = _tlClipsLive();
+      let acc = 0;
+      for (const k of ordered) {
+        const d = (typeof k.duration === 'number' && k.duration > 0)
+          ? k.duration : 0;
+        if (d <= 0) continue;
+        const bx = _TL_PAD + (acc / total) * usableW;
+        const bw = (d / total) * usableW;
+        if (x >= bx && x <= bx + bw) return k.id;
+        acc += d;
+      }
+      return null;
+    }
+    // ---- #167 clip editor: CLIP-LEVEL hit-test on the registered CUTS
+    //      MODULE LANE (the labelled "Cuts" band that stacks BELOW the
+    //      diamond row at clip level -- _tlDrawLanes). At clip level the
+    //      cuts track is NOT the primary band (_tlHitClip covers that at
+    //      sequence level); it is a module lane, and a real pixel-click on
+    //      a coloured clip block in it previously fired NOTHING (the
+    //      pointerdown router had no branch for the module-lane band, so a
+    //      click there fell through to the empty-lane box-select and did
+    //      not switch clips). This made the clip-block drill-in look broken
+    //      for the common author flow: a scene that booted WITHOUT clips
+    //      (so _tlLevel stayed 'clip') and then had clips added via the
+    //      Scene Settings cuts card NEVER enters sequence level on its own,
+    //      so the only clip blocks the author ever sees are these module-
+    //      lane ones -- and clicking them did nothing.
+    //      Returns the clip id whose block (in the cuts module-lane band,
+    //      0..Σdur mapped over [_LABEL_W, _tlW] -- the EXACT mapping
+    //      CutsModule.timelineLane.render uses) contains the lane (x,y);
+    //      null = miss / outside the cuts band. Walks _tlLaneList() the
+    //      SAME way _tlDrawLanes does to find the cuts band's y-range, so
+    //      the hit-test tracks the lane stack order + any future lane
+    //      above it without a hard-coded offset.
+    function _tlHitCutsLaneClip(x, y) {
+      let lanes;
+      try { lanes = _tlLaneList(); } catch (e) { return null; }
+      if (!lanes || !lanes.length) return null;
+      const total = _tlSeqTotalDur();
+      if (total <= 0) return null;
+      const laneW = Math.max(1, _tlW - _LABEL_W);
+      // Find the 'cuts' lane's vertical band by replaying the same stacking
+      // _tlDrawLanes does (each lane band = rows * _TL_LANE_ROW_H).
+      let yTop = _tlLaneBandTop();
+      let bandTop = -1, bandBot = -1;
+      for (const e of lanes) {
+        const lane = e && e.lane;
+        if (!lane) continue;
+        const rows = (lane.rows && lane.rows > 0) ? (lane.rows | 0) : 1;
+        const bandH = rows * _TL_LANE_ROW_H;
+        if (e.name === 'cuts') { bandTop = yTop; bandBot = yTop + bandH; break; }
+        yTop += bandH;
+      }
+      if (bandTop < 0 || y < bandTop || y > bandBot) return null;
+      if (x < _LABEL_W) return null;             // left gutter (label cell)
+      // x -> clip block. The lane render maps 0..Σdur onto [_LABEL_W,
+      // _LABEL_W+laneW] with per-clip blocks at clip_start..clip_start+dur
+      // (the SAME ordered clip walk the render + the sequence hit-test use).
+      const ordered = _tlClipsLive();
+      for (const k of ordered) {
+        const start = (typeof k.clip_start === 'number' && k.clip_start >= 0)
+          ? k.clip_start : 0;
+        const d = (typeof k.duration === 'number' && k.duration > 0)
+          ? k.duration : 0;
+        if (d <= 0) continue;
+        const bx = _LABEL_W + (start / total) * laneW;
+        const bw = (d / total) * laneW;
+        if (x >= bx && x <= bx + bw) return k.id;
+      }
+      return null;
+    }
+    function _tlOnDown(ev) {
+      if (ev.button !== undefined && ev.button !== 0) return;
+      const xy = _tlLaneXY(ev);
+      _tlLane.setPointerCapture && (() => {
+        try { _tlLane.setPointerCapture(ev.pointerId); } catch (e) {}
+      })();
+      ev.preventDefault();
+      // #164 clip editor: SEQUENCE level -- the lane IS the cuts track.
+      // A click on a clip BLOCK loads that clip's camera (drop to clip
+      // level via the EXISTING _camSelApply drill primitive); a click on
+      // the master-time RULER scrubs the sequence (previewing the active
+      // clip's camera, cutting at boundaries -- via the EXISTING per-clip
+      // scrub path, NO parallel clock). NO diamond drag / box-select /
+      // edge-scale at sequence level (those are clip-level keyframe ops).
+      if (_tlLevel === 'sequence' && _tlHasClips()) {
+        if (xy.y <= _TL_RULER_H + 6) {
+          // Master-time ruler -> sequence scrub (live preview).
+          _tlDragMode = 'seqscrub';
+          _tlScrubbing = true;
+          _tlSeqScrubToMasterT(_tlSeqX2T(xy.x, _tlSeqTotalDur()));
+          return;
+        }
+        const clipId = _tlHitClip(xy.x, xy.y);
+        if (clipId) {
+          _tlDragMode = '';            // a select, not a drag
+          _tlEnterClip(clipId);        // load its camera + drop to clip level
+        }
+        return;
+      }
+      // (1) selection-span edge handle -> proportional scale.
+      const edge = _tlHitEdge(xy.x, xy.y);
+      if (edge) {
+        // UX-Phase11-R2 #3 (2026-05-21): scale-edge DRAG mutates every
+        // selected kf.t in _tlOnMove('scale') but pushed NO EditHistory
+        // snapshot, so a rescale could not be undone. Snapshot the pre-
+        // gesture cfg HERE on pointerdown (ONCE, before any pointermove
+        // mutation) -- never per-move (that yields 60 entries/s).
+        _tlPushHistorySnap('kf-scale');
+        const p = _tlActivePath();
+        let lo = Infinity, hi = -Infinity;
+        _tlSel.forEach((i) => {
+          const k = p.keyframes[i]; if (!k) return;
+          const t = k.t || 0;
+          if (t < lo) lo = t; if (t > hi) hi = t;
+        });
+        _tlDragMode = 'scale';
+        _tlScaleEdge = edge;
+        // The OPPOSITE edge time is the FIXED anchor the rescale
+        // pivots about (drag 'right' -> anchor = lo; drag 'left' ->
+        // anchor = hi). t' = anchor + (t-anchor)*ratio.
+        _tlScaleAnchor = (edge === 'right') ? lo : hi;
+        _tlScaleBase = [];
+        _tlSel.forEach((i) => {
+          const k = p.keyframes[i];
+          if (k) _tlScaleBase.push({ i: i, t0: (k.t || 0) });
+        });
+        return;
+      }
+      // (2) diamond -> temporal drag of THAT keyframe.
+      const ki = _tlHitKf(xy.x, xy.y);
+      if (ki >= 0) {
+        // UX-Phase11-R2 #3 (2026-05-21): a diamond time-drag mutates
+        // keyframes[idx].t in _tlOnMove('kf') but pushed NO EditHistory
+        // snapshot, so dragging a keyframe to a new time could not be
+        // undone + the undo button greyed out wrongly. Snapshot the pre-
+        // gesture cfg HERE on pointerdown (ONCE, before any pointermove
+        // mutation) -- never per-move.
+        _tlPushHistorySnap('kf-timeline-drag');
+        _tlDragMode = 'kf';
+        _tlDragKf = ki;
+        // Click selects just this kf unless shift-extends; a
+        // pre-existing multi-selection that includes ki is kept so
+        // a drag can move the whole selection if desired (here a
+        // single-kf temporal edit -- the spec's "drag a diamond
+        // horizontally -> its t changes").
+        if (!ev.shiftKey) {
+          if (!_tlSel.has(ki)) { _tlSel.clear(); _tlSel.add(ki); }
+        } else {
+          if (_tlSel.has(ki)) _tlSel.delete(ki); else _tlSel.add(ki);
+        }
+        _tlDraw();
+        return;
+      }
+      // (3) ruler band -> live scrub (drag the playhead). Routes
+      //     through the REAL #path-scrub mechanism.
+      if (xy.y <= _TL_RULER_H + 6) {
+        _tlDragMode = 'play';
+        _tlScrubbing = true;
+        _tlScrubToTime(Math.max(0, _tlX2T(xy.x)));
+        return;
+      }
+      // (3b) #167: a clip BLOCK in the CUTS MODULE LANE (the labelled
+      //      "Cuts" band below the diamond row at clip level) -> drill into
+      //      that clip's camera, the SAME _tlEnterClip verb the sequence-
+      //      level primary-band click uses. This is the fix for the
+      //      user-confirmed "clicking a clip block does NOT drill in": at
+      //      clip level the cuts blocks live in this module lane, and the
+      //      router had no branch for it (a click fell through to the
+      //      box-select below + did nothing). Clicking the ALREADY-active
+      //      clip is a harmless no-op re-bind (it just re-fits the same
+      //      camera). NOT a drag -> _tlDragMode stays '' so pointermove is
+      //      inert. Below the ruler/diamond/edge bands, so it never steals a
+      //      diamond/scrub gesture.
+      {
+        const cutClipId = _tlHitCutsLaneClip(xy.x, xy.y);
+        if (cutClipId) {
+          _tlDragMode = '';            // a select, not a drag
+          _tlEnterClip(cutClipId);     // load its camera (stays clip level)
+          return;
+        }
+      }
+      // (4) empty lane -> box-select marquee.
+      _tlDragMode = 'box';
+      _tlBoxX0 = xy.x; _tlBoxX1 = xy.x;
+      if (!ev.shiftKey) _tlSel.clear();
+      _tlDraw();
+    }
+    function _tlOnMove(ev) {
+      if (!_tlDragMode) return;
+      const xy = _tlLaneXY(ev);
+      if (_tlDragMode === 'seqscrub') {
+        // #164: dragging the master-time ruler previews the sequence
+        // (cuts at clip boundaries via the EXISTING per-clip scrub path).
+        _tlSeqScrubToMasterT(_tlSeqX2T(xy.x, _tlSeqTotalDur()));
+        return;
+      }
+      if (_tlDragMode === 'kf') {
+        const p = _tlActivePath();
+        if (!p || !p.keyframes || _tlDragKf < 0) return;
+        const k = p.keyframes[_tlDragKf];
+        if (!k) return;
+        let nt = _tlX2T(xy.x);
+        if (!isFinite(nt)) return;
+        if (nt < 0) nt = 0;
+        k.t = nt;                       // the temporal edit
+        _tlAfterEdit();
+        return;
+      }
+      if (_tlDragMode === 'scale') {
+        const p = _tlActivePath();
+        if (!p || !_tlScaleBase) return;
+        const a = _tlScaleAnchor;
+        // Base span (grabbed edge - anchor) -> new span (cursor -
+        // anchor). ratio = newSpan/oldSpan; proportional rescale of
+        // EVERY selected kf about the fixed opposite anchor.
+        let base0 = 0;
+        for (const e of _tlScaleBase) {
+          const d = Math.abs(e.t0 - a);
+          if (d > base0) base0 = d;
+        }
+        if (base0 <= 1e-6) return;
+        let cur = Math.abs(_tlX2T(xy.x) - a);
+        // Keep the span strictly positive (do not let an edge cross
+        // the anchor / collapse to zero).
+        if (cur < 1e-4) cur = 1e-4;
+        const ratio = cur / base0;
+        for (const e of _tlScaleBase) {
+          const k = p.keyframes[e.i];
+          if (!k) continue;
+          let nt = a + (e.t0 - a) * ratio;
+          if (nt < 0) nt = 0;
+          k.t = nt;
+        }
+        _tlAfterEdit();
+        return;
+      }
+      if (_tlDragMode === 'play') {
+        _tlScrubToTime(Math.max(0, _tlX2T(xy.x)));
+        return;
+      }
+      if (_tlDragMode === 'box') {
+        _tlBoxX1 = xy.x;
+        // Live marquee selection: every keyframe whose diamond x is
+        // inside the box (a fresh set unless shift-additive at down).
+        const p = _tlActivePath();
+        if (p && p.keyframes) {
+          const lo = Math.min(_tlBoxX0, _tlBoxX1);
+          const hi = Math.max(_tlBoxX0, _tlBoxX1);
+          for (let i = 0; i < p.keyframes.length; i++) {
+            const cx = _tlT2X(p.keyframes[i].t || 0);
+            if (cx >= lo && cx <= hi) _tlSel.add(i);
+          }
+        }
+        _tlDraw();
+        return;
+      }
+    }
+    function _tlOnUp() {
+      if (_tlDragMode === 'box') {
+        // Marquee finished; keep whatever fell inside it.
+      }
+      // UX-3 (2026-05-20): no longer stopPath() on scrub release. The
+      // A6 stopPath() call here (the previous fix) set _player=null
+      // which RE-ENABLED OrbitControls; the very next tick() ran
+      // `if (!_player) controls.update();` which clobbered the camera
+      // from the STALE pre-scrub spherical -- the "jumps back to
+      // Perspective" symptom B. The scrub input handler now sets
+      // _pausedAt + _pausedAtPlayer; the _trajLayer.update() per-
+      // frame rebase above re-pins _t0 so the tick() player block
+      // samples ~_pausedAt every frame and the camera holds at the
+      // released pose. _player stays alive so `if (!_player)
+      // controls.update()` is gated off -- no clobber. To exit pause:
+      // press Play (startPath resumes from _pausedAt), Stop, or
+      // Perspective in the camera dropdown (both stopPath).
+      _tlDragMode = '';
+      _tlDragKf = -1;
+      _tlScrubbing = false;
+      _tlScaleBase = null;
+      _tlDraw();
+    }
+    _tlLane.addEventListener('pointerdown', _tlOnDown);
+    window.addEventListener('pointermove', _tlOnMove);
+    window.addEventListener('pointerup', _tlOnUp);
+
+    // ---- Wheel zoom (time scale) about the cursor time. Storage
+    //      stays SECONDS -- only the px mapping (zoom/scroll)
+    //      changes; no stored t is touched.
+    _tlLane.addEventListener('wheel', (ev) => {
+      // UX-Phase11-R2 M5 (2026-05-28): only intercept a VERTICAL zoom
+      // gesture. A horizontal trackpad swipe (deltaX-dominant) passes
+      // through (no preventDefault) so it can scroll instead of being
+      // eaten; a zero-deltaY event is ignored. Keeps { passive:false } so
+      // preventDefault is still allowed when we DO zoom.
+      if (Math.abs(ev.deltaX) > Math.abs(ev.deltaY) || !ev.deltaY) return;
+      ev.preventDefault();
+      const xy = _tlLaneXY(ev);
+      const tAt = _tlX2T(xy.x);            // time under the cursor
+      const f = Math.exp(-ev.deltaY * 0.0016);
+      const nz = Math.max(_TL_ZOOM_MIN,
+        Math.min(_TL_ZOOM_MAX, _tlZoom * f));
+      _tlZoom = nz;
+      // Keep the time under the cursor pinned (zoom about cursor).
+      _tlScroll = tAt - (xy.x - _TL_PAD) / _tlZoom;
+      if (_tlScroll < 0) _tlScroll = 0;
+      _tlDraw();
+      _tlSyncPlayhead();
+    }, { passive: false });
+
+    // ---- R2 #2 (#156): right-click a keyframe DIAMOND -> context menu.
+    //      Hit-test via the EXISTING _tlHitKf(_tlLaneXY) (the SAME pixel
+    //      diamond test the pointerdown router uses), then open the ONE
+    //      openContextMenu primitive (04b) at the cursor with:
+    //        * Delete keyframe -- reuses the X-delete mutation + the
+    //          'kf-delete' EditHistory snapshot (Batch B); honours the
+    //          >=2-keyframe spline clamp (disabled when it would drop
+    //          below 2 so the path stays a valid spline).
+    //        * Set interpolation -> FLATTENED: one menu item per
+    //          _VALID_INTERP key (auto_clamped / automatic / linear /
+    //          bezier / stepped). Writes kf.interp + a 'kf-interp'
+    //          snapshot + _tlAfterEdit (NO gizmo dependency; the spline
+    //          honours per-keyframe interp via _kfMeta). The current
+    //          interp is shown disabled (a no-op highlight).
+    //        * Go to keyframe -- _tlScrubToTime(kf.t) (the real scrub).
+    //      Author-gated (ModeManager.is('author')) + preventDefault so
+    //      the browser menu never shows.
+    //      R2 Batch F (#4, 2026-05-21): the interp choice now respects a
+    //      MULTI-SELECTION. User: "right-click a keyframe -> interpolation
+    //      -> switch that keyframe OR multiple keyframes." If the
+    //      right-clicked diamond is PART of the current box-selection
+    //      (_tlSel.size >= 2 && _tlSel.has(ki)) we KEEP the whole
+    //      selection and the interp applies to EVERY selected kf with ONE
+    //      'interp-multi' EditHistory snapshot (mirrors _gzSetInterp's
+    //      multi branch + the R8 anti-pattern: one snapshot per batch,
+    //      never per-target). Otherwise the right-clicked diamond becomes
+    //      the single target (selection replaced) + a single 'kf-interp'
+    //      snapshot -- the prior behaviour. Delete / Go-to always operate
+    //      on the clicked diamond.
+    _tlLane.addEventListener('contextmenu', (ev) => {
+      if (!ModeManager.is('author')) return;
+      // Always suppress the browser menu over the lane in author mode
+      // (the canvas's own 08:223 suppressor does not cover this DOM).
+      ev.preventDefault();
+      const xy = _tlLaneXY(ev);
+      const ki = _tlHitKf(xy.x, xy.y);
+      if (ki < 0) return;          // not on a diamond -> no menu
+      const p = _tlActivePath();
+      if (!p || !p.keyframes || !p.keyframes[ki]) return;
+      // #4: if the right-clicked diamond is already part of a 2+ selection,
+      // operate on the WHOLE selection; else replace it with just this kf
+      // (so the menu target is visually obvious -- mirrors left-click
+      // select-on-down). `_interpMulti` drives the interp item below.
+      const _interpMulti = (_tlSel.size >= 2 && _tlSel.has(ki));
+      if (!_interpMulti) { _tlSel.clear(); _tlSel.add(ki); }
+      _tlDraw();
+      const kf = p.keyframes[ki];
+      const curInterp = (kf && typeof kf.interp === 'string' &&
+        _VALID_INTERP[kf.interp]) ? kf.interp : 'automatic';
+      // Delete clamp: refuse below 2 keyframes (same rule as the X
+      // keydown handler) -> the item is shown disabled in that case.
+      const canDelete = (p.keyframes.length - 1) >= 2;
+      const items = [];
+      items.push({
+        label: 'Delete keyframe',
+        danger: true,
+        disabled: !canDelete,
+        title: canDelete ? 'Remove this keyframe (undoable)'
+          : 'A path needs at least 2 keyframes',
+        onSelect: () => {
+          const pp = _tlActivePath();
+          if (!pp || !pp.keyframes || !pp.keyframes[ki]) return;
+          const keep = [];
+          for (let i = 0; i < pp.keyframes.length; i++) {
+            if (i !== ki) keep.push(pp.keyframes[i]);
+          }
+          if (keep.length < 2) return;     // belt-and-braces clamp
+          _tlPushHistorySnap('kf-delete');
+          pp.keyframes = keep;
+          _tlSel.clear();
+          _tlAfterEdit();
+        },
+      });
+      items.push({ separator: true });
+      // FLATTENED interp choices (one per _VALID_INTERP key).
+      //  * SINGLE target: the clicked kf's current value is shown
+      //    disabled (a labelled no-op highlight) -> 'kf-interp' snapshot.
+      //  * MULTI target (#4): NO item is disabled (the selected kfs may
+      //    differ, so any value is a meaningful batch-set); each writes
+      //    the chosen interp to EVERY selected index with ONE
+      //    'interp-multi' snapshot. A stale/out-of-range index is skipped.
+      const _interpCount = _interpMulti ? _tlSel.size : 1;
+      for (const nm of Object.keys(_VALID_INTERP)) {
+        items.push({
+          label: (!_interpMulti && nm === curInterp ? '✓ ' : '  ') +
+            'Interp: ' + nm + (_interpMulti ? ' (' + _interpCount + ')' : ''),
+          disabled: (!_interpMulti && nm === curInterp),
+          title: _interpMulti
+            ? ('Set interpolation of all ' + _interpCount +
+               ' selected keyframes to ' + nm)
+            : ('Set this keyframe’s interpolation to ' + nm),
+          onSelect: () => {
+            const pp = _tlActivePath();
+            if (!pp || !pp.keyframes) return;
+            if (_interpMulti) {
+              // ONE snapshot for the whole batch (R8 §4.2 -- never
+              // per-target). Apply the chosen interp to every
+              // selected index; skip a stale/out-of-range index.
+              _tlPushHistorySnap('interp-multi');
+              let anyWritten = false;
+              for (const idx of _tlSel) {
+                if (typeof idx !== 'number' || idx < 0 ||
+                    idx >= pp.keyframes.length || !pp.keyframes[idx]) continue;
+                pp.keyframes[idx].interp = nm;
+                anyWritten = true;
+              }
+              if (!anyWritten) return;
+              _tlAfterEdit();
+              return;
+            }
+            if (!pp.keyframes[ki]) return;
+            _tlPushHistorySnap('kf-interp');
+            pp.keyframes[ki].interp = nm;
+            _tlAfterEdit();
+          },
+        });
+      }
+      items.push({ separator: true });
+      items.push({
+        label: 'Go to keyframe',
+        title: 'Scrub the playhead to this keyframe',
+        onSelect: () => {
+          const pp = _tlActivePath();
+          if (!pp || !pp.keyframes || !pp.keyframes[ki]) return;
+          _tlScrubToTime(Math.max(0, pp.keyframes[ki].t || 0));
+        },
+      });
+      try { openContextMenu(ev.clientX, ev.clientY, items); } catch (e) {}
+    });
+
+    // ---- Transport (UX-Phase11A Issue 5): unified Play/Pause toggle.
+    //      _tlPlay drives window.__spTransport.playPauseToggle (the
+    //      tri-state idle->playing->paused machine the 10_camera_select
+    //      fragment owns). Loop toggles the active path's loop flag +
+    //      rebuilds (in-memory, no persistence). The icon + title sync
+    //      via _tlSyncPlayPauseIcon() (called from _tlSyncPlayhead so
+    //      the glyph follows the live play state every frame, incl. a
+    //      tour reaching its natural end -> back to ▶).
+    function _tlSyncPlayPauseIcon() {
+      let st = 'idle';
+      try {
+        if (window.__spTransport &&
+            typeof window.__spTransport.playState === 'function') {
+          st = window.__spTransport.playState();
+        }
+      } catch (e) {}
+      // playing -> ⏸ (click pauses); idle/paused -> ▶ (click plays/resumes).
+      const playing = (st === 'playing');
+      _tlPlay.textContent = playing ? '⏸' : '▶';
+      _tlPlay.title = playing ? 'Pause' :
+        (st === 'paused' ? 'Resume' : 'Play');
+    }
+    _tlPlay.addEventListener('click', () => {
+      // #164 clip editor: at SEQUENCE level, Play drives the CUT CHAIN
+      // (the ClipPlayer hard-cut sequence) via the EXISTING
+      // window.__clip.restart() rather than a single path tour. If a cut
+      // is already playing, fall through to the normal pause toggle (the
+      // just-fixed UX-3 pause path freezes _player mid-clip; the clip
+      // layer's update() only advances when _player goes null, so a
+      // pause does NOT advance the cut). NO parallel clock.
+      if (_tlLevel === 'sequence' && _tlHasClips()) {
+        let cutActive = false;
+        try {
+          cutActive = (typeof _clipState !== 'undefined' && _clipState &&
+            _clipState.active);
+        } catch (e) {}
+        if (!cutActive) {
+          try {
+            if (window.__clip && typeof window.__clip.restart === 'function') {
+              window.__clip.restart();
+            }
+          } catch (e) {}
+          _tlSyncPlayPauseIcon();
+          _tlSyncPlayhead();
+          return;
+        }
+        // A cut is live -> pause/resume via the existing transport.
+        try {
+          if (window.__spTransport &&
+              typeof window.__spTransport.playPauseToggle === 'function') {
+            window.__spTransport.playPauseToggle();
+          }
+        } catch (e) {}
+        _tlSyncPlayPauseIcon();
+        _tlSyncPlayhead();
+        return;
+      }
+      // Bind the timeline's active path into selEl first so the toggle
+      // drives the path the user is editing (mirrors the old play
+      // handler's selEl bind).
+      const p = _tlActivePath();
+      if (p && p.id && selEl) {
+        try { selEl.value = p.id; } catch (e) {}
+      }
+      try {
+        if (window.__spTransport &&
+            typeof window.__spTransport.playPauseToggle === 'function') {
+          window.__spTransport.playPauseToggle();
+        } else {
+          // Defensive fallback (transport surface absent): old behaviour.
+          startPath(selEl ? selEl.value : (p && p.id));
+        }
+      } catch (e) {}
+      _tlSyncPlayPauseIcon();
+      _tlSyncPlayhead();
+    });
+    // #164 clip editor: the "◂ Sequence" back button returns to the cuts
+    // track. Author-only (the whole strip is); a no-op when already at
+    // sequence level or in a no-clip scene (the button is hidden then).
+    _tlSeqBack.addEventListener('click', () => { _tlEnterSequence(); });
+    // UX-Phase11G WF-H3: Undo / Redo click -> the ONE registry coordinator.
+    _tlUndo.addEventListener('click', () => {
+      try {
+        if (typeof EditorModuleRegistry !== 'undefined' &&
+            typeof EditorModuleRegistry.undo === 'function') {
+          EditorModuleRegistry.undo();
+        }
+      } catch (e) {}
+      _tlSyncUndoRedo();
+    });
+    _tlRedo.addEventListener('click', () => {
+      try {
+        if (typeof EditorModuleRegistry !== 'undefined' &&
+            typeof EditorModuleRegistry.redo === 'function') {
+          EditorModuleRegistry.redo();
+        }
+      } catch (e) {}
+      _tlSyncUndoRedo();
+    });
+    // Immediate enabled-state sync (don't wait for the first frame) + react
+    // to every history mutation so the buttons flip the instant an edit /
+    // undo / redo lands (the per-frame _tlSyncPlayhead path is the backstop).
+    try {
+      if (typeof EditorModuleRegistry !== 'undefined' &&
+          typeof EditorModuleRegistry.on === 'function') {
+        EditorModuleRegistry.on('history:push', _tlSyncUndoRedo);
+        EditorModuleRegistry.on('history:undo', _tlSyncUndoRedo);
+        EditorModuleRegistry.on('history:redo', _tlSyncUndoRedo);
+      }
+    } catch (e) {}
+    _tlSyncUndoRedo();
+    _tlLoop.addEventListener('click', () => {
+      const p = _tlActivePath();
+      if (!p) return;
+      p.loop = !p.loop;
+      _tlLoop.style.background = p.loop
+        ? 'rgba(53,224,255,0.32)' : 'rgba(255,255,255,0.10)';
+      _tlAfterEdit();
+    });
+    _tlFpsBtn.addEventListener('click', () => {
+      // Cycle OFF -> 24 -> 30 -> 60 -> OFF. PURE RELABEL of the
+      // ruler -- it NEVER mutates a stored kf.t (the storage unit
+      // is always seconds; this only changes tick labels).
+      const cyc = [0, 24, 30, 60];
+      const idx = cyc.indexOf(_tlFps);
+      _tlFps = cyc[(idx + 1) % cyc.length];
+      _tlFpsBtn.textContent = _tlFps > 0 ? (_tlFps + 'fps') : 'fps';
+      _tlFpsBtn.style.background = _tlFps > 0
+        ? 'rgba(53,224,255,0.32)' : 'rgba(255,255,255,0.10)';
+      _tlDraw();                 // relabel only; NO _tlAfterEdit()
+    });
+
+    // ---- Phase 2C handlers: Prev/Next-keyframe skip + the Length
+    //      input commit. Prev/Next are NAVIGATION (no EditHistory
+    //      snapshot). The Length commit is an EDIT (one snapshot, on
+    //      commit -- never per keystroke).
+    //  UX-Phase11-R2 #5 (2026-05-21): no more auto/manual gate -- the
+    //      field is always editable. A commit writes the parsed value
+    //      to `total_duration_s` (positive only; a non-positive /
+    //      empty entry reverts to the last value rather than clearing
+    //      to null, so the field never falls back into "auto"). ONE
+    //      EditHistory snapshot on commit, labelled 'path-length'.
+    //  UX-Phase11-R2 #4 (2026-05-21): after writing the new length the
+    //      timeline auto-fits (_tlFitToPath recomputes _tlZoom so the
+    //      full 0..length range fills the lane width + resets scroll)
+    //      so the diamonds reflow to the new range instead of staying
+    //      pinned at the old pixel positions.
+    _tlPrevKf.addEventListener('click', () => { _tlSkipPrev(); });
+    _tlNextKf.addEventListener('click', () => { _tlSkipNext(); });
+    function _tlCommitTotalInput() {
+      const p = _tlActivePath();
+      if (!p) return;
+      const v = parseFloat(_tlTotalInput.value);
+      const prev = (p.total_duration_s !== undefined &&
+        p.total_duration_s !== null) ? +p.total_duration_s : null;
+      // A non-positive / non-finite entry is rejected -> revert the
+      // field to the current effective ceiling (no null write, so the
+      // length never silently reverts to the kf-derived auto value).
+      if (!(isFinite(v) && v > 0)) { _tlRefreshTotalUI(); return; }
+      if (v === prev) { _tlRefreshTotalUI(); return; }
+      _tlPushHistorySnap('path-length');
+      p.total_duration_s = v;
+      _tlRefreshTotalUI();
+      _tlFitToPath();
+    }
+    _tlTotalInput.addEventListener('change', _tlCommitTotalInput);
+    _tlTotalInput.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        try { _tlTotalInput.blur(); } catch (e) {}
+        _tlCommitTotalInput();
+      }
+    });
+
+    // ---- Phase 2C hotkeys: Ctrl+Left / Ctrl+Right -> Prev/Next-kf
+    //      skip. Same author-mode gate + text-input skip pattern the
+    //      17a Ctrl+Z/Y handler uses. NO EditHistory snapshot
+    //      (navigation, not edit -- the playhead position is not part
+    //      of the persisted cfg).
+    window.addEventListener('keydown', (ev) => {
+      if (!ModeManager.is('author')) return;
+      const mod = ev.metaKey || ev.ctrlKey;
+      if (!mod) return;
+      // UX-Phase11F H6: shared guard (04_js_prologue) -- supersets the
+      // prior INPUT/TEXTAREA/SELECT + contenteditable check AND adds
+      // [role=menu]/[role=dialog] so Ctrl+Arrow does not skip keyframes
+      // with the kebab menu / a Save dialog focused.
+      if (_editorHotkeyBlocked()) return;
+      if (ev.key === 'ArrowLeft') {
+        ev.preventDefault();
+        _tlSkipPrev();
+      } else if (ev.key === 'ArrowRight') {
+        ev.preventDefault();
+        _tlSkipNext();
+      }
+    });
+
+    // ---- X deletes the selected keyframes (in-memory mutation +
+    //      spline rebuild; refuse to drop below 2 so the path stays
+    //      a valid spline -- a sensible clamp, not a hidden mode).
+    window.addEventListener('keydown', (ev) => {
+      if (!ModeManager.is('author')) return;
+      if (ev.key !== 'x' && ev.key !== 'X' &&
+          ev.key !== 'Delete') return;
+      // UX-Phase11F H6: shared guard (04_js_prologue) -- supersets the
+      // prior INPUT/TEXTAREA/SELECT check AND adds contenteditable +
+      // [role=menu]/[role=dialog]. Critical here: X DELETES the selected
+      // keyframe(s); without the menu/dialog guard, Tab-ing to the kebab
+      // menu (or a Save dialog) and pressing X silently dropped a keyframe.
+      // The guard preserves the H6 intent (never fire X while TYPING in a
+      // text field) -- but a plain BUTTON / the canvas does NOT block it,
+      // so X works whether focus is on the canvas or a transport button.
+      if (_editorHotkeyBlocked()) return;
+      // R4 (#165): X with NO timeline (diamond) selection falls back to the
+      // GIZMO-selected keyframe -- the one the user selected by clicking
+      // its 3D frustum. Previously X consulted ONLY _tlSel, so a frustum-
+      // selected keyframe could NOT be deleted with X ("can't delete
+      // keyframes"). gzDeleteSel() reuses _gzDeleteKeyframe (same >=2 clamp
+      // + 'kf-delete' snapshot + detach + rebuild). This makes delete work
+      // from EITHER selection surface, in every state.
+      if (!_tlSel.size) {
+        try {
+          if (window.__editor &&
+              typeof window.__editor.gzDeleteSel === 'function') {
+            if (window.__editor.gzDeleteSel()) {
+              ev.preventDefault();
+            }
+          }
+        } catch (e) {}
+        return;
+      }
+      const p = _tlActivePath();
+      if (!p || !p.keyframes) return;
+      const keep = [];
+      for (let i = 0; i < p.keyframes.length; i++) {
+        if (!_tlSel.has(i)) keep.push(p.keyframes[i]);
+      }
+      if (keep.length < 2) {
+        // Clamp: a path needs >= 2 keyframes to be a spline; ignore
+        // a delete that would invalidate it (do NOT silently break
+        // the path).
+        return;
+      }
+      // UX-Phase11-R2 #3 (2026-05-21): keyframe DELETE was NOT pushing an
+      // EditHistory snapshot, so a delete could not be undone + the undo
+      // button greyed out wrongly. Snapshot the pre-mutation cfg BEFORE the
+      // reassign (gesture-start; a single X/Delete press, once per gesture).
+      // Pushed only past the >=2 clamp so a no-op delete leaves no entry.
+      _tlPushHistorySnap('kf-delete');
+      p.keyframes = keep;
+      _tlSel.clear();
+      ev.preventDefault();
+      _tlAfterEdit();
+    });
+
+    // The strip + diamonds + playhead must follow window resize and
+    // the splat canvas size (it is absolutely positioned over it).
+    window.addEventListener('resize', _tlResize);
+    // Initial layout once the strip has a measured size (next frame
+    // so getBoundingClientRect is non-zero), then keep the playhead
+    // synced from the ONE OverlayScene tick (no parallel rAF: we
+    // fan a tiny per-frame playhead sync off the SAME tick the
+    // Task-16 overlay already uses -- see the layer below).
+    //  UX-Phase11-R2 #4: fit the px mapping to the active path on the
+    //      first measured layout so the default view frames the whole
+    //      0..length range (not a fixed 80 px/s window). _tlResize runs
+    //      first so _tlW is non-zero before _tlFitToPath reads it.
+    requestAnimationFrame(() => {
+      _tlResize();
+      _tlRefreshTotalUI();
+      _tlFitToPath();
+      // #164 clip editor: initialise the level UI (breadcrumb + back
+      // button visibility + Length-field show/hide) + seed the clip
+      // signature so the first real change is detected. A no-clip scene
+      // shows neither affordance (identical to today's transport row).
+      _tlSeqClipSig = _tlClipsSig();
+      _tlSyncLevelUI();
+      _tlDraw();
+    });
+    // #164 clip editor: also refresh the level UI + repaint on every
+    // EditHistory mutation (a clip CRUD in the Scene Settings cuts card
+    // pushes a snapshot -> emits history:push; an undo/redo that restores
+    // cfg.clips emits history:undo/redo). The per-frame sig-compare in
+    // _tlSyncPlayhead is the backstop; this makes the response immediate.
+    try {
+      if (typeof EditorModuleRegistry !== 'undefined' &&
+          typeof EditorModuleRegistry.on === 'function') {
+        const _tlOnClipsMaybeChanged = function () {
+          // If clips vanished entirely (undo back to none), drop to clip
+          // level so the strip behaves like a single-camera scene.
+          if (!_tlHasClips() && _tlLevel === 'sequence') {
+            _tlLevel = 'clip';
+            _tlActiveClipId = null;
+          }
+          _tlSeqClipSig = _tlClipsSig();
+          _tlSyncLevelUI();
+          _tlDraw();
+        };
+        EditorModuleRegistry.on('history:push', _tlOnClipsMaybeChanged);
+        EditorModuleRegistry.on('history:undo', _tlOnClipsMaybeChanged);
+        EditorModuleRegistry.on('history:redo', _tlOnClipsMaybeChanged);
+      }
+    } catch (e) {}
+
+    // ---- Phase 2D (#122 §4.10): multi-lane bottom-timeline registry.
+    //      A module advertises a timeline-lane intent
+    //      (timelineLane = { rows, label, render(ctx, x, y, w, h, t) })
+    //      via EditorModuleRegistry. The registry exposes:
+    //        timelineLanes.register(module)  -- pulls module.timelineLane
+    //        timelineLanes.list()            -- ordered Lane[]
+    //        timelineLanes.unregister(name)  -- removes by module name
+    //      and CameraPathModule is auto-registered via the
+    //      EditorModuleRegistry's 'register' event.
+    //
+    //      UX-Phase11-R2 #11 (2026-05-21): the VISUAL integration that
+    //      Phase 2D deferred ("lands in Phases 3-7" -- it never did) is
+    //      now wired. _tlDraw (above) calls _tlDrawLanes() which
+    //      iterates this registry + calls each lane's render() in its
+    //      own horizontal band below the diamond row, and the strip
+    //      grows (_tlSyncHeight) by sum(lane.rows) * _TL_LANE_ROW_H so
+    //      the bands are visible. Registering / unregistering a lane
+    //      re-syncs the height + redraws so a late-registered module
+    //      (the 15x modules register synchronously before this IIFE,
+    //      but a runtime register still grows the strip) appears
+    //      immediately. The diamond row + playhead overlay are
+    //      untouched -- the lanes stack strictly below them.
+    const _tlLanesByName = Object.create(null);
+    const _tlLanesOrder = [];
+    const _LABEL_W = 36;            // left-gutter label width (px)
+    function _tlLaneRegister(mod) {
+      if (!mod || !mod.name || !mod.timelineLane) return false;
+      if (Object.prototype.hasOwnProperty.call(_tlLanesByName, mod.name)) {
+        return false;
+      }
+      const lane = mod.timelineLane;
+      _tlLanesByName[mod.name] = lane;
+      _tlLanesOrder.push(mod.name);
+      // Grow the strip for the new band + redraw (no-op before the
+      // first _tlResize measures _tlW; the rAF layout re-syncs anyway).
+      _tlSyncHeight();
+      _tlDraw();
+      return true;
+    }
+    function _tlLaneUnregister(name) {
+      if (!Object.prototype.hasOwnProperty.call(_tlLanesByName, name)) {
+        return false;
+      }
+      delete _tlLanesByName[name];
+      const i = _tlLanesOrder.indexOf(name);
+      if (i !== -1) _tlLanesOrder.splice(i, 1);
+      _tlSyncHeight();
+      _tlDraw();
+      return true;
+    }
+    function _tlLaneList() {
+      return _tlLanesOrder.map((n) => ({
+        name: n, lane: _tlLanesByName[n],
+      }));
+    }
+    // Subscribe to module registrations. The CameraPathModule
+    // registers itself BEFORE this IIFE runs (15a < 16 in fragment
+    // order); the 'register' event listener pulls it on first
+    // attach, and the catch-up walk handles modules that already
+    // registered. Later phase modules trigger on register.
+    try {
+      EditorModuleRegistry.on('register', _tlLaneRegister);
+      const _alreadyRegistered = EditorModuleRegistry.list();
+      for (const m of _alreadyRegistered) _tlLaneRegister(m);
+    } catch (e) {}
+
+    // Fan the per-frame playhead sync off the ONE OverlayScene
+    // tick (Task-0 contract -- no parallel rAF). modes:['author']
+    // so OverlayScene skips update() outside author mode (inert in
+    // user/embed). node-less (it is pure DOM, not a 3D node) so
+    // OverlayScene never touches a node's visibility for it.
+    const _tlLayer = {
+      id: 'editor-timeline',
+      modes: ['author'],
+      update() {
+        if (!ModeManager.is('author')) return;
+        if (!_tlScrubbing) _tlSyncPlayhead();
+      },
+    };
+    OverlayScene.register(_tlLayer);

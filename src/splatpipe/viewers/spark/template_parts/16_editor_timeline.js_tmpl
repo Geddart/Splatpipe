@@ -1,0 +1,276 @@
+  // ============================================================
+  //  Author editor -- bottom timeline (Task 17 -- plan H2/Task-13)
+  // ------------------------------------------------------------
+  //  AUTHOR MODE ONLY (ModeManager.is('author')): user / embed and
+  //  the 6 live single-camera scenes are byte-runtime-unchanged --
+  //  every code path here is gated by the SAME _EDITOR_AUTHOR flag
+  //  the Task-16 trajectory overlay uses, and the strip DOM is only
+  //  ever built in author mode (so this whole section is inert in
+  //  user/embed; the byte-lock proves the 6 live scenes' generated
+  //  HTML is byte-identical -- this code sits strictly INSIDE the
+  //  Task-16 T16-TRAJ region, recipe 2c, so it is absorbed by that
+  //  region's existing excision and the moving-baseline remainder
+  //  is unaffected by it).
+  //  IN-MEMORY temporal edits ONLY (the Task-17 scope boundary):
+  //    * a SECONDS ruler (the storage unit is ALWAYS seconds); an
+  //      OPTIONAL author fps grid that ONLY relabels the ruler
+  //      ticks (fps is a display relabel -- it NEVER mutates a
+  //      stored kf.t).
+  //    * a diamond per keyframe at its kf.t; dragging it
+  //      horizontally edits THAT keyframe's t (a temporal edit) --
+  //      mutates the in-memory active path (_trajActivePath(), the
+  //      SAME object the live player + the Task-16 overlay read)
+  //      and rebuilds the spline. The Task-16 overlay's
+  //      sig-driven OverlayScene.update() rebuild reacts to the
+  //      kf.t change automatically (its _trajKfSig includes
+  //      (k.t||0)); we ALSO null _player so the live player picks
+  //      up the new geometry on its next grab.
+  //    * a live-scrub playhead: dragging it drives the camera LIVE
+  //      via the EXISTING #path-scrub real 'input' mechanism (the
+  //      single source of truth that takes `_player` over for the
+  //      selected path AND rebases `_t0`) -- NOT only during play,
+  //      and ROBUST to the author-mode default-path auto-tour
+  //      (which auto-plays here because _cinematic is usermode-
+  //      only): the real scrub takes the camera over deterministic-
+  //      ally exactly as a user grabbing the slider would. We do
+  //      NOT reimplement the scrub math (lockstep with the player).
+  //    * transport play / pause / loop (reuse the existing
+  //      #path-play / #path-stop handlers; loop toggles the active
+  //      path's loop flag + rebuilds).
+  //    * wheel zoom (time scale) about the cursor time; pan via
+  //      scroll. Zoom/scroll change ONLY the px mapping, never a
+  //      stored t.
+  //    * box-select 2+ diamonds, then drag a SELECTION EDGE handle
+  //      => proportionally rescale the selected keyframes' t span
+  //      about the OPPOSITE edge anchor (ratio = newSpan/oldSpan;
+  //      t' = anchor + (t-anchor)*ratio). X deletes the selected
+  //      keyframes. Both mutate the in-memory path + rebuild.
+  //  PERSISTENCE IS NOT TASK-17: nothing here writes/saves; edits
+  //  mutate the in-memory active path + rebuild the spline (+ the
+  //  Task-16 overlay consequently) and stop there. SAVE_MODE /
+  //  SAVE_ENDPOINT / save_backends are deliberately untouched (a
+  //  later task owns Record + Emit SPCP).
+  //  Reuses, never reinvents: buildPlayer / sampleAt (the
+  //  SuperSplat cubic-Hermite spline), the #path-scrub real input
+  //  mechanism (camera takeover / _t0 rebase), _trajActivePath()
+  //  (the in-memory active path), the Task-16 sig-driven overlay
+  //  rebuild, the #author-root inline-style pattern, ModeManager.
+  //  window.__editor is EXTENDED (TEST-ONLY: getters + deterministic
+  //  hooks, same convention as window.__clip / __transport; no
+  //  production reader; inert without the harness).
+  // ============================================================
+  (function _tlInit() {
+    if (!_EDITOR_AUTHOR) return;
+    const root = document.getElementById('author-root');
+    if (!root) return;
+
+    // ---- View state (px mapping). Storage is ALWAYS seconds; zoom
+    //      (px per second) + scroll (seconds of left-edge offset)
+    //      are PURE DISPLAY -- they never touch a stored kf.t.
+    const _TL_PAD = 8;             // left inset (px) inside the lane
+    // A3/A4: a DEDICATED transport-bar band at the strip top so the
+    // play/pause/loop/fps (+ the A4-merged Rec/interp/tangents/Save)
+    // buttons sit ABOVE the lane and never overlap the seconds ruler
+    // (the old top:6px _tlBar overlapped the ruler band drawn at
+    // canvas-y 0.._TL_RULER_H). The lane is offset down by _TL_BAR_H
+    // (was a hard-coded 24) and the strip grew to keep the same lane
+    // height for the ruler/diamonds/playhead.
+    const _TL_BAR_H = 30;          // transport-bar band height (px)
+    // Base strip height (transport bar + ruler + diamond row) BEFORE
+    // any module lane bands. The strip GROWS by sum(lane.rows) *
+    // _TL_LANE_ROW_H once modules register their timeline lanes
+    // (UX-Phase11-R2 #11). _TL_H is the live (current) strip height,
+    // recomputed by _tlSyncHeight() whenever the lane set changes.
+    const _TL_H_BASE = 64 + (_TL_BAR_H - 24); // base strip height (px)
+    const _TL_LANE_ROW_H = 22;     // per-lane-ROW band height (px)
+    let _TL_H = _TL_H_BASE;        // live strip height (px)
+    const _TL_RULER_H = 16;        // seconds-ruler band height (px)
+    let _tlZoom = 80;              // px / second (wheel-tunable)
+    let _tlScroll = 0;             // seconds at the lane's left edge
+    const _TL_ZOOM_MIN = 2, _TL_ZOOM_MAX = 4000;
+    let _tlFps = 0;                // 0 = OFF (seconds labels); >0 = fps grid
+    let _tlSel = new Set();        // selected keyframe indices
+    let _tlDragKf = -1;            // keyframe index being time-dragged
+    let _tlDragMode = '';          // '' | 'kf' | 'play' | 'scale' | 'box'
+    let _tlScaleEdge = '';         // 'left' | 'right' (which edge is grabbed)
+    let _tlScaleAnchor = 0;        // the FIXED opposite-edge time (seconds)
+    let _tlScaleBase = null;       // [{i, t0}] selected kf base times at grab
+    let _tlBoxX0 = 0;              // marquee start x (lane px)
+    let _tlBoxX1 = 0;
+    let _tlScrubbing = false;      // playhead being live-dragged
+    // R4 (#165) core-gesture fix -- the playhead position in SECONDS over
+    // the EFFECTIVE scrub range (max(last kf, 10) or total_duration_s),
+    // the SINGLE source of truth for the marker when not playing. The
+    // prior code mapped the playhead through _tlDuration(p) (= the LAST
+    // keyframe time), which (a) CLAMPED the scrub to the last kf even
+    // though the Length field + _tlFitToPath laid the lane out over the
+    // 10 s floor -- the user "only gets ~2 s" -- and (b) early-returned in
+    // _tlScrubToTime when _tlDuration<=0 (a fresh 0/1-kf camera), so the
+    // user could not scrub to place the SECOND keyframe at a later time
+    // (chicken-and-egg). _tlScrubSeconds decouples the PLAYHEAD time from
+    // the camera-SAMPLE time: the playhead is always draggable across the
+    // full effective range; the camera samples min(t, playerDuration) and
+    // HOLDS at the last pose past the end (the CubicSpline.evaluate clamp,
+    // 09 line 30 -- the SAME "hold at end" total_duration_s relies on), so
+    // scrubbing PAST the last keyframe is safe + lets Record drop a kf
+    // there. The camera-WRITE stays gated by the R3 #6 _CAM_PERSP check in
+    // the #path-scrub handler (we never reintroduce the Perspective
+    // hijack) and the UX-3 #7 _pausedAt/_pausedAtPlayer reuse is untouched.
+    let _tlScrubSeconds = 0;
+
+    // ---- Multi-camera CLIP EDITOR (#164 -- stacked two-level timeline).
+    //      The bottom strip is a TWO-LEVEL editor that reuses the EXISTING
+    //      substrate (CutsModule.timelineLane / ClipPlayer / _camSelApply /
+    //      the diamond row) -- NO parallel scrub clock, NO drill-in modal.
+    //        _tlLevel === 'sequence' : the cuts track is the PRIMARY band
+    //          (master clip sequence + master-time ruler); the keyframe
+    //          diamond row dims to context (shows the active clip's camera).
+    //          Click a clip block -> load that clip's camera (via the
+    //          EXISTING _camSelApply drill primitive) + drop to 'clip' level.
+    //          Master Play = window.__clip.restart() (the cut chain);
+    //          master scrub previews the active clip's camera at the
+    //          scrubbed master time, cutting at clip boundaries.
+    //        _tlLevel === 'clip' : the diamond row is the live keyframe
+    //          editor for _tlActivePath() (the selected clip's camera) --
+    //          EXISTING behaviour, byte-unchanged (drag/scrub/box-select).
+    //      DEFAULT: 'sequence' WHEN cfg.clips is non-empty, else 'clip'.
+    //      A single-camera / no-clip scene (the 6 live scenes) therefore
+    //      stays in 'clip' level and behaves EXACTLY as today -- the
+    //      sequence-level code paths are present but inert (no clips =>
+    //      the cuts lane draws nothing, no clip hit-test fires). The
+    //      master/local scrub MUST reuse the just-fixed #path-scrub gate
+    //      (camera-write only when _camSel.value !== _CAM_PERSP); we never
+    //      create a second scrub clock (that re-introduces the camera-
+    //      hijack the R3 #6 fix just closed).
+    function _tlClipsLive() {
+      // The live cfg.clips array (NOT the const-bound _clipSeq snapshot --
+      // an editor add/delete must be visible to the cuts lane + hit-test
+      // without a reload). Sorted ascending by clip_start (playback order).
+      let c = null;
+      try { if (typeof cfg !== 'undefined' && cfg) c = cfg; } catch (e) {}
+      if (!c) { try { c = window.cfg; } catch (e) {} }
+      const raw = (c && Array.isArray(c.clips)) ? c.clips : [];
+      return raw.slice().sort(
+        (a, b) => ((a && a.clip_start) || 0) - ((b && b.clip_start) || 0));
+    }
+    function _tlHasClips() { return _tlClipsLive().length > 0; }
+    let _tlLevel = _tlHasClips() ? 'sequence' : 'clip';
+    let _tlActiveClipId = null;
+    // Resolve a clip -> its camera_paths ENTRY, reusing the EXACT two-step
+    // 11_clip_player::_clipPath resolution (clip.camera_id may name a
+    // cfg.cameras entry resolved via its path_id, OR a cfg.camera_paths id
+    // DIRECTLY). NEVER assumes camera_id === path_id. Returns the path
+    // OBJECT (so callers read `.id` for _camSelApply / `.keyframes` for the
+    // diamond row).
+    function _tlClipPath(clip) {
+      if (typeof _clipPath === 'function') {
+        try { return _clipPath(clip); } catch (e) {}
+      }
+      // Defensive fallback (never reached in the assembled bundle -- 11
+      // concatenates before 16 so _clipPath is always in scope).
+      if (!clip || !clip.camera_id) return null;
+      let c = null;
+      try { c = (typeof cfg !== 'undefined' && cfg) ? cfg : window.cfg; }
+      catch (e) {}
+      const paths = (c && Array.isArray(c.camera_paths)) ? c.camera_paths : [];
+      const cams = (c && Array.isArray(c.cameras)) ? c.cameras : [];
+      const cam = cams.find(x => x && x.id === clip.camera_id);
+      if (cam) return paths.find(p => p && p.id === cam.path_id) || null;
+      return paths.find(p => p && p.id === clip.camera_id) || null;
+    }
+    function _tlActiveClip() {
+      if (!_tlActiveClipId) return null;
+      return _tlClipsLive().find(k => k && k.id === _tlActiveClipId) || null;
+    }
+    // Cheap structural signature of the clip set (count + per-clip
+    // id/camera/start/duration) so the per-frame update() can detect a
+    // Scene-Settings cuts-card edit + repaint the sequence band without a
+    // full-cfg deep-watch. Tracked across frames in _tlSeqClipSig.
+    function _tlClipsSig() {
+      const ordered = _tlClipsLive();
+      let s = ordered.length + '|';
+      for (const k of ordered) {
+        s += (k && k.id || '') + ',' + (k && k.camera_id || '') + ',' +
+          ((k && k.clip_start) || 0) + ',' + ((k && k.duration) || 0) + ';';
+      }
+      return s;
+    }
+    let _tlSeqClipSig = '';
+    // The display name of a clip's bound camera (for the breadcrumb).
+    function _tlClipCamName(clip) {
+      const path = _tlClipPath(clip);
+      if (path && path.name) return path.name;
+      let c = null;
+      try { c = (typeof cfg !== 'undefined' && cfg) ? cfg : window.cfg; }
+      catch (e) {}
+      const cams = (c && Array.isArray(c.cameras)) ? c.cameras : [];
+      const cam = cams.find(x => x && x.id === (clip && clip.camera_id));
+      if (cam && cam.name) return cam.name;
+      return (clip && clip.camera_id) || '?';
+    }
+
+    function _tlActivePath() {
+      // The SAME in-memory object the live player + the Task-16
+      // overlay use (reuse, never a parallel copy).
+      return (typeof _trajActivePath === 'function')
+        ? _trajActivePath() : null;
+    }
+    function _tlSortedKfs(p) {
+      if (!p || !p.keyframes) return [];
+      // A stable index-tagged sort by t so a diamond keeps its
+      // identity (the kf OBJECT) across a temporal edit even when
+      // the order changes.
+      return p.keyframes
+        .map((k, i) => ({ k: k, i: i, t: (k.t || 0) }))
+        .sort((a, b) => a.t - b.t);
+    }
+    function _tlDuration(p) {
+      const sk = _tlSortedKfs(p);
+      if (sk.length < 2) return sk.length ? (sk[0].t || 0) : 0;
+      // Includes hold_s (mirrors buildPlayer's accumulated duration
+      // so the playhead<->scrub mapping is consistent with the
+      // player clock).
+      let acc = 0;
+      for (const e of sk) acc += (e.k.hold_s && e.k.hold_s > 0)
+        ? e.k.hold_s : 0;
+      const kfDur = (sk[sk.length - 1].t || 0) + acc;
+      // UX-Phase11A Issue 6 (2026-05-21): honour total_duration_s when
+      // it extends past the kf-derived range -- mirrors the same lift
+      // in buildPlayer (09_playback_spline) so the timeline scrub
+      // ruler / playhead<->scrub mapping align with the player's
+      // duration. Without this the timeline canvas would stop drawing
+      // at the last kf even though the player + scrub can reach the
+      // extended range, leaving a "phantom" scrub past the visible
+      // ruler. Mirrors _effectiveScrubRange() below.
+      // UX-Phase11-R2 #145 (2026-05-28): mirror buildPlayer's duration --
+      // a SET total_duration_s is the player duration whether it EXTENDS
+      // OR TRUNCATES the kf range (gate `> 0`, not `> kfDur`), so this
+      // player-clock fallback agrees with 09::buildPlayer's `duration` and
+      // Play stops at the declared Length instead of overrunning to the
+      // last kf. (The SCRUB ceiling stays _effectiveScrubRange/_tlEffectiveDur,
+      // which already uses total when set -- so when total is unset the
+      // playhead can still scrub PAST the last kf to the 10s floor: R4.)
+      if (p && typeof p.total_duration_s === 'number' &&
+          isFinite(p.total_duration_s) && p.total_duration_s > 0) {
+        return p.total_duration_s;
+      }
+      return kfDur;
+    }
+    // R4 (#165): the EFFECTIVE scrub-range ceiling (seconds) -- the SAME
+    // value the Length field + _tlFitToPath frame the lane to. This is the
+    // range the PLAYHEAD scrubs over (always >= 10 s floor, or
+    // total_duration_s when set; NEVER the bare last-kf time and NEVER 0).
+    // _tlDuration above stays the player-clock-aware kf duration (used for
+    // the camera SAMPLE-time mapping); the two are deliberately distinct
+    // so the playhead can scrub PAST the last keyframe (camera holds at the
+    // last pose there) to record a new keyframe further along. Hoisted
+    // function declaration -> referencing _effectiveScrubRange (defined
+    // below) is safe (both are function declarations in this IIFE).
+    function _tlEffectiveDur(p) {
+      const r = _effectiveScrubRange(p);
+      return (r && isFinite(r[1]) && r[1] > 0) ? r[1] : 10.0;
+    }
+    // time (seconds) -> x within the lane (px); inverse for hit-test
+    // / drag. Pure display math (zoom/scroll) -- never a stored t.
+    function _tlT2X(t) { return _TL_PAD + (t - _tlScroll) * _tlZoom; }
+    function _tlX2T(x) { return _tlScroll + (x - _TL_PAD) / _tlZoom; }

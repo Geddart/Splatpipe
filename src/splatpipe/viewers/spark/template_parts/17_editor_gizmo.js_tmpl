@@ -1,0 +1,155 @@
+  // ============================================================
+  //  Author editor -- select-key gizmo + interp popover +
+  //  Record(K) + Save/Emit SPCP (Task 18 -- plan H2/Task-14)
+  // ------------------------------------------------------------
+  //  AUTHOR MODE ONLY (ModeManager.is('author')): user / embed and
+  //  the 6 live single-camera scenes are byte-runtime-unchanged --
+  //  every code path here is gated by the SAME _EDITOR_AUTHOR flag
+  //  the Task-16 trajectory overlay + the Task-17 timeline use, and
+  //  every DOM/listener/THREE object is only ever created in author
+  //  mode (so this whole section is inert in user/embed; the
+  //  byte-lock proves the 6 live scenes' generated HTML is
+  //  byte-identical -- this code sits strictly INSIDE the Task-16
+  //  T16-TRAJ region, recipe 2c, so it is absorbed by that region's
+  //  EXISTING excision and the moving-baseline remainder is
+  //  unaffected by it).
+  //  The IMPORT: TransformControls is loaded via a DYNAMIC
+  //  import('three/addons/controls/TransformControls.js') -- the
+  //  ``three/addons/`` prefix ALREADY resolves through the existing
+  //  importmap (the SAME mapping OrbitControls/CSS2DRenderer use),
+  //  so there is NO new importmap entry and NO shared-HTML change:
+  //  the import statement is region-interior author-gated code, not
+  //  a top-level static import that would land OUTSIDE T16-TRAJ.
+  //  WHAT IT DOES (the Task-18 scope):
+  //    * click a trajectory frustum (the Task-16 _trajFrusta meshes)
+  //      -> select that keyframe -> attach TransformControls to a
+  //      proxy Object3D parked at the keyframe pose.
+  //    * drag the gizmo -> write the proxy's pose back to THAT
+  //      keyframe's kf.pos (translate) / kf.quat (rotate) IN MEMORY
+  //      (the SAME object the live player + the Task-16 overlay +
+  //      the Task-17 timeline read) -> _trajRebuild + sig bump so
+  //      the Task-16 overlay + Task-17 diamonds rebuild. NO save.
+  //    * SPACE toggles World <-> Screen (Screen = camera-aligned
+  //      axes: TransformControls 'local' space on a proxy whose
+  //      quaternion we keep == the camera's, so the gizmo axes
+  //      track the screen). R / T toggle rotate / translate.
+  //    * V opens a 5-type interp popover (a segmented control over
+  //      the EXISTING _VALID_INTERP set) and writes the selected
+  //      keyframe's kf.interp -> rebuild (the spline already honours
+  //      per-keyframe interp via _kfMeta).
+  //    * K records a keyframe = the LIVE camera pose + the REAL
+  //      elapsed playhead t (the SAME single-source-of-truth clock
+  //      _trajPlayhead() returns -- the live _player/_t0 clock while
+  //      a tour plays, else the #path-scrub position; this is the
+  //      in-viewer analogue of the Task-5 "recording uses real
+  //      elapsed time" fix, NOT a reinvented timer) appended to the
+  //      active path's keyframes -> rebuild.
+  //    * Save: SAVE_MODE=="cli" (the decision-A DEFAULT) emits an
+  //      SPCP1:<slug>:<b64url> token + the
+  //      `splatpipe set-camera-path <token>` command in an
+  //      on-screen textarea + copy-to-clipboard, MIRRORING the
+  //      existing SPV1 "Set start view" relay UI (no client secret,
+  //      identical trust model). SAVE_MODE=="http" (opt-in) POSTs
+  //      the camera-scope patch JSON to SAVE_ENDPOINT with
+  //      Authorization: Bearer <token> where <token> is read ONLY
+  //      from the author URL fragment (#token=<token>).
+  //  AUTO-TOUR: in ?author=1 the default-path tour AUTO-PLAYS
+  //  (_cinematic is usermode-only). Authoring while it auto-advances
+  //  is disorienting, so the FIRST author interaction (gizmo attach
+  //  / Record / interp open) does an EXPLICIT stopPath() -- the
+  //  SAME single stop mechanism the Task-17 timeline's pause/scrub
+  //  reuse (NOT a change to Task-13's _cinematic gate; an explicit
+  //  interaction stop, exactly like the Task-15 end-user interrupt).
+  //  The SPCP1 codec is a BYTE-IDENTICAL JS port of
+  //  core/spcp_token.encode_spcp: compact JSON
+  //  (separators (",",":"), ensure_ascii=True, key INSERTION order
+  //  -- NO sort_keys) -> urlsafe base64 -> rstrip('='). The number
+  //  formatter (_spcpNum) reproduces CPython json.dumps' float repr
+  //  (integer-valued -> integer literal -> a json.loads/json.dumps
+  //  fixed point; |x|<1e-4 -> zero-padded sci e[+-]NN like Python,
+  //  NOT JS fixed-notation) so a Python decode_spcp(js_token)
+  //  round-trips AND encode_spcp(slug, that payload) == js_token
+  //  byte-for-byte (the spec's core correctness gate, asserted by a
+  //  real pytest check on the harness-captured token).
+  //  Payload = Contract-C / ALLOWED_PATCH_KEYS ONLY:
+  //  start_view, camera_paths, clips, cameras, default_path_id,
+  //  intro, titles3d, spark_render, annotations -- wrapped as
+  //  { v:1, scope:'camera_paths', ...patch }. NEVER primary_asset
+  //  (the locked Speicher-blank invariant; merge_camera_scope
+  //  force-keeps the live pointer and ALLOWED_PATCH_KEYS asserts it
+  //  is excluded -- the emitted payload must respect that).
+  //  window.__editor is EXTENDED (TEST-ONLY: getters + deterministic
+  //  hooks, same convention as the Task-16/17 surface; no production
+  //  reader; inert without the harness).
+  //  Reuses, never reinvents: _trajActivePath/_trajPlayhead/
+  //  _trajRebuild/_trajKfSig/_trajFrusta (Task-16), buildPlayer/
+  //  sampleAt (the SuperSplat spline), the _raycaster (the existing
+  //  scene raycaster), InteractionManager (pointer brokering vs
+  //  OrbitControls/playback), stopPath (the single stop mechanism),
+  //  the SPV1 relay-UI pattern, _VALID_INTERP, SAVE_MODE/
+  //  SAVE_ENDPOINT (Task-8 -- consumed, NOT re-added).
+  // ============================================================
+  (function _gzInit() {
+    if (!_EDITOR_AUTHOR) return;
+
+    // ---- Suppress the auto-tour in ?author=1 (the SECOND half of the
+    //      "cannot move the keyframes" bug). The intro controller's
+    //      cinematic gate is usermode-ONLY, so in author mode it falls
+    //      into the immediate `_introStartTour()` path and the default
+    //      cinematic plays on load -- ending with the camera PARKED
+    //      inside the dense end-of-path keyframe cluster. From there
+    //      every keyframe frustum projects centimetres from the camera
+    //      (gizmo + frusta thousands of px off-screen) so NO keyframe
+    //      is clickable / draggable. An author opens the editor to
+    //      EDIT, not to watch the tour: keep the camera at the saved
+    //      start_view (a sane authoring vantage where all keyframes
+    //      are visible) by making `_introStartTour()` a guaranteed
+    //      no-op -- it bails on `if (_introTourStarted) return;`, the
+    //      SAME idempotency guard the fade/fallback paths already rely
+    //      on. This is an author-mode-only behavior gate (NOT a
+    //      _cinematic change) and is fully inert for the 6 live
+    //      usermode scenes (this whole block is _EDITOR_AUTHOR-gated).
+    //      `_introTourStarted` is a top-level `let` declared well
+    //      above; this IIFE runs BEFORE the intro-controller IIFE so
+    //      the flag is set in time. Belt-and-braces: if a tour is
+    //      somehow already live (race / future reorder) stop it and
+    //      restore the start_view so the authoring camera is stable.
+    try { _introTourStarted = true; } catch (e) {}
+    if (_player) {
+      try { stopPath(); } catch (e) {}
+      try {
+        const _sv = cfg && cfg.start_view;
+        if (_sv && Array.isArray(_sv.pos)) {
+          camera.position.set(_sv.pos[0], _sv.pos[1], _sv.pos[2]);
+          if (Array.isArray(_sv.quat)) {
+            camera.quaternion.set(_sv.quat[0], _sv.quat[1],
+              _sv.quat[2], _sv.quat[3]);
+          }
+          if (typeof _sv.fov === 'number') {
+            camera.fov = _sv.fov; camera.updateProjectionMatrix();
+          }
+          if (Array.isArray(_sv.target) && controls &&
+              controls.target) {
+            controls.target.set(_sv.target[0], _sv.target[1],
+              _sv.target[2]);
+          }
+          camera.updateMatrixWorld(true);
+        }
+      } catch (e) {}
+    }
+
+    // ---- Slug for the SPCP1 token + http-mode save body (mirror the
+    //      SPV1 relay block): the page <title> h1 text, lower-cased then
+    //      sanitised to the kebab/word set encode_spcp accepts (it
+    //      rejects a ':' in the slug -- our sanitiser strips it, so
+    //      split(':',2) is safe both ways). Lower-case is REQUIRED for
+    //      the http-mode save path: save-camera.php validates the slug
+    //      with ^[a-z0-9_-]{1,64}$ -- a mixed-case display name like
+    //      "Fehmarn" would 400 against that regex even though SPCP1's
+    //      encode_spcp is case-tolerant. The lowercased slug also
+    //      matches the canonical Bunny CDN slug convention.
+    const _gzProjName = (document.querySelector('#title h1') &&
+      document.querySelector('#title h1').textContent || 'scene').trim();
+    const _gzSlug = (_gzProjName.toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, '_').slice(0, 48)) || 'scene';
+

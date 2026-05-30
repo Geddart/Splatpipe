@@ -250,17 +250,40 @@ def list_bunny_subfolders(
 
 # ---------------------------------------------------------------------------
 # Bunny pull-zone Edge Rule: make the small permanent-slug text files
-# (index.html / viewer-config.json) always edge+browser fresh while the big
-# immutable .rad/.radc keep the 30-day cache. WITHOUT this a re-deployed
-# stable-slug URL keeps serving a 30-day-stale shell (the pull zone's
-# CacheControlMaxAgeOverride overrides the client's cache:'no-store' too;
-# per-URL purge does not reach all edges). See the project memory
+# (the slug-root directory URL / index.html / viewer-config.json) always
+# edge+browser fresh while the big immutable .rad/.radc keep the 30-day
+# cache. WITHOUT this a re-deployed stable-slug URL keeps serving a 30-day-
+# stale shell (the pull zone's CacheControlMaxAgeOverride overrides the
+# client's cache:'no-store' too; per-URL purge does not reach all edges).
+#
+# CRITICAL: the rule is matched against the REQUEST url. The URL the user
+# actually opens is the bare directory `https://.../<slug>/` (and
+# `/<slug>/?author=1&...`) — Bunny serves index.html for it internally but
+# the request URL contains neither "index.html" nor "viewer-config.json", so
+# the `*/index.html` patterns alone never matched it and it fell through to
+# the 30-day CacheControlMaxAgeOverride. That was the recurring
+# stale-build-after-redeploy bug. The slug-root directory patterns below fix
+# it. (`.rad`/`.radc` URLs do not end in `/` and contain no `/?`, so they are
+# unaffected and keep the long immutable cache.) See the project memory
 # `project_bunny_viewer_config_cache`. Idempotent (~2 API calls), matched by
-# Description so re-runs update in place.
+# Description so re-runs update in place (Description MUST stay stable or
+# addOrUpdate duplicates instead of updating).
 # ---------------------------------------------------------------------------
 _EDGE_PULLZONE_HOST = "splatpipe-cdn"
 _EDGE_DESC = "splatpipe: no-edge-cache for permanent-slug index/config (redeploy-safe)"
+# Bunny rejects an Edge Rule trigger that carries more than 5 PatternMatches
+# (verified against the live API: HTTP 400
+# {"ErrorKey":"edgerule.invalid","Message":"Maximum 5 ... per condition."}).
+# We have >5 URL patterns, so they are split across multiple triggers of
+# <= _MAX_PATTERNS_PER_TRIGGER each. With TriggerMatchingType=0 (MatchAny
+# across triggers) + PatternMatchingType=0 (MatchAny within a trigger) this
+# is semantically identical to one combined trigger. Splitting (not dropping
+# patterns) preserves every pattern's coverage.
+_MAX_PATTERNS_PER_TRIGGER = 5
 _EDGE_URL_PATTERNS = [
+    # The bare slug-root directory URL the user actually opens.
+    "https://splatpipe-cdn.b-cdn.net/*/",
+    "https://splatpipe-cdn.b-cdn.net/*/?*",
     "https://splatpipe-cdn.b-cdn.net/*/index.html",
     "https://splatpipe-cdn.b-cdn.net/*/viewer-config.json",
     "https://splatpipe-cdn.b-cdn.net/index.html",
@@ -292,10 +315,18 @@ def _find_edge_pullzone(api_key: str) -> dict:
 
 def _desired_edge_rules(existing: list[dict]) -> list[dict]:
     """Two rules (edge cache 0, browser cache 0). Reuse Guids by Description
-    so addOrUpdate edits in place instead of duplicating."""
+    so addOrUpdate edits in place instead of duplicating. The URL patterns
+    are split across triggers of <= _MAX_PATTERNS_PER_TRIGGER PatternMatches
+    because Bunny rejects a trigger with more than 5; TriggerMatchingType=0
+    (MatchAny across triggers) keeps the semantics identical to one combined
+    trigger and preserves every pattern's coverage."""
     by_desc = {r.get("Description"): r for r in existing}
-    trigger = {"Type": 0, "PatternMatchingType": 0,
-               "PatternMatches": _EDGE_URL_PATTERNS, "Parameter1": ""}
+    triggers = [
+        {"Type": 0, "PatternMatchingType": 0,
+         "PatternMatches": _EDGE_URL_PATTERNS[i:i + _MAX_PATTERNS_PER_TRIGGER],
+         "Parameter1": ""}
+        for i in range(0, len(_EDGE_URL_PATTERNS), _MAX_PATTERNS_PER_TRIGGER)
+    ]
     out = []
     for action, tag in ((3, "edge"), (15, "browser")):
         d = f"{_EDGE_DESC} [{tag}]"
@@ -308,7 +339,7 @@ def _desired_edge_rules(existing: list[dict]) -> list[dict]:
             "Enabled": True,
             "Description": d,
             "TriggerMatchingType": 0,     # MatchAny across triggers
-            "Triggers": [dict(trigger)],
+            "Triggers": [dict(t) for t in triggers],
         })
     return out
 
@@ -353,8 +384,8 @@ def ensure_edge_rules(
            if str(r.get("Description", "")).startswith(_EDGE_DESC)]
     if len(now) < 2:
         raise RuntimeError(f"expected >=2 edge rules, got {len(now)}")
-    _log("edge-rule OK — */index.html + */viewer-config.json bypass "
-         "edge+browser cache; .rad/.radc still long-cached")
+    _log("edge-rule OK — slug-root */ + */index.html + */viewer-config.json "
+         "bypass edge+browser cache; .rad/.radc still long-cached")
     return True
 
 

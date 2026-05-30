@@ -1,0 +1,5 @@
+  // Debug hook for Playwright smoke tests (same pattern as PC viewer)
+  window._spDebug = { camera, scene, splat, controls, renderer, spark };
+  </script>
+</body>
+</html>

@@ -9,7 +9,7 @@ CLI-first Gaussian splatting pipeline. Takes COLMAP data through: auto-clean →
 ```bash
 cd H:\001_ProjectCache\1000_Coding\Splatpipe
 pip install -e ".[dev]"
-pytest tests/ -v                    # Run tests (464 tests, ~24s)
+pytest tests/ -v                    # Run tests (1097 collected; 1074 passed, 23 skipped, ~35s)
 splatpipe --help                    # CLI commands
 splatpipe web                       # Launch dashboard
 ```
@@ -44,25 +44,83 @@ splatpipe/                    # repo root
       deploy_cmd.py           # splatpipe export --mode folder|cdn
       serve_cmd.py            # splatpipe serve [--port 8080]
       run_cmd.py              # splatpipe run (full pipeline)
-      web_cmd.py              # splatpipe web [--port 8000]
+      web_cmd.py              # splatpipe web [--port 8000] (default host 127.0.0.1; --host/--unsafe-network for LAN)
       status_cmd.py           # splatpipe status
       path_cmd.py             # splatpipe path-import + path-import-colmap (v0.6+)
       build_lod_cmd.py        # splatpipe build-lod (Spark .rad cache prime, v0.6+)
       set_start_view_cmd.py   # splatpipe set-start-view (apply SPV1 token → viewer-config.json)
+      set_camera_path_cmd.py  # splatpipe set-camera-path (apply viewer-emitted SPCP1 token; decode+merge+deploy relay; v0.8+)
       publish_cmd.py          # splatpipe publish (build/stage → permanent Bunny slug, redeploy-safe; v0.7+)
+      init_php_auth_cmd.py    # splatpipe init-php-auth (per-scene PHP-save bearer token: gen 32-hex + sha256 + SFTP-upload hash; v0.8+ #122 Phase 1)
     core/                     # Project, config, constants, events
       project.py              # Project class: folder scaffold, state.json CRUD, _migrate_state()
       config.py               # TOML config loader (defaults + per-project merge)
       constants.py            # Folder names, LOD defaults, step names
       events.py               # ProgressEvent, StepResult dataclasses
-      path_io.py              # Camera-path schema + glTF/COLMAP importers + mutate_paths helper (v0.6+)
+      path_io.py              # Camera-path schema + glTF/COLMAP importers + mutate_paths helper + per-keyframe interp/mode (v0.6+)
+      spcp_token.py           # SPCP1 camera-path token codec (CLI/viewer wire contract; JS port byte-identical; v0.8+)
+      config_merge.py         # Shared camera-scope merge core (single source of truth; primary_asset force-kept; v0.8+)
+      config_safety.py        # Public viewer-config sanitiser: allow-list top-level + save_backend sub-keys (bug-audit #3; v0.8+)
+      path_safety.py          # Shared path-containment helper: is_contained() / ensure_contained() via Path.resolve().relative_to(); replaces unsafe str.startswith (bug-audit #6; v0.8+)
+      scene_cuts.py           # Multi-camera clip sequence validation + ordering helpers (cameras/cuts/intro/titles; v0.8+)
+      sh_encoding.py          # ShEncoding enum (auto/paged/clamped); typed --sh-encoding CLI choice; bug-audit #1 + #2; v0.8+
+
     viewers/                  # (v0.6+) Output viewer renderers
       base.py                 # ViewerRenderer Protocol + clear_output_dir helper
       playcanvas/             # Skeleton; current PC viewer still lives in steps/lod_assembly.py
       spark/
-        template.py           # Self-contained Spark 2 viewer (THREE + @sparkjsdev/spark)
+        template.py             # Orchestrator (~190 lines): reads template_parts/, @@NAME@@ substitution, html_for() (modularized v0.8+, T1-T6 of #118)
+        template_parts/         # Modularized Spark viewer (v0.8+, T1-T6 of #118): fragments per concern, byte-identical generated HTML proven via 6-fixture output-pin
+          01_head.html_tmpl     # HTML head + share-meta @@SHARE_META@@ slot
+          02a_styles_main.css_tmpl
+          02b_styles_editor.css_tmpl
+          03_body_chrome.html_tmpl  # body shell + camera-select + HUD + loading (Set-start-view top-bar btn REMOVED in Phase 11A Issue 8)
+          04_js_prologue.js_tmpl    # importmap (host-pinned Three + Spark fork) + SAVE_* / STOCK consts
+          04a_editor_module_registry.js_tmpl  # EditorModuleRegistry coordinator (Phase 2A #122)
+          04b_context_menu.js_tmpl  # openContextMenu reusable right-click menu primitive (R2 #2 / #156)
+          05_framework.js_tmpl  # ModeManager / OverlayScene / InteractionManager / HudLayer + _bootMount
+          06_cfg.js_tmpl        # viewer cfg + _DEFAULTS
+          07_setup_three_spark.js_tmpl  # THREE + Spark + sparkOpts + paged_ext_splats
+          08_input.js_tmpl      # URL overrides + WASD + look + pivot + focus + HUD + touch + iOS callout + annotations
+          09_playback_spline.js_tmpl   # CubicSpline + buildPlayer (honours total_duration_s past last kf, Phase 11A Issue 6)
+          10_camera_select.js_tmpl     # camera-select / kebab / dropdown wiring (Perspective unconditional controls re-enable, Phase 11A Issue 1)
+          11_clip_player.js_tmpl       # ClipPlayer
+          12_user_transport.js_tmpl    # End-user transport + _orbitPathAround
+          13_bench.js_tmpl      # Bench launchers + ?bench= auto-trigger
+          14_splat_budget.js_tmpl      # Splat budget dropdown
+          15_editor_trajectory.js_tmpl # Author editor -- trajectory overlay (Perspective fallback prefers >=2-kf paths, Phase 11A Issue 2)
+          15a_camera_path_module.js_tmpl  # CameraPathModule wrapper (Phase 2B #122)
+          15b_panorama_module.js_tmpl     # PanoramaModule (Phase 3)
+          15c_annotation_module.js_tmpl   # AnnotationModule (Phase 5) + #170 annotation navigator (prev/next fly-to-frame via buildPlayer, minimal #ann-nav bar, click-far-dot-flies, idle-POI visibility)
+          15d_cuts_module.js_tmpl         # CutsModule (Phase 6)
+          15e_postfx_module.js_tmpl       # PostFXModule (Phase 4)
+          15f_audio_module.js_tmpl        # AudioModule (Phase 7)
+          15g_titles_module.js_tmpl       # TitlesModule (Phase 8)
+          15h_intro_module.js_tmpl        # IntroModule -- Scene Settings Intro section (Phase 11A Issue 9)
+          15i_startview_module.js_tmpl    # StartViewModule -- Scene Settings Start View section (Phase 11A Issue 9)
+          # 16_editor_timeline split into 6 byte-inert IIFE slices (concat = identical assembled HTML; for parallel editing):
+          16_editor_timeline.js_tmpl              # opener: IIFE open + author/root guards + view/clip-editor state + time/px math
+          16_editor_timeline_b_dom.js_tmpl        # DOM build (transport bar/buttons/undo-redo float/Length/lane/canvas/playhead) thru _tlSyncHeight
+          16_editor_timeline_c_draw.js_tmpl       # _tlResize + diamond geometry/hit-test + ruler/_tlDraw + _tlDrawLanes
+          16_editor_timeline_d_playhead_edit.js_tmpl  # playhead/sync + effectiveScrubRange/Length/fit + level transitions + scrub/_tlAfterEdit
+          16_editor_timeline_e_input.js_tmpl      # pointer router + wheel + context-menu + transport handlers + keydown + init/rAF + multi-lane registry
+          16_editor_timeline_z_tail.js_tmpl       # _api test-surface + Object.defineProperties + IIFE close
+          # 17_editor_gizmo split into 7 byte-inert IIFE slices (the gizmo-drag handlers isolated in _e_drag for the R5 rework):
+          17_editor_gizmo.js_tmpl                 # opener: IIFE open + author gate + auto-tour/start-view restore + slug
+          17_editor_gizmo_b_codec.js_tmpl         # SPCP1 codec (JS port) + patch builders
+          17_editor_gizmo_c_spine.js_tmpl         # tour-stop + gizmo/pick state + proxy-sync + _gzAfterEdit + _gzAttach/_gzDetach
+          17_editor_gizmo_e_drag.js_tmpl          # bezier tangent handles + tangent/gizmo DRAG (R5 #1/#6 land here)
+          17_editor_gizmo_f_router.js_tmpl        # pointer-pick/stacked-cycle + _gzOnCanvasDown + Alt-orbit + pointerdown install
+          17_editor_gizmo_g_ui.js_tmpl            # context-menu + interp popover (multi-select) + Record(K) + Save/SPCP card
+          17_editor_gizmo_z_tail.js_tmpl          # author HUD button cluster + global keydown + window.__editor test surface + IIFE close
+          17a_edit_history.js_tmpl     # EditHistory undo/redo ring + hotkeys (Phase 2A #122)
+          17b_scene_settings_drawer.js_tmpl  # Scene Settings drawer scaffold + 6 sections (Phase 2D #122)
+          18_frame_loop.js_tmpl        # Frame loop + bench recorder + _openStartViewCard helper + preload IIFE
+          19_intro_controller.js_tmpl  # Intro controller (runtime fade)
+          99_closing.html_tmpl  # _spDebug + </script></body></html>
         assembler.py          # SparkAssembler: build_lod -> scene.rad + viewer-config + index.html
         build_lod.py          # Wrapper around the Rust build-lod CLI
+        _gen_harness_viewer.py # Generate + serve the Spark viewer-under-test for the Playwright editor harness (v0.8+)
     colmap/                   # COLMAP utilities (ported verbatim from v1)
       ply_io.py               # Binary PLY reader (numpy structured arrays)
       parsers.py              # Streaming generators for cameras/images/points3D.txt + format detection
@@ -74,6 +132,17 @@ splatpipe/                    # repo root
       lichtfeld.py            # LichtfeldTrainer (--max-cap uses actual count)
       passthrough.py          # PassthroughTrainer (no train; .psht export or .ply copy)
       registry.py             # {"postshot": ..., "lichtfeld": ..., "passthrough": ...}
+    deploy_targets/           # (v0.8+) Pluggable scene-output backends (ABC + name registry)
+      base.py                 # Abstract DeployTarget interface
+      bunny.py                # Bunny CDN deploy target (faithful delegation, default; not a reimplementation)
+      folder.py               # Local-folder deploy target (copy staged output to a directory)
+      registry.py             # {"bunny": ..., "folder": ...}
+    save_backends/            # (v0.8+) Pluggable keyframe-editor save layer (ABC + name registry)
+      base.py                 # Abstract SaveBackend interface + SaveResult
+      cli.py                  # CliRelayBackend -- decision-A DEFAULT (fetch -> merge_camera_scope -> DeployTarget; no web-facing secret)
+      php.py                  # PhpEndpointBackend -- THIN config adapter (save runs browser->PHP)
+      cloudflare.py           # CloudflareWorkerBackend -- THIN config adapter (save runs browser->Worker)
+      registry.py             # {"cli": ..., "php": ..., "cloudflare": ...}
     steps/                    # Clean, assemble, deploy
       base.py                 # Abstract PipelineStep (debug JSON, env capture)
       colmap_clean.py         # COLMAP cleaning step (outliers + KD-tree + POINTS2D)
@@ -83,14 +152,15 @@ splatpipe/                    # repo root
     web/                      # FastAPI + HTMX dashboard
       app.py                  # FastAPI app
       runner.py               # Background pipeline runner (daemon thread + RunnerSnapshot)
-      routes/projects.py      # Project list, detail, inline edit, LOD management, path/keyframe CRUD, glTF/COLMAP importer endpoints, /update-renderer
+      routes/projects.py      # Project list, detail, inline edit, LOD management, path/keyframe CRUD (real flown pacing preserved), glTF/COLMAP importer endpoints, /update-renderer, save_mode wiring
       routes/steps.py         # Step execution: SSE progress streaming, cancel
       routes/actions.py       # OS actions: open folder/tool, file browser API
       routes/settings.py      # Config display + edit
       routes/queue.py         # Global pipeline queue: enqueue, reorder, pause, cancel
+      routes/dcc.py           # DCC bridge endpoints: feed splat to Max/Blender, ingest camera back (/dcc/manifest, /dcc/splat.ply, /dcc/import-camera)
       templates/              # Jinja2 templates (DaisyUI + HTMX via CDN)
       templates/partials/     # Reusable partials (lod_list, browse_modal, queue_panel)
-      templates/scene_editor.html  # Visual annotation editor + camera-path timeline (v0.6+)
+      templates/scene_editor.html  # Visual annotation editor + camera-path timeline; save_mode/save_endpoint relay UI (v0.6+, save plumbing v0.8+)
       templates/project_detail.html  # Includes the renderer toggle (PlayCanvas | Spark, v0.6+)
       static/browse.js        # File/folder browser dialog
       static/viewer.html      # PlayCanvas LOD streaming viewer
@@ -108,12 +178,46 @@ splatpipe/                    # repo root
     test_cli.py               # CLI command tests via CliRunner
     test_runner.py            # Background runner + cancel + multi-step tests
     test_web_routes.py        # Web route integration tests (TestClient)
+    test_dcc_routes.py        # DCC bridge route tests (/dcc/manifest, /dcc/splat.ply, /dcc/import-camera)
     test_route_helpers.py     # Route helper function tests
     test_steps_base.py        # PipelineStep base class tests
     test_events.py            # ProgressEvent + StepResult tests
     test_export.py            # Folder export tests
-    test_deploy_extended.py   # CDN deploy + env loading tests
+    test_deploy_extended.py   # CDN deploy + env loading tests (incl. Edge Rule split-trigger cap)
+    test_spark_chunked.py     # Spark chunked --rad-chunked cache layout + completeness guard (v0.7+)
+    test_publish.py           # publish_scene() invariants (build-agnostic index, primary_asset pointer, purge=False) (v0.7+)
     test_path_io.py           # Camera-path schema, mutate_paths, COLMAP missing-source, JSON round-trip (v0.6+)
+    test_path_io_interp.py    # Per-keyframe interpolation + mode schema (v0.8+)
+    test_spcp_token.py        # SPCP1 token codec round-trip + version/scope gating (v0.8+)
+    test_spcp_js_port.py      # SPCP1 JS<->Python codec byte-identity round-trip (Node-driven; v0.8+)
+    test_config_merge.py      # Shared camera-scope merge core (allow-list + primary_asset force-keep; v0.8+)
+    test_scene_cuts.py        # Multi-camera clip sequence validation/ordering (v0.8+)
+    test_set_camera_path.py   # splatpipe set-camera-path CLI (decode+merge+deploy relay; v0.8+)
+    test_deploy_targets.py    # DeployTarget abstraction + bunny/folder targets (v0.8+)
+    test_save_backends.py     # SaveBackend abstraction + cli/php/cloudflare backends (v0.8+)
+    test_init_php_auth_cli.py # splatpipe init-php-auth CLI (token gen + sha256 + SFTP-push; 29 tests, SFTP mocked; #122 Phase 1)
+    test_html_for_save_mode.py     # Generated viewer save_mode/save_endpoint plumbing + NEGATIVE-CONTROL author-mode UX/gizmo/overlay tests (v0.8+)
+    test_fragment_pins.py          # PER-FRAGMENT output pins: one (code-point-len, SHA-256) per template_parts/* file — disjoint, so editing fragment X re-baselines ONLY X's line (unblocks parallel fragment edits; replaced the whole-HTML pin 2026-05-28) + manifest-complete + BOM/CRLF sanity
+    test_assembly_integrity.py     # The JOIN guarantee: decomposition invariant (substitute(concat)==concat(substitute(each)) so per-fragment pins are lossless) + all-@@..@@-resolve + fragment ORDER + substitution-value constants + structural sentinels
+    test_intro_startview_modules.py # IntroModule (15h) + StartViewModule (15i) Scene Settings sections: contract markers + fragment ordering + openStartViewCard helper (Phase 11A Issue 9)
+    test_clip_editor.py       # Multi-camera CLIP EDITOR (#164): two-level stacked timeline (Cuts master track <-> per-clip camera keyframes) -- STATIC surface markers (level state, click->load via _camSelApply, back/breadcrumb, sequence draw, scrub-via-existing-path) + DYNAMIC Node master-time clip-boundary resolution (_tlClipAtMasterT)
+    test_context_menu.py      # openContextMenu primitive (04b) contract markers + 5 author-gated surfaces wired (timeline/3D/camera/annotation+title+clip rows) + 08:223 non-author suppressor preserved + fragment ordering (R2 #2 / #156)
+    test_annotation_nav.py    # #170 annotation navigator: STATIC surface markers (#ann-nav bar 03/CSS 02a/nav+fly wiring 15c + clip-aware pre-empt + idle-POI visibility) + DYNAMIC Node proof of the two pure laws (_annFlyDuration speed-dependent-clamped + _annEndDist lands-inside-unfold-radius)
+    test_undo_redo_ui.py           # WF-H3 (#144): visible Undo/Redo transport buttons + narrow _editorUndoHotkeyBlocked() guard (Ctrl+Z works in the drawer; text-entry-only block matrix; Phase 11G)
+    test_edit_history.py           # EditHistory snapshot ring-buffer (pre-gesture convention; WF-H2 #143 first-edit-undoable + per-gesture undo/redo; 200-cap; Phase 2A/11G)
+    test_php_save_oracle.py        # PHP save adapter cross-language merge oracle (v0.8+)
+    test_upload_asset_oracle.py    # PHP upload-asset.php server-behaviour oracle: auth/ext/size/slug gates (UX-H3; Phase 11E)
+    test_php_auth_header_recovery.py # PHP-independent source lock: both endpoints read HTTP_AUTHORIZATION ?? REDIRECT_HTTP_AUTHORIZATION ?? apache_request_headers(); .htaccess forwards Authorization + denies dotfile secrets (#150 Strato cgi-fcgi 401 fix)
+    test_cloudflare_save_oracle.py # Cloudflare Worker save cross-language merge oracle (v0.8+)
+    test_publish_config_sanitize.py # Public viewer-config sanitiser + publish_scene secret-leak regression (bug-audit #3; v0.8+)
+    test_audio_upload_security.py   # Audio-upload path-traversal hardening (bug-audit #7; v0.8+)
+    test_web_cmd_security.py  # `splatpipe web` default-loopback + --unsafe-network opt-in (bug-audit #5; v0.8+)
+    test_path_safety.py       # Shared path-containment helper: sibling-prefix attack rejection (bug-audit #6; v0.8+)
+    test_serve_cmd_security.py # `splatpipe serve` preview server containment regression (bug-audit #6; v0.8+)
+    test_sh_encoding_cli.py   # ShEncoding enum + --sh-encoding CLI choice gating + auto/paged/clamped truth table (bug-audit #1/#2; v0.8+)
+    test_build_lod_cache_key.py # Cache namespacing per --sh-encoding mode (e<a|p|c> marker) (v0.8+)
+    test_publish_sh_encoding.py # publish_scene threads sh_encoding into staged viewer-config (v0.8+)
+    manual/                   # Browser harnesses (not collected): keyframe-editor.html, pc-compare.html, etc.
 ```
 
 ## Camera path tours (v0.6+)
@@ -130,8 +234,8 @@ Per-project camera tours play smoothly in either renderer:
 Per-project `renderer: "playcanvas" | "spark"`. PlayCanvas is default; switching to Spark in the project detail page emits a `.rad` streaming viewer.
 
 - **Toolchain**: requires Rust + a sibling clone of [sparkjsdev/spark](https://github.com/sparkjsdev/spark) (default location `H:/001_ProjectCache/1000_Coding/spark`, override with `SPARK_REPO` env var). First-time `cargo build --release` of the workspace takes ~2 min; subsequent runs use the cached `build-lod` binary in `~/.cache/splatpipe/spark/`.
-- **Cache**: built `.rad`s land in `~/.cache/splatpipe/rad/<sha256[:16]>-<rev[:7]>-<flags>` (chunked = a *directory*; flags encode `q`/`n` + `c` chunked + `s` cluster-sh + extra). Re-assemble is instant when the input PLY + flags are unchanged.
-- **Build defaults (the large-scene pipeline — DEFAULT, not a script).** `build_lod.build()` defaults to `quality=True, chunked=True, cluster_sh=True`; `splatpipe build-lod` / `splatpipe assemble` produce a chunked `--cluster-sh` `.rad` set. Cluster-sh VQ-compresses SH into a ≤64K codebook → **~60% smaller** (IBUG 1653→661 MB) at no perceptible quality loss; chunking → hundreds of CDN-cacheable `.radc` (faster cold first paint). Escape hatch: `--no-cluster-sh` / `--no-chunked` (larger, stock-Spark-compatible). Reusable end-to-end: `.codex-run/deploy_scene_cs.py --scene --ply --folder [--live --clip-xy --desc]`.
+- **Cache**: built `.rad`s land in `~/.cache/splatpipe/rad/<sha256[:16]>-<rev[:7]>-<flags>` (chunked = a *directory*; flags encode `q`/`n` + `c` chunked + `s` cluster-sh + `e<a|p|c>` SH-encoding mode + extra). Re-assemble is instant when the input PLY + flags are unchanged.
+- **Build defaults (the large-scene pipeline — DEFAULT, not a script).** `build_lod.build()` defaults to `quality=True, chunked=True, cluster_sh=True, sh_encoding=ShEncoding.auto`; `splatpipe build-lod` / `splatpipe assemble` produce a chunked `--cluster-sh` `.rad` set. Cluster-sh VQ-compresses SH into a ≤64K codebook → **~60% smaller** (IBUG 1653→661 MB) at no perceptible quality loss; chunking → hundreds of CDN-cacheable `.radc` (faster cold first paint). Escape hatch: `--no-cluster-sh` / `--no-chunked` (larger, stock-Spark-compatible). The new typed `--sh-encoding {auto,paged,clamped}` selects the Spark viewer's SH decode path: `auto` (default) inherits any per-scene `spark_render.paged_ext_splats`; `paged` forces the clamp-free `ExtSplats` path (full-quality SH3, no ±1 "rainbow"); `clamped` forces the legacy `PackedSplats` path. The choice is part of the cache key (`e<a|p|c>` marker -- distinct entries per mode) and threads through `publish_scene()` to the staged `viewer-config.json`. Reusable end-to-end: `splatpipe publish --ply <ply> --slug <slug> [--scene --sh-encoding {auto,paged,clamped} --live --clip-xy --crop-within --desc]` — the PRODUCTIZED replacement for the former one-off `.codex-run/deploy_scene_cs.py` + `bunny_edge_rules.py` (both removed in `071aef0` when `publish` landed; do NOT reference the dead scripts). NOTE: `--sh-encoding` selects the viewer SH decode path; `auto` (default) inherits any per-scene `paged_ext_splats` and resolves to the CLAMPED default on a FRESH slug, so pass `--sh-encoding paged` for full-SH3 captures (clamp-free ExtSplats, no ±1 rainbow). (Added to the `publish` CLI 2026-05-30; previously paged-on-publish needed a `publish_scene(sh_encoding=...)` script.)
 - **HARD dependency — the patched fork (also default).** Cluster-sh `.rad`s only run on the self-hosted patched Spark fork the viewer template pins via `SPARK_FORK_URL` (currently rcf2: `ChunkDecoder` RefCell-reentrancy fix + chunk-0 SH-codebook ordering gate). Upstream `@sparkjsdev/spark@2.0.0` panics/OOMs on every cluster-sh chunk. The `build-lod` *binary* is still the fork's Rust tool; the *viewer* loads the fork bundle, not vanilla 2.0.0. Splat is rotated 180°-X to match the PlayCanvas viewer so annotations + camera-paths land consistently across renderers.
 - **Per-scene viewer config**: `spark_render.clip_xy` (default 1.4; scenes with training-outlier splats e.g. Speicher need 3.0 in their `viewer-config.json` or they blank). Social share-card (OG/Twitter + auto `preview.jpg`) is emitted by `html_for()` and published per scene via `.codex-run/make_share_preview.py`. Canonical per-scene source PLYs are NOT the splatpipe project dirs — see the `project_scene_source_plys` memory.
 - **Verified end-to-end**: 674 MB Gutsmutstrasse PLY → 191 MB scene.rad in 1m49s (GPU build_lod, pre-cluster-sh ref). Full feature parity with the PC viewer for annotations + camera-path playback.
@@ -184,6 +288,21 @@ Before reading from or writing to any directory:
 2. **After modifying state-writing code, verify all state-reading code still works.** `state.json` fields are read by templates, routes, CLI — grep for the field name and check every consumer.
 3. **After modifying any step, trace downstream.** If you change what train writes to `04_review/`, check what assemble reads from it. If you change assemble output, check what export reads.
 
+### Viewer / Harness Verification (camera-keyframe-editor build)
+
+These were paid for in hours during the keyframe-editor build. Treat them as hard rules.
+
+1. **Spark preview must be same-origin -- verify REAL pixels, not derived numbers.** A localhost page fetching `.rad`/`.radc` chunks cross-origin from Bunny is silently blocked (0 splats rendered, 0 console errors -- looks fine, shows nothing). Real verification is a deployed same-origin slug (or chunks mirrored next to the page). Harness JS state and any "numSplats > 0"-style derived number are NOT proof; verify the rendered pixels at a real scene/pose.
+2. **A scene-less harness never completes preload -- checks past that point are VACUOUS.** With no scene, the closure-local gate vars (`_afReady` etc.) stay false and have no `window.__*` surface, so any harness assertion that depends on a post-preload code path passes without exercising anything. Such a check must (a) be implemented fully and assert observable DOM/state, and (b) HONEST-DEFER the real-pixel demonstration to a real-scene pass with a precise per-check spec -- never ship a vacuous PASS.
+3. **Negative-control every harness "proof".** A check that does not FAIL against the pre-implementation code is vacuous. Build PRE fixtures from `git show <pretask>:<path>` into a SEPARATE served dir (NEVER swap the live template under a running server) and confirm the check fails substantively (not just surface-absence) before trusting a PASS.
+4. **Govern a deliberate stray by CONTENT, not a convention-sensitive hash.** `git diff | git hash-object` of a diff legitimately changes when the committed base blob moves, so a frozen sha is a false alarm machine. Verify a deliberate stray by literally diffing its added lines against the verbatim canonical block; the sha is a secondary, derivation-specific fingerprint only.
+5. **The byte-lock protects file IDENTITY, not correctness inside excised regions.** It cannot protect code bodies inside excised regions, nor geometry / getter-liveness / codec-byte-identity. Independently review old-vs-new for: a refactor of a function whose body lives inside an excised region, a frozen getter, and any JS<->Python codec port.
+6. **A spec-mandated real test legitimately raises the test count.** Distinguish a genuine spec-required new test (e.g. a Node-driven codec byte-identity round-trip) from count-padding. Do not blanket-forbid count changes -- the pre-push doc-check exists to RECONCILE the count, not to freeze it.
+7. **Serialize Playwright/stash agents -- never run >1 concurrently.** Two agents driving the shared Playwright-MCP browser, or git-stashing the same file, contend; a transient stash window mimics "an external process reverted my file". The boring hypothesis is your own over-parallelized agents, not a phantom external process. Verify final state only AFTER all such agents finish.
+8. **Path containment NEVER uses `str(p).startswith(str(root))` -- always go through `core/path_safety.is_contained()` / `ensure_contained()`.** The `startswith` form is bypassable by a sibling-prefix attack: a SIBLING directory like `05_output_evil` literally starts with the intended root `05_output` so the predicate returns `True` even though the path is NOT inside the root. The shared helper uses `Path.resolve().relative_to(parent.resolve())` (catching `ValueError` for cross-drive Windows + sibling-prefix candidates) so only a real sub-path is accepted. `ensure_contained` raises `PathContainmentError(ValueError)` so legacy `except ValueError` callsites still catch it. There must be ONE chokepoint for every containment check in the codebase.
+9. **Dashboard bind is a security boundary.** `splatpipe web` defaults to `127.0.0.1`. NEVER document or recommend `--host 0.0.0.0` (or `--unsafe-network`) without naming the exposure surface (filesystem browsing + OS-level open actions + no auth + no CSRF). The intended use case for LAN exposure is a trusted dev network, never production.
+10. **Byte-lock recipes.** The `template.py` byte-lock has three recipes: **2a** (additive — change is appended/excised purely inside an existing region; the byte-lock pin is unchanged), **2b** (deliberate re-pin — the pin advances when an opt-in stray is being retired into HEAD; document the WHY in the commit), **2c** (region-interior — change lives strictly inside an existing excised region; pin unchanged). Recipe-2b is the right tool when retiring a long-running uncommitted template stray (e.g. the 7-line `paged_ext_splats` opt-in) into a first-class CLI option.
+
 ## Versioning & Releases
 
 This project uses [Semantic Versioning](https://semver.org/) and [Keep a Changelog](https://keepachangelog.com/).
@@ -198,6 +317,7 @@ This project uses [Semantic Versioning](https://semver.org/) and [Keep a Changel
    - **MAJOR** (x.0.0): breaking changes to CLI interface, config format, state.json schema, or project folder structure
    - Pre-1.0: breaking changes are allowed in MINOR bumps, but still document them clearly
 4. **No commit without a CHANGELOG entry** for user-facing changes. Internal-only changes (CI config, test refactors, CLAUDE.md updates) are exempt.
+5. **Commit-message trailer.** End every commit message with `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>` (the global-CLAUDE.md form).
 
 ### Pre-push / Pre-release Documentation Check
 
@@ -323,7 +443,7 @@ Key config sections: `[tools]`, `[colmap_clean]`, `[postshot]` (profile, gpu, ma
 ## Tests
 
 ```bash
-pytest tests/ -v              # All 464 tests
+pytest tests/ -v              # 1097 collected (1074 passed, 23 skipped)
 pytest tests/ -k colmap       # Just COLMAP tests
 pytest tests/ -k integration  # End-to-end with tiny data
 pytest tests/ -k trainers     # Trainer abstraction tests
@@ -367,3 +487,4 @@ The photogrammetry projects live at:
 - Auto-threshold doesn't work with <10 cameras (use fixed threshold in project.toml)
 - `splat-transform` CLI args may need updating when PlayCanvas updates the tool
 - LichtFeld Studio stdout format not yet verified — run it once and check before trusting the parser
+- **Bespoke `.kfwork/deploy_kf_fehmarn*.py` scripts bypass `publish_scene` -> bypass the new sanitiser (bug-audit #3).** The new `core/config_safety.sanitize_public_viewer_config` only runs inside `publish_scene()`. The bespoke `.kfwork/` deploy scripts call `deploy_to_bunny` directly with a hand-built `viewer-config.json`, so they NEVER hit the sanitiser. Any future bespoke deploy script that constructs `viewer-config.json` from arbitrary input MUST call `sanitize_public_viewer_config()` first, or it can leak `save_backend.secret`/`api_key`/etc. straight to the CDN. If a slug was originally deployed via a bespoke script and is later re-published via `splatpipe publish`, the sanitiser kicks in on the next redeploy — but until then its sanitisation is out-of-band.

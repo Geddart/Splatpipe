@@ -1,0 +1,87 @@
+  // ---- Splat budget dropdown ----
+  // Spark exposes the budget as a live-mutable property on SparkRenderer:
+  //   spark.lodSplatCount   - hard target for total visible splats
+  // The default is auto-picked from device tier (see pickDefaultBudget below);
+  // the user can override via the dropdown at runtime.
+  const budgetEl = document.getElementById('splat-budget');
+  function applySplatBudget(n) {
+    // n=0 → "No limit": pass a very large number so Spark stops capping.
+    spark.lodSplatCount = (n > 0) ? n : 50_000_000;
+    // Keep the on-screen <select> consistent with the ACTUAL budget no
+    // matter who set it — device-tier pick, the Apple-Silicon profile,
+    // ?budget=, or any future foveation/tiering code. selectClosestBudget
+    // snaps the dropdown to the nearest option ≤ n (it's a hoisted function
+    // decl; applySplatBudget is never called before it's defined). n=0
+    // ("No limit") has no matching option, so leave the dropdown as-is.
+    // Setting .value programmatically does NOT fire 'change' → no recursion
+    // with the handler below. This makes applySplatBudget the single
+    // source of truth for UI/screenshot self-consistency (#50).
+    if (n > 0) selectClosestBudget(n);
+  }
+  budgetEl.addEventListener('change', () => applySplatBudget(parseInt(budgetEl.value, 10)));
+
+  // ---- Initial splat budget pick from device tier ----
+  // Static, measured-comfort targets (2026-05-15, no adaptive controller):
+  //   • phone   500 K — iPhone 13 mini ≈ 40 fps
+  //   • tablet  1 M   — between phone and desktop
+  //   • desktop 1.5 M — M1 Pro ≈ 30 fps (acceptable on 120 Hz ProMotion),
+  //                     discrete GPUs comfortably 60 fps; dropdown for more.
+  // This is spark.lodSplatCount: the LoD picks more detail in the
+  // foreground and less behind to hit this visible-splat target, drawing
+  // from the (separate) maxPagedSplats resident pool.
+  function pickDefaultBudget() {
+    const { tier } = _deviceProfile;
+    const tierPick = _deviceProfile.appleSilicon ? 1_000_000 :
+                     tier === 'phone' ? 500_000 :
+                     tier === 'tablet' ? 1_000_000 :
+                     2_000_000;  // discrete-GPU desktop default
+    // Per-scene preferred budget (viewer-config `splat_budget`, default 0 =
+    // unset). Some scenes (large-extent aerial captures like Polygraf) only
+    // resolve well at a higher budget. Honored on a capable discrete-GPU
+    // desktop ONLY — phones / tablets / Apple-Silicon keep their
+    // measured-safe tier value (a 3 M scene tanks a phone), so a per-scene
+    // bump never regresses constrained devices. The runtime dropdown +
+    // ?budget= still override either way.
+    const sceneWant = (typeof cfg.splat_budget === 'number' && cfg.splat_budget > 0)
+      ? cfg.splat_budget : 0;
+    const useScene = sceneWant > 0 && tier === 'desktop' && !_deviceProfile.appleSilicon;
+    const target = useScene ? sceneWant : tierPick;
+    console.info('[Splatpipe] device tier:', tier,
+      '| splat budget:', target.toLocaleString(),
+      useScene ? '(per-scene)' : '(tier default)');
+    return target;
+  }
+
+  // Snap the auto-picked target to the nearest dropdown option ≤ target
+  // (conservative — never exceed what we picked for the device).
+  function selectClosestBudget(target) {
+    const options = Array.from(budgetEl.options)
+      .map(o => ({ el: o, v: parseInt(o.value, 10) }))
+      .filter(o => o.v > 0)
+      .sort((a, b) => a.v - b.v);
+    let pick = options[0];
+    for (const o of options) {
+      if (o.v <= target) pick = o;
+      else break;
+    }
+    budgetEl.value = pick.el.value;
+    return parseInt(pick.el.value, 10);
+  }
+
+  // ?budget=N URL override pins the splat budget for the session — useful
+  // for prescribed A/B runs ("run 1M on iPhone and 2M on M1 Pro, same path").
+  // Overrides both auto-pick AND the dropdown's snap-to-closest behavior.
+  const URL_BUDGET = parseInt(new URLSearchParams(location.search).get('budget'), 10);
+
+  // Initial apply
+  let _initialBudget;
+  if (Number.isFinite(URL_BUDGET) && URL_BUDGET >= 0) {
+    _initialBudget = URL_BUDGET;
+    // Reflect the chosen value in the dropdown if a matching option exists.
+    selectClosestBudget(URL_BUDGET);
+    console.info('[Splatpipe] budget pinned from URL:', URL_BUDGET);
+  } else {
+    _initialBudget = selectClosestBudget(pickDefaultBudget());
+  }
+  applySplatBudget(_initialBudget);
+

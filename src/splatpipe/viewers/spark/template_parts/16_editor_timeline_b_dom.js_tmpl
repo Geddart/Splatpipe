@@ -1,0 +1,259 @@
+
+    // ---- DOM: a bottom strip injected into #author-root, inline-
+    //      styled exactly like #sp-hud / the Task-16 toggle (no new
+    //      CSS region). Pointer-events on the strip only; the strip
+    //      never covers the whole canvas.
+    const _tlStrip = document.createElement('div');
+    _tlStrip.id = 'editor-timeline';
+    _tlStrip.style.cssText =
+      'position:absolute;left:0;right:0;bottom:0;height:' + _TL_H +
+      'px;z-index:48;box-sizing:border-box;' +
+      'background:rgba(16,16,16,0.82);' +
+      '-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);' +
+      'border-top:1px solid rgba(255,255,255,0.12);' +
+      'font:11px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;' +
+      'color:#ccc;user-select:none;touch-action:none;overflow:hidden;';
+
+    // Transport cluster (left): play / pause / loop / fps. Reuses
+    // the existing #path-play / #path-stop handlers (no new stop /
+    // play mechanism). A3: lives in the dedicated top band
+    // (strip-y 0.._TL_BAR_H), vertically centred, clear of the ruler.
+    // A4: the merged Rec/interp/tangents/Save bar is appended onto
+    // this SAME row by _gzInit via the shared _tlBarRow ref below.
+    const _tlBar = document.createElement('div');
+    _tlBar.style.cssText =
+      'position:absolute;left:8px;right:8px;top:0;height:' + _TL_BAR_H +
+      'px;display:flex;gap:6px;align-items:center;z-index:2;';
+    function _tlBtn(txt, title) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.textContent = txt; b.title = title || '';
+      b.style.cssText =
+        'background:rgba(255,255,255,0.10);color:#eee;border:0;' +
+        'border-radius:5px;padding:4px 9px;cursor:pointer;' +
+        'font:12px monospace;line-height:1;';
+      return b;
+    }
+    // UX-Phase11-R2 #3 (2026-05-21): thin vertical divider to visually
+    // SEPARATE the undo/redo history group from the Play/Loop transport
+    // controls in the same flex row (R2 #3: the buttons were "awkwardly
+    // positioned" -- wedged glyph-only between Play and Loop with no
+    // grouping cue). Pure inline-styled span, no new CSS region.
+    function _tlDivider() {
+      const d = document.createElement('span');
+      d.setAttribute('aria-hidden', 'true');
+      d.style.cssText =
+        'flex:0 0 auto;width:1px;height:18px;margin:0 3px;' +
+        'background:rgba(255,255,255,0.18);';
+      return d;
+    }
+    // UX-Phase11A Issue 5 (2026-05-21): unified Play/Pause toggle. The
+    // separate Pause button is REMOVED; _tlPlay is now a tri-state
+    // toggle (idle \u25B6 -> playing \u23F8 -> paused \u25B6 -> resume \u23F8 ...). The
+    // glyph + title are synced by _tlSyncPlayPauseIcon() off the
+    // window.__spTransport.playState() the 10_camera_select fragment
+    // exposes. User-requested: "get rid of the pause button and have
+    // the play button do that ... push it twice, it becomes a pause
+    // icon ... click it again, it becomes a play icon and it plays."
+    const _tlPlay = _tlBtn('\u25B6', 'Play / Pause');
+    const _tlLoop = _tlBtn('\u21BB', 'Loop');
+    const _tlFpsBtn = _tlBtn('fps', 'Toggle fps grid (relabels ruler only)');
+    // UX-Phase11G WF-H3 (#144): VISIBLE Undo / Redo affordance. The editor
+    // had Ctrl+Z/Y wired (17a) but NO clickable button, so a user who never
+    // tried the hotkey could not undo at all (the WF-H3 "undo is dead in the
+    // drawer + no button" report). The transport row is the always-reachable
+    // author surface (it is built unconditionally in author mode + never
+    // hidden behind the closed Scene Settings drawer), so the buttons live
+    // here next to Play. They delegate to EditorModuleRegistry.undo/redo (the
+    // ONE coordinator) and their disabled state follows canUndo()/canRedo()
+    // -- synced every frame by _tlSyncUndoRedo() off _tlSyncPlayhead (same
+    // per-frame path the Play glyph uses) so a programmatic edit / hotkey
+    // undo keeps the buttons accurate without a manual refresh.
+    // R2 #3 (2026-05-21): clearer undo/redo affordance. The buttons were
+    // 28px glyph-only and easy to miss; give them a LARGER hit target
+    // (more padding + bigger glyph), a short text label so they read as
+    // "undo"/"redo" (not just an ambiguous arrow), and group them between
+    // dividers so they sit visually apart from Play/Loop. They stay in the
+    // transport row (the always-reachable author surface) and keep the
+    // per-frame _tlSyncUndoRedo() enable/disable sync.
+    const _tlUndo = _tlBtn('\u21B6 undo', 'Undo (Ctrl+Z)');
+    const _tlRedo = _tlBtn('redo \u21B7', 'Redo (Ctrl+Y)');
+    // R2 Batch G (2026-05-21): the FLOATING undo/redo buttons (Batch F
+    // lifted them out of the dark transport row into #editor-undo-float,
+    // which sits over the live scene) read too faint -- their old
+    // translucent rgba(255,255,255,0.10) fill let the scene show straight
+    // through. Give the ENABLED state a SOLID, near-opaque dark pill that
+    // matches the transport block's own rgba(16,16,16,0.82) backing, a
+    // brighter border + text, and a subtle drop shadow so they read clearly
+    // against any scene behind them. The DISABLED-state dim is the
+    // affordance that undo/redo is unavailable and is UNCHANGED: it stays
+    // `opacity:0.35` applied by _tlApplyBtnEnabled (which only touches
+    // opacity/pointer-events/cursor, never background) -- so this solid bg
+    // dims correctly when disabled and reads solid when enabled.
+    const _UNDO_BTN_CSS =
+      'background:rgba(20,20,22,0.94);color:#f3f3f3;' +
+      'border:1px solid rgba(255,255,255,0.28);' +
+      'border-radius:5px;padding:5px 10px;cursor:pointer;' +
+      'font:12px monospace;line-height:1;letter-spacing:0.2px;' +
+      'display:inline-flex;align-items:center;gap:4px;' +
+      'box-shadow:0 1px 4px rgba(0,0,0,0.45);';
+    _tlUndo.style.cssText = _UNDO_BTN_CSS;
+    _tlRedo.style.cssText = _UNDO_BTN_CSS;
+    // R2 Batch F (Layout 3, 2026-05-21): the Undo / Redo pair is FLOATED
+    // OUT of the dark transport row into a small container that sits just
+    // ABOVE the whole dark block (above the Play button). User: the
+    // buttons read as "embedded in the dark block"; they want them
+    // visually detached, floating above it. The floating bar is a SIBLING
+    // of _tlStrip under #author-root (NOT a child -- _tlStrip is
+    // overflow:hidden, so a child above its top edge would be clipped).
+    // It is positioned bottom:(_TL_H + gap) so it floats just over the
+    // strip's top edge; _tlSyncHeight() re-applies that bottom whenever
+    // the strip GROWS with module lanes (so it always tracks the top).
+    // left:8px aligns it over the Play button area. The _tlSyncUndoRedo()
+    // per-frame enable/disable, the history:* event sync, and the click
+    // handlers all reference _tlUndo/_tlRedo by variable, so they are
+    // PARENT-AGNOSTIC and stay intact regardless of where the buttons
+    // live. Buttons keep their Batch-B labels + glyphs.
+    const _TL_UNDO_FLOAT_GAP = 8;  // px gap above the strip's top edge
+    const _tlUndoBar = document.createElement('div');
+    _tlUndoBar.id = 'editor-undo-float';
+    _tlUndoBar.style.cssText =
+      'position:absolute;left:8px;bottom:' + (_TL_H + _TL_UNDO_FLOAT_GAP) +
+      'px;display:flex;gap:6px;align-items:center;z-index:49;' +
+      'pointer-events:auto;';
+    _tlUndoBar.appendChild(_tlUndo);
+    _tlUndoBar.appendChild(_tlRedo);
+    // Transport row keeps Play / Loop / fps (undo/redo lifted out). One
+    // divider between Play and the Loop/fps group preserves the visual
+    // grouping cue the Batch-B dividers added.
+    _tlBar.appendChild(_tlPlay);
+    _tlBar.appendChild(_tlDivider());
+    _tlBar.appendChild(_tlLoop); _tlBar.appendChild(_tlFpsBtn);
+
+    // ---- Phase 2C (#122 \u00A74.1.1): Prev/Next-keyframe skip + a single
+    //      always-editable LENGTH field. Prev/Next consult the
+    //      SORTED-by-t kf view as the source of truth (the editor
+    //      permits dragging a diamond past its neighbours, so raw
+    //      array order is NOT chronological).
+    //  UX-Phase11-R2 #5 (2026-05-21): the prior auto/manual toggle is
+    //      REMOVED. User: "I don't even know what auto/manual means.
+    //      It should just be length, nothing else." The field is now
+    //      ALWAYS editable + labelled "Length [N] s". It pre-fills
+    //      with `_effectiveScrubRange(p)[1]` (which is the kf-derived
+    //      ceiling -- max(last kf.t, 10) -- while total_duration_s is
+    //      null); the moment the user edits it, `total_duration_s` is
+    //      set to the typed value and sticks. Python
+    //      effective_scrub_range is UNCHANGED (positive
+    //      total_duration_s wins, null = derive); we simply stop ever
+    //      writing null from the UI.
+    const _tlPrevKf = _tlBtn('\u25C0\uFE0F|', 'Prev keyframe (Ctrl+Left)');
+    const _tlNextKf = _tlBtn('|\u25B6\uFE0F', 'Next keyframe (Ctrl+Right)');
+    // Length caption -- a small label so the field reads as "Length".
+    const _tlTotalLabel = document.createElement('span');
+    _tlTotalLabel.textContent = 'Length';
+    _tlTotalLabel.style.cssText = 'color:#9aa;font:11px monospace;';
+    // Length input -- numeric, narrow; ALWAYS editable. Always reflects
+    // the current scrub-range ceiling (`effectiveScrubRange[1]`) until
+    // the user types a value, after which it shows total_duration_s.
+    const _tlTotalInput = document.createElement('input');
+    _tlTotalInput.type = 'number';
+    _tlTotalInput.min = '0';
+    _tlTotalInput.step = '0.1';
+    _tlTotalInput.style.cssText =
+      'background:rgba(255,255,255,0.10);color:#eee;border:0;' +
+      'border-radius:5px;padding:3px 6px;font:12px monospace;' +
+      'line-height:1;width:56px;';
+    _tlTotalInput.title = 'Path length (seconds)';
+    const _tlTotalUnit = document.createElement('span');
+    _tlTotalUnit.textContent = 's';
+    _tlTotalUnit.style.cssText = 'color:#9aa;font:11px monospace;';
+    _tlBar.appendChild(_tlPrevKf);
+    _tlBar.appendChild(_tlNextKf);
+    _tlBar.appendChild(_tlTotalLabel);
+    _tlBar.appendChild(_tlTotalInput);
+    _tlBar.appendChild(_tlTotalUnit);
+
+    // ---- #164 clip editor: a "Sequence" back button + a breadcrumb that
+    //      together expose the two-level model. The back button returns to
+    //      the cuts track (sequence level); the breadcrumb shows the
+    //      current level ("Sequence" / "Sequence > Clip N - CameraName").
+    //      Built like the existing _tlPlay/_tlLoop buttons (inline-styled,
+    //      no new CSS region). Both are appended to _tlBar BEFORE the A4
+    //      gizmo cluster merges onto the same row (_tlBarRow ref below) so
+    //      they sit with the transport controls. Visibility is driven by
+    //      _tlSyncLevelUI(): the back button shows only at clip level WHEN
+    //      the scene has clips; the breadcrumb shows only when the scene
+    //      has clips at all (a no-clip single-camera scene shows neither --
+    //      identical to today's transport row).
+    const _tlSeqBack = _tlBtn('◂ Sequence', 'Back to the clip sequence');
+    _tlSeqBack.style.background = 'rgba(53,224,255,0.20)';
+    const _tlCrumb = document.createElement('span');
+    _tlCrumb.style.cssText =
+      'color:#9aa;font:11px monospace;white-space:nowrap;overflow:hidden;' +
+      'text-overflow:ellipsis;max-width:220px;';
+    _tlBar.appendChild(_tlSeqBack);
+    _tlBar.appendChild(_tlCrumb);
+
+    _tlStrip.appendChild(_tlBar);
+    // A4: publish the transport row so _gzInit (runs AFTER this IIFE)
+    // can merge the Rec/interp/tangents/Save cluster onto it instead
+    // of a separate floating #editor-gizmo-bar.
+    _tlBarRow = _tlBar;
+
+    // The lane (ruler + diamonds + playhead). A canvas draws the
+    // ruler + diamonds + selection box; a thin div is the playhead.
+    // A3: starts BELOW the transport band (_TL_BAR_H) so the ruler
+    // (canvas-y 0.._TL_RULER_H) never sits under the buttons.
+    const _tlLane = document.createElement('div');
+    _tlLane.style.cssText =
+      'position:absolute;left:0;right:0;bottom:0;height:' +
+      (_TL_H - _TL_BAR_H) + 'px;cursor:crosshair;';
+    const _tlCanvas = document.createElement('canvas');
+    _tlCanvas.style.cssText =
+      'position:absolute;inset:0;width:100%;height:100%;display:block;';
+    const _tlPlayhead = document.createElement('div');
+    _tlPlayhead.style.cssText =
+      'position:absolute;top:0;bottom:0;width:2px;left:0;' +
+      'background:#35e0ff;box-shadow:0 0 4px #35e0ff;' +
+      'pointer-events:none;will-change:left;';
+    _tlLane.appendChild(_tlCanvas);
+    _tlLane.appendChild(_tlPlayhead);
+    _tlStrip.appendChild(_tlLane);
+    root.appendChild(_tlStrip);
+    // R2 Batch F (Layout 3): the floating Undo/Redo bar is a SIBLING of
+    // the strip (above it) -- appended to #author-root so _tlStrip's
+    // overflow:hidden never clips it. Its bottom is kept in sync with the
+    // live strip height by _tlSyncHeight().
+    root.appendChild(_tlUndoBar);
+
+    const _tlCtx = _tlCanvas.getContext('2d');
+    let _tlW = 0, _tlHpx = 0, _tlDpr = 1;
+    // UX-Phase11-R2 #11: total ROWS contributed by every registered
+    // module lane (each lane advertises a `rows` count). The strip
+    // grows by this * _TL_LANE_ROW_H so the lane bands are visible
+    // below the diamond row. TDZ-safe: _tlLaneList() reads the lane
+    // consts which are initialised later in this IIFE, but this is only
+    // ever CALLED at runtime (from _tlResize via rAF / on register),
+    // by which point they exist.
+    function _tlTotalLaneRows() {
+      let rows = 0;
+      try {
+        const lanes = _tlLaneList();
+        for (const e of lanes) {
+          const r = e && e.lane && (e.lane.rows | 0);
+          rows += (r && r > 0) ? r : 1;
+        }
+      } catch (e) {}
+      return rows;
+    }
+    // Recompute the live strip height from the base + lane rows and
+    // push it onto the strip + lane inline heights (they were created
+    // with the base height baked into cssText). The lane fills the
+    // strip below the transport bar.
+    function _tlSyncHeight() {
+      _TL_H = _TL_H_BASE + _tlTotalLaneRows() * _TL_LANE_ROW_H;
+      _tlStrip.style.height = _TL_H + 'px';
+      _tlLane.style.height = (_TL_H - _TL_BAR_H) + 'px';
+      // R2 Batch F (Layout 3): keep the floating Undo/Redo bar pinned just
+      // above the strip's TOP edge as the strip grows/shrinks with lanes.
+      _tlUndoBar.style.bottom = (_TL_H + _TL_UNDO_FLOAT_GAP) + 'px';
+    }

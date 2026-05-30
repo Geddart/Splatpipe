@@ -14,11 +14,17 @@ already in PC-displayed frame.
 
 from __future__ import annotations
 
+import secrets
 import uuid
 from typing import Callable, Iterable, Literal, TypedDict
 
 
 # ---- schema ----------------------------------------------------------------
+
+#: Valid per-keyframe interpolation mode names (used by Task-2+ consumers).
+#: "auto_clamped" and "automatic" match Blender's f-curve naming; "bezier",
+#: "linear", "stepped" are the DCC-neutral equivalents.
+VALID_INTERP = ("auto_clamped", "automatic", "linear", "bezier", "stepped")
 
 
 class KeyframeDict(TypedDict, total=False):
@@ -30,16 +36,25 @@ class KeyframeDict(TypedDict, total=False):
     easing_out: str                   # "linear" | "easeInOutCubic" | ...
     hold_s: float                     # pause duration after this keyframe
     annotation_id: str | None         # highlight this annotation while passing
+    interp: str                       # per-keyframe interp mode (one of VALID_INTERP); absent => global smoothness
+    in_tan: list[float]               # bezier in-tangent [x, y, z] — used when interp=="bezier"
+    out_tan: list[float]              # bezier out-tangent [x, y, z] — used when interp=="bezier"
 
 
 class PathDict(TypedDict, total=False):
     id: str
     name: str
     loop: bool
+    mode: Literal["keyframe", "rail"]  # "keyframe" = spline through poses (default); "rail" = follow a geometry rail
     interpolation: Literal["catmull", "linear", "bezier"]
     smoothness: float                 # 0.0 = linear (segments), 1.0 = full Catmull-Rom (default)
     play_speed: float                 # playback rate multiplier; 0.5 = half-speed, 2.0 = double-speed
     keyframes: list[KeyframeDict]
+    # Editor §3.7 (user voice 2026-05-20 17:09): decouple timeline scrub range
+    # from last_kf.t so the author can declare "this path is 30s long" with
+    # only 2 keyframes recorded so far. None / absent / 0 / negative => use
+    # the auto rule via effective_scrub_range() (max(last_kf.t, 10.0) floor).
+    total_duration_s: float | None
 
 
 DEFAULT_EASING = "easeInOutCubic"
@@ -70,8 +85,113 @@ def new_path(
 
 
 def _new_id() -> str:
-    # Short, sortable, unlikely to collide. uuid4 hex prefix is plenty.
+    # Short, sortable, unlikely to collide. Uses uuid4 hex prefix.
     return "p_" + uuid.uuid4().hex[:10]
+
+
+def effective_scrub_range(path: PathDict) -> tuple[float, float]:
+    """Return ``(0.0, total_duration)`` per editor spec §3.7.
+
+    If ``path["total_duration_s"]`` is set to a positive number, that value
+    wins (including the case where it's smaller than the last keyframe's
+    time — the editor UI handles "off-canvas" diamonds; this helper is
+    purely a declarative scrub-range setter).
+
+    Otherwise (absent / ``None`` / ``0`` / negative): derive from the
+    largest keyframe time with a 10.0s floor that gives the empty-path
+    UX a sensible default scrub range.
+    """
+    total = path.get("total_duration_s")
+    if total is not None and total > 0:
+        return (0.0, float(total))
+    keyframes = path.get("keyframes", []) or []
+    last_t = max((kf.get("t", 0.0) for kf in keyframes), default=0.0)
+    return (0.0, float(max(last_t, 10.0)))
+
+
+# ---- annotation schema (#122 Phase 5 prep -- user-locked Q6 2026-05-20) ----
+#
+# An ``AnnotationDict`` is one entry of ``viewer-config.json``'s
+# ``annotations[]`` list. The 4 legacy fields (``label`` / ``title`` /
+# ``text`` / ``pos``) are still accepted as-is; the 7 new fields below
+# are all optional (``total=False``) and filled by
+# :func:`upgrade_annotation` at read time so existing scenes' legacy
+# entries continue to work byte-identically. Phase 5 implements the
+# JS-side renderer + editor that CONSUMES the new fields; this module
+# is the Python source of truth for their shape + defaults.
+#
+# Per editor architecture spec §11.6, two ``kind`` values are valid:
+#
+#   - ``dot_unfold`` (default) -- a small dot always visible in 3D; the
+#     dot expands into the full title+text+media panel when the camera
+#     enters ``unfold_radius_m`` OR the user clicks the dot.
+#   - ``title3d_overlay`` -- a persistent 3D text overlay (for scene
+#     labels), no unfold UI.
+#
+# Timeline visibility is governed by ``t_in`` / ``t_out`` / ``fade_ms``:
+# the annotation is invisible outside ``[t_in, t_out]``, and fades
+# in/out across ``fade_ms`` ms inside that window.
+
+
+class AnnotationDict(TypedDict, total=False):
+    # Legacy fields (4-tuple shipped by every existing scene)
+    id: str                                              # auto-generated if missing ("ann_<8hex>")
+    label: str                                           # short marker label ("1", "2", ...)
+    title: str                                           # heading shown when unfolded
+    text: str                                            # body copy shown when unfolded
+    pos: list[float]                                     # [x, y, z] world-space anchor
+
+    # New fields (Q6 expansion -- all optional, defaults filled by upgrade_annotation)
+    kind: Literal["dot_unfold", "title3d_overlay"]       # render mode; default "dot_unfold"
+    unfold_radius_m: float                               # camera-distance unfold threshold; default 5.0 m
+    t_in: float                                          # timeline visibility window start (s); default 0.0
+    t_out: float                                         # timeline visibility window end (s); default 999.0 (always-on)
+    fade_ms: int                                         # opacity fade-in/out duration; default 300
+    media_url: str | None                                # optional image/video URL shown when unfolded; default None
+    billboard: bool                                      # always-face-camera; default True
+
+
+#: Default values for each expansion field. Centralised so the JS-side
+#: editor (Phase 5) and any future deploy-time sanitiser can read the
+#: same source of truth.
+ANNOTATION_DEFAULTS: dict = {
+    "kind": "dot_unfold",
+    "unfold_radius_m": 5.0,
+    "t_in": 0.0,
+    "t_out": 999.0,
+    "fade_ms": 300,
+    "media_url": None,
+    "billboard": True,
+}
+
+
+def _new_annotation_id() -> str:
+    """Generate a fresh annotation id of the form ``ann_<8 lowercase hex>``.
+
+    Uses :func:`secrets.token_hex` for cryptographic-grade randomness so
+    collisions across thousands of authoring sessions stay infeasible
+    (32-bit space ~ 4.3B ids; birthday-bound collision at ~65K ids).
+    """
+    return "ann_" + secrets.token_hex(4)
+
+
+def upgrade_annotation(ann: dict) -> dict:
+    """Return a new dict that adds every Q6 expansion field with its safe
+    default if missing. Existing values pass through verbatim; the input
+    is never mutated.
+
+    Used at read time by every consumer of ``annotations[]`` so a legacy
+    4-field entry transparently becomes a fully-populated expanded one
+    without an in-place state-file rewrite. The Phase 5 editor will
+    write entries in the expanded shape directly, but a scene's
+    ``viewer-config.json`` may still ship legacy entries indefinitely --
+    backwards-compat is a hard contract.
+    """
+    out = dict(ann)
+    out.setdefault("id", _new_annotation_id())
+    for key, default in ANNOTATION_DEFAULTS.items():
+        out.setdefault(key, default)
+    return out
 
 
 # ---- mutate helper (D2: list-aware CRUD around set_scene_config_section) ---
