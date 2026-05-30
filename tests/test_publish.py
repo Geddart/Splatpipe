@@ -23,6 +23,7 @@ from typer.testing import CliRunner
 
 from splatpipe.cli.main import app
 from splatpipe.core.events import ProgressEvent, StepResult
+from splatpipe.core.sh_encoding import ShEncoding
 from splatpipe.steps.publish import STEP_PUBLISH, publish_scene
 
 runner = CliRunner()
@@ -275,3 +276,33 @@ def test_cli_new_slug_falls_back_to_slug_name(tmp_path):
     assert r.exit_code == 0, r.output
     assert cap["scene_name"] == "brandnew"   # slug fallback, no crash
     assert cap["desc"] is None               # → publish_scene applies NEUTRAL
+
+
+def test_cli_sh_encoding_threads_through(tmp_path):
+    """--sh-encoding reaches publish_scene: default is `auto`; an explicit
+    `paged` selects the clamp-free ExtSplats path (full SH3, no rainbow) so a
+    fresh SH3 scene no longer needs a workaround script."""
+    ply = tmp_path / "x.ply"
+    ply.write_bytes(b"P")
+
+    def _boom(*a, **k):
+        raise OSError("404 not found")  # fresh slug → no name/desc recovery
+
+    # default → auto
+    cap = {}
+    with patch("splatpipe.cli.publish_cmd.load_bunny_env", return_value=_FAKE_ENV), \
+         patch("splatpipe.cli.publish_cmd.urlopen", _boom), \
+         patch("splatpipe.cli.publish_cmd.publish_scene", _fake_publish(cap)):
+        r = runner.invoke(app, ["publish", "--ply", str(ply), "--slug", "s1"])
+    assert r.exit_code == 0, r.output
+    assert cap["sh_encoding"] is ShEncoding.auto
+
+    # explicit --sh-encoding paged
+    cap2 = {}
+    with patch("splatpipe.cli.publish_cmd.load_bunny_env", return_value=_FAKE_ENV), \
+         patch("splatpipe.cli.publish_cmd.urlopen", _boom), \
+         patch("splatpipe.cli.publish_cmd.publish_scene", _fake_publish(cap2)):
+        r = runner.invoke(app, ["publish", "--ply", str(ply), "--slug", "s2",
+                                "--sh-encoding", "paged"])
+    assert r.exit_code == 0, r.output
+    assert cap2["sh_encoding"] is ShEncoding.paged
